@@ -290,6 +290,7 @@ def _hard_close(response):
     """
     if response is None:
         return
+    released = False
     try:
         raw = getattr(getattr(response, "fp", None), "raw", None)
         sock = getattr(raw, "_sock", None)
@@ -302,25 +303,25 @@ def _hard_close(response):
             if closeable is not None:
                 try:
                     closeable.close()
+                    released = True
                 except Exception:
                     pass
     except Exception:
         pass
 
-    def finish():
-        try:
-            response.close()
-        except Exception:
-            pass
-
-    # The fd is already released above; response.close() only frees Python
-    # objects. It must not run on this thread: it takes the BufferedReader
-    # lock, and a pump thread that entered poll() just before the fd close
-    # keeps that lock until its read timeout expires (macOS poll() does not
-    # wake when the fd is closed under it), which would stall an abort for
-    # the whole stall_timeout.
-    threading.Thread(target=finish, daemon=True,
-                     name="haikode-net-reaper").start()
+    if released:
+        # The descriptor is gone, which is the resource that matters, and the
+        # remaining objects are the GC's business. response.close() must not
+        # run here: it takes the BufferedReader lock, and a pump thread that
+        # entered poll() just before the fd was closed holds that lock until
+        # its own read timeout expires (poll() does not wake when the fd is
+        # closed under it on macOS). Waiting for that turned every abort into
+        # a hang for the length of stall_timeout.
+        return
+    try:
+        response.close()
+    except Exception:
+        pass
 
 
 def _describe_status(status: int, body: str) -> str:

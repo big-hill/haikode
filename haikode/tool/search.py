@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from . import ripgrep
 from .base import Tool, ToolContext, ToolResult, load_prompt
 from .paths import assert_external_directory
 
@@ -478,15 +479,30 @@ class GlobTool(Tool):
         report = WalkReport()
         contain = (str(root), ctx.cwd)
         matches = []
-        for path, rel in _walk(root, budget=budget, gitignore=gitignore,
-                               contain=contain, report=report,
-                               max_files=MAX_FILES_LISTED):
-            ctx.check_abort()
-            if _glob_matches(rel, path.name, pattern):
+        fast = ripgrep.list_files(root, sorted(IGNORED_DIRS), budget,
+                                  ctx.check_abort)
+        if fast is not None:
+            for path in fast:
+                try:
+                    rel = path.relative_to(root).as_posix()
+                except ValueError:
+                    rel = path.name
+                if not _glob_matches(rel, path.name, pattern):
+                    continue
                 try:
                     matches.append((path.stat().st_mtime, path))
                 except OSError:
                     continue
+        else:
+            for path, rel in _walk(root, budget=budget, gitignore=gitignore,
+                                   contain=contain, report=report,
+                                   max_files=MAX_FILES_LISTED):
+                ctx.check_abort()
+                if _glob_matches(rel, path.name, pattern):
+                    try:
+                        matches.append((path.stat().st_mtime, path))
+                    except OSError:
+                        continue
 
         # newest first, like opencode
         matches.sort(key=lambda item: item[0], reverse=True)
@@ -557,6 +573,23 @@ class GrepTool(Tool):
         report = WalkReport()
         contain = (str(root), ctx.cwd)
 
+        def keep(path: Path) -> bool:
+            if not include:
+                return True
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                rel = path.name
+            return self._include_matches(rel, path.name, include)
+
+        fast = ripgrep.grep(pattern, root, keep, sorted(IGNORED_DIRS),
+                            MAX_MATCHES, MAX_FILE_BYTES, MAX_LINE_CHARS,
+                            budget, ctx.check_abort)
+        if fast is not None:
+            return self._result(pattern, fast["lines"], fast["files"],
+                                fast["truncated"], fast["long_lines"],
+                                budget, report, backend="ripgrep")
+
         for path, rel in _walk(root, budget=budget, gitignore=gitignore,
                                contain=contain, report=report):
             ctx.check_abort()
@@ -594,6 +627,14 @@ class GrepTool(Tool):
             if truncated or budget.check():
                 break
 
+        return self._result(pattern, results, files_with_matches, truncated,
+                            long_lines, budget, report, backend="stdlib")
+
+    @staticmethod
+    def _result(pattern: str, results: List[str], files: int, truncated: bool,
+                long_lines: int, budget: "Budget", report: WalkReport,
+                backend: str) -> ToolResult:
+        """One formatter for both backends, so their output cannot drift."""
         out = "\n".join(results) or "No matches found"
         if truncated:
             out += f"\n\n[stopped at {MAX_MATCHES} matches — narrow the pattern or use include]"
@@ -604,13 +645,14 @@ class GrepTool(Tool):
         return ToolResult(
             title=pattern,
             output=out,
-            metadata={"matches": len(results), "files": files_with_matches,
+            metadata={"matches": len(results), "files": files,
                       "truncated": truncated or budget.expired
                       or report.file_cap,
                       "fileCap": report.file_cap,
                       "skippedLinks": report.skipped_links,
                       "longLines": long_lines,
-                      "timedOut": budget.expired})
+                      "timedOut": budget.expired,
+                      "backend": backend})
 
 
 class ListTool(Tool):

@@ -391,17 +391,42 @@ class TestCancellation(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3.0)
 
     def test_streams_do_not_leak_pump_threads(self):
-        before = threading.active_count()
+        """An abandoned stream's pump exits, bounded by its read timeout.
+
+        Counted by thread name, not by active_count(): the process total also
+        sees the test server's handler threads, whose teardown races this
+        assertion — that form failed four runs in six regardless of the code
+        under test.
+
+        The read timeout is the bound that matters. A pump blocked in recv()
+        is freed when its socket times out, so a stream configured with a
+        short one clears immediately, while a long one keeps its thread for
+        that long. Closing the descriptor alone does not reliably wake a
+        blocked reader, which is the same platform behaviour _hard_close
+        documents.
+        """
+        def pumps():
+            return [t for t in threading.enumerate()
+                    if t.is_alive() and t.name == "haikode-sse"]
+
+        # Only this test's own pumps: earlier tests in the module abandon
+        # streams with a long read timeout, and their threads are still
+        # winding down while this one runs.
+        pre_existing = {id(t) for t in pumps()}
+
+        def mine():
+            return [t for t in pumps() if id(t) not in pre_existing]
+
         with ScriptedServer(sse(*[{"n": i} for i in range(50)], "[DONE]")) as server:
             for _ in range(5):
-                stream = stream_sse_events(server.url, {}, retry=NO_RETRY)
+                stream = stream_sse_events(server.url, {}, retry=NO_RETRY,
+                                           stall_timeout=2.0)
                 next(stream)
                 stream.close()       # abandon mid-stream
-        for _ in range(40):
-            if threading.active_count() <= before:
-                break
+        deadline = time.monotonic() + 6.0
+        while mine() and time.monotonic() < deadline:
             time.sleep(0.05)
-        self.assertLessEqual(threading.active_count(), before + 1)
+        self.assertEqual([], mine())
 
 
 class TestSSEFraming(unittest.TestCase):

@@ -266,6 +266,21 @@ class SearchHardeningTests(ToolCase):
         self.assertIn("a.py", result.output)
 
 
+def force_stdlib_backend(case):
+    """Pin a test to the Python walk.
+
+    Some behaviour only exists there: the file caps, and the symlink
+    containment that resolves each link and counts the ones leaving the tree.
+    ripgrep needs neither — it is fast enough to want no cap, and it declines
+    to follow symlinks at all — so a test about that machinery must say which
+    backend it means instead of depending on whether `rg` happens to be
+    installed on the machine running it.
+    """
+    from haikode.tool import ripgrep
+    ripgrep._RG_PATH = None
+    case.addCleanup(ripgrep.reset_cache)
+
+
 class SearchContainmentTests(ToolCase):
     """
     glob/grep/list used to resolve any root the model named and ask only about
@@ -319,6 +334,7 @@ class SearchContainmentTests(ToolCase):
         self.assertEqual(seen, [])
 
     def test_grep_does_not_follow_a_symlink_out_of_the_tree(self):
+        force_stdlib_backend(self)
         victim = Path(self.outside) / "secrets.txt"
         victim.write_text("api-key\n")
         link = Path(self.dir) / "innocent.txt"
@@ -335,6 +351,7 @@ class SearchContainmentTests(ToolCase):
         self.assertIn("skipped", result.output)
 
     def test_a_symlink_inside_the_tree_is_still_searched(self):
+        force_stdlib_backend(self)
         self.write("real.txt", "api-key\n")
         link = Path(self.dir) / "alias.txt"
         try:
@@ -404,6 +421,7 @@ class SearchCorrectnessTests(ToolCase):
         self.assertNotIn("b.js", result.output)
 
     def test_hitting_the_file_cap_says_so(self):
+        force_stdlib_backend(self)
         for index in range(6):
             self.write(f"f{index}.txt", "needle\n")
         real = search_module.MAX_FILES_SCANNED
@@ -437,6 +455,80 @@ class SearchCorrectnessTests(ToolCase):
 
         self.assertIn("wanted.txt", result.output)
 
+    def test_both_search_backends_agree(self):
+        """
+        ripgrep and the stdlib walk must return the same files, or which one
+        is installed silently changes what the model sees. Two divergences
+        surfaced this way and are regression-guarded here: ripgrep reads
+        .gitignore only inside a git repo (needs --no-require-git), and a
+        command-line -g glob overrides .gitignore (so include filtering
+        happens in Python, not in ripgrep).
+        """
+        from haikode.tool import ripgrep
+        if not ripgrep.ripgrep_path():
+            self.skipTest("ripgrep is not installed")
+
+        self.write("src/a.py", "needle\n")
+        self.write("src/b.js", "needle\n")
+        self.write("src/nested/deep.py", "needle\n")
+        self.write(".github/w.yml", "needle\n")
+        self.write("node_modules/vendored.py", "needle\n")
+        self.write("ignored.py", "needle\n")
+        self.write(".gitignore", "ignored.py\n")
+
+        cases = [
+            (GrepTool, {"pattern": "needle"}),
+            (GrepTool, {"pattern": "needle", "include": "*.py"}),
+            (GlobTool, {"pattern": "**/*.py"}),
+            (GlobTool, {"pattern": "src/**/*.py"}),
+        ]
+
+        def names(output):
+            return sorted({line.split(":")[0] for line in output.splitlines()
+                           if line.startswith(os.sep)})
+
+        for tool, args in cases:
+            ripgrep.reset_cache()
+            with_rg = names(tool().execute(dict(args), self.ctx).output)
+            ripgrep._RG_PATH = None
+            try:
+                without = names(tool().execute(dict(args), self.ctx).output)
+            finally:
+                ripgrep.reset_cache()
+            self.assertEqual(with_rg, without, "%s %s" % (tool.__name__, args))
+
+    def test_ripgrep_declines_symlinks_the_stdlib_walk_would_follow(self):
+        """
+        The one place the backends legitimately differ, pinned so it stays
+        known rather than being discovered as a surprise.
+
+        The stdlib walk resolves an in-tree symlink and searches through it;
+        ripgrep does not follow symlinks at all without --follow, which we
+        must never pass because it would also follow links *out* of the tree.
+        ripgrep's behaviour is opencode's, and it avoids reporting one file
+        twice; neither backend can be made to read outside the tree.
+        """
+        from haikode.tool import ripgrep
+        if not ripgrep.ripgrep_path():
+            self.skipTest("ripgrep is not installed")
+        self.write("real.txt", "api-key\n")
+        try:
+            (Path(self.dir) / "alias.txt").symlink_to(
+                Path(self.dir) / "real.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlink support")
+            return
+
+        ripgrep.reset_cache()
+        with_rg = GrepTool().execute({"pattern": "api-key"}, self.ctx).output
+        self.assertIn("real.txt", with_rg)
+        self.assertNotIn("alias.txt", with_rg)
+
+        ripgrep._RG_PATH = None
+        self.addCleanup(ripgrep.reset_cache)
+        without = GrepTool().execute({"pattern": "api-key"}, self.ctx).output
+        self.assertIn("alias.txt", without)
+
     def test_glob_gets_a_far_higher_file_cap_than_grep(self):
         """
         One cap for both throttled glob 15x harder than its cost justified.
@@ -447,6 +539,7 @@ class SearchCorrectnessTests(ToolCase):
                            search_module.MAX_FILES_SCANNED * 10)
 
     def test_the_cap_note_reports_the_limit_that_actually_applied(self):
+        force_stdlib_backend(self)
         for index in range(6):
             self.write("f%d.txt" % index, "needle\n")
         real = search_module.MAX_FILES_SCANNED
