@@ -125,18 +125,42 @@ def extract_chatgpt_account_id(tokens: Dict[str, Any]) -> str:
 class OAuthStore:
     def __init__(self, path: str):
         self.path = Path(path)
+        # Why the last _read() came back empty: "" when the file simply is
+        # not there, otherwise the failure. Read by access_token().
+        self.read_error = ""
 
     @classmethod
     def for_config(cls, config) -> "OAuthStore":
         return cls(str(config.path.parent / "oauth.json"))
 
     def _read(self) -> Dict[str, Any]:
-        try:
-            with self.path.open(encoding="utf-8") as handle:
-                value = json.load(handle)
-            return value if isinstance(value, dict) else {}
-        except (OSError, json.JSONDecodeError):
+        """The token file, or {} — with `read_error` saying which.
+
+        A file that cannot be read is not the same thing as a user who never
+        signed in, and conflating the two produced "Not signed in to chatgpt"
+        in the middle of a working session with valid tokens on disk. The
+        distinction is what lets access_token() say something true.
+
+        Reads are retried briefly because the failure was transient: the file
+        is replaced atomically on refresh, so anything that fails here is a
+        moment, not a state.
+        """
+        if not self.path.exists():
+            self.read_error = ""
             return {}
+        last = ""
+        for attempt in range(3):
+            try:
+                with self.path.open(encoding="utf-8") as handle:
+                    value = json.load(handle)
+                self.read_error = ""
+                return value if isinstance(value, dict) else {}
+            except (OSError, json.JSONDecodeError) as exc:
+                last = "%s: %s" % (type(exc).__name__, exc)
+                if attempt < 2:
+                    time.sleep(0.05)
+        self.read_error = last
+        return {}
 
     def _write(self, value: Dict[str, Any]):
         """Caller must hold settings_lock(self.path)."""
@@ -361,6 +385,14 @@ def access_token(provider: str, store: OAuthStore,
                  opener: Callable = urllib.request.urlopen) -> Dict[str, Any]:
     current = store.get(provider)
     if not current.get("access"):
+        if store.read_error:
+            # Telling a signed-in user to sign in again sends them to fix the
+            # wrong thing — and `login` would overwrite tokens that are fine.
+            raise OAuthError(
+                "Could not read the saved credentials for %s (%s). The file "
+                "is %s; nothing was changed. Try again, and run `haikode "
+                "login %s` only if it keeps failing."
+                % (provider, store.read_error, store.path, provider))
         raise OAuthError(f"Not signed in to {provider}; run `haikode login {provider}`")
     if not _is_expired(current):
         return current

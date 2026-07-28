@@ -194,6 +194,64 @@ class StepBudgetRegressions(TemporaryProject):
                             for w in repl.warnings()), repl.warnings())
 
 
+class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
+    """From the field: "not signed in to chatgpt" with valid tokens on disk.
+
+    _read() swallowed every failure and returned {}, so a moment when the
+    file could not be read looked exactly like never having logged in. The
+    advice that came with it was actively harmful: `login` would have
+    overwritten working credentials.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="haikode-oauth-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = Path(self.root, "oauth.json")
+
+    def _store(self):
+        from haikode.oauth import OAuthStore
+        return OAuthStore(str(self.path))
+
+    def test_a_missing_file_still_says_not_signed_in(self):
+        from haikode.oauth import OAuthError, access_token
+        with self.assertRaises(OAuthError) as caught:
+            access_token("chatgpt", self._store())
+        self.assertIn("Not signed in", str(caught.exception))
+
+    def test_an_unreadable_file_says_so_and_does_not_advise_a_relogin(self):
+        from haikode.oauth import OAuthError, access_token
+        self.path.write_text("{ this is not json")
+        with self.assertRaises(OAuthError) as caught:
+            access_token("chatgpt", self._store())
+        message = str(caught.exception)
+        self.assertIn("Could not read", message)
+        self.assertIn("nothing was changed", message)
+        self.assertNotIn("Not signed in", message)
+
+    def test_a_read_that_recovers_on_retry_is_not_an_error_at_all(self):
+        import time as _time
+        store = self._store()
+        self.path.write_text("{ broken")
+        real_open = Path.open
+        calls = {"n": 0}
+
+        def flaky(self_path, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("transient")
+            return real_open(self_path, *args, **kwargs)
+
+        good = json.dumps({"chatgpt": {"access": "a", "refresh": "r",
+                                       "expires": int(
+                                           (_time.time() + 3600) * 1000)}})
+        self.path.write_text(good)
+        with patch.object(Path, "open", flaky):
+            tokens = store.get("chatgpt")
+        self.assertEqual("a", tokens.get("access"))
+        self.assertEqual("", store.read_error)
+        self.assertGreater(calls["n"], 1, "the retry never happened")
+
+
 class TheStoreKeepsItsOwnBackups(unittest.TestCase):
     """Two defects destroyed a live store in one day.
 
