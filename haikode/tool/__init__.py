@@ -60,7 +60,15 @@ def _register_memory() -> None:
     except ImportError:
         return
     _memory_registered = True
-    for tool in MEMORY_TOOLS:
+    deferred = list(MEMORY_TOOLS)
+    try:
+        # Same circular-import dance: session imports tool.base, so it can
+        # only contribute its tool once it has finished loading.
+        from ..session import SESSION_TOOLS
+        deferred.extend(SESSION_TOOLS)
+    except ImportError:
+        pass
+    for tool in deferred:
         if tool.name in _REGISTRY:
             continue
         _ALL_TOOLS.append(tool)

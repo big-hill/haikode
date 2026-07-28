@@ -50,6 +50,9 @@ Use memory_write when the user states or corrects a durable preference or projec
 _MEMORY_READ_GUIDANCE = """# Durable memory
 Use memory_read when the saved-memory index points to relevant detail. Treat saved memories as established facts about this user and project."""
 
+_HISTORY_GUIDANCE = """# Earlier sessions
+This conversation does not contain previous ones. When the user refers to earlier work - "last time", "the previous session", "where we left off" - call session_history rather than saying you cannot see it: it lists recent sessions and reads any of them back."""
+
 _CONFIG_GUIDANCE = """# Live configuration
 Configuration files are snapshots for this running session. External edits take effect only after the user runs /reload or restarts haikode."""
 
@@ -349,6 +352,8 @@ def capability_guidance(tool_names: Sequence[str]) -> str:
         # A read-only agent told to memory_write would loop on tool-not-found
         # retries — the comment above exists precisely for this case.
         parts.append(_MEMORY_READ_GUIDANCE)
+    if "session_history" in available:
+        parts.append(_HISTORY_GUIDANCE)
     return "\n\n".join(parts)
 
 

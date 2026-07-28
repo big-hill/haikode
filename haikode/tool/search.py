@@ -35,7 +35,14 @@ IGNORED_SUFFIXES = {
     ".pdf", ".ico", ".bin", ".exe", ".wasm", ".mp3", ".mp4", ".woff", ".woff2",
 }
 MAX_MATCHES = 100
-MAX_FILES_SCANNED = 20000
+# Two very different costs, measured on a real Haiku home of 286k files:
+# traversing 20k entries takes 0.3 s, while opening and reading 20k takes 5 s.
+# One shared cap therefore throttled glob roughly 15x harder than its own cost
+# justified, and a home directory hit it constantly — the tool answered "no
+# files found" while admitting it had stopped early. The wall-clock budget
+# below is the real guard for both; these are the backstop under it.
+MAX_FILES_SCANNED = 20000       # grep: bounded by reading file contents
+MAX_FILES_LISTED = 300000       # glob: bounded by stat() alone
 MAX_FILE_BYTES = 2_000_000
 # `re` has no timeout and does not release the GIL, so nothing can interrupt a
 # catastrophic pattern once it starts backtracking. Bounding the text handed to
@@ -293,6 +300,7 @@ class WalkReport:
     def __init__(self) -> None:
         self.file_cap = False
         self.skipped_links = 0
+        self.cap = MAX_FILES_SCANNED
 
 
 def _incomplete(budget: "Budget", report: WalkReport, narrow: str) -> str:
@@ -310,7 +318,7 @@ def _incomplete(budget: "Budget", report: WalkReport, narrow: str) -> str:
     if report.file_cap:
         notes.append("[search stopped after %d files — results are "
                      "incomplete; narrow the path or %s]"
-                     % (MAX_FILES_SCANNED, narrow))
+                     % (report.cap, narrow))
     if report.skipped_links:
         notes.append("[%d symlink(s) pointing outside the search tree were "
                      "skipped]" % report.skipped_links)
@@ -362,7 +370,8 @@ def _walk(root: Path, extra_ignores: List[str] = None,
           budget: "Budget" = None, gitignore: "GitIgnore" = None,
           nested_gitignore: bool = True,
           contain: Optional[Sequence[str]] = None,
-          report: Optional[WalkReport] = None) -> Iterator[Tuple[Path, str]]:
+          report: Optional[WalkReport] = None,
+          max_files: int = 0) -> Iterator[Tuple[Path, str]]:
     """
     Yield (path, path-relative-to-root-in-posix-form) for every searchable file.
 
@@ -428,9 +437,10 @@ def _walk(root: Path, extra_ignores: List[str] = None,
             elif not stat.S_ISREG(info.st_mode):
                 continue
             scanned += 1
-            if scanned > MAX_FILES_SCANNED:
+            if scanned > (max_files or MAX_FILES_SCANNED):
                 if report is not None:
                     report.file_cap = True
+                    report.cap = max_files or MAX_FILES_SCANNED
                 return
             if budget is not None and scanned % 64 == 0 and budget.check():
                 return
@@ -469,7 +479,8 @@ class GlobTool(Tool):
         contain = (str(root), ctx.cwd)
         matches = []
         for path, rel in _walk(root, budget=budget, gitignore=gitignore,
-                               contain=contain, report=report):
+                               contain=contain, report=report,
+                               max_files=MAX_FILES_LISTED):
             ctx.check_abort()
             if _glob_matches(rel, path.name, pattern):
                 try:

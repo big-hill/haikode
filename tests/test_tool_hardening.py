@@ -437,6 +437,26 @@ class SearchCorrectnessTests(ToolCase):
 
         self.assertIn("wanted.txt", result.output)
 
+    def test_glob_gets_a_far_higher_file_cap_than_grep(self):
+        """
+        One cap for both throttled glob 15x harder than its cost justified.
+        Measured on a 286k-file Haiku home: traversing 20k entries is 0.3 s,
+        reading 20k is 5 s. glob only stats; grep opens.
+        """
+        self.assertGreater(search_module.MAX_FILES_LISTED,
+                           search_module.MAX_FILES_SCANNED * 10)
+
+    def test_the_cap_note_reports_the_limit_that_actually_applied(self):
+        for index in range(6):
+            self.write("f%d.txt" % index, "needle\n")
+        real = search_module.MAX_FILES_SCANNED
+        search_module.MAX_FILES_SCANNED = 2
+        try:
+            result = GrepTool().execute({"pattern": "needle"}, self.ctx)
+        finally:
+            search_module.MAX_FILES_SCANNED = real
+        self.assertIn("stopped after 2 files", result.output)
+
     def test_the_deadline_is_checked_before_the_regex_runs(self):
         """
         `re` has no timeout and holds the GIL: once a catastrophic pattern

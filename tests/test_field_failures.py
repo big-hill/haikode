@@ -193,6 +193,76 @@ class StepBudgetRegressions(TemporaryProject):
                             for w in repl.warnings()), repl.warnings())
 
 
+class SessionHistoryIsReachable(unittest.TestCase):
+    """Asked three times in the field: "what did we work on last session?"
+
+    Sessions were on disk, listable and loadable — nothing exposed them to
+    the model, so it answered "I cannot see the previous session" every time.
+    """
+
+    def setUp(self):
+        self.sandbox = tempfile.mkdtemp(prefix="haikode-hist-")
+        self._patch = patch.dict(os.environ,
+                                 {"HAIKODE_CONFIG_DIR": self.sandbox})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.addCleanup(shutil.rmtree, self.sandbox, True)
+
+    def _store_with_a_past_session(self):
+        from haikode.session import SessionStore
+        store = SessionStore()
+        session = store.new_session("/work/proj", "chatgpt", "gpt-5.6-sol")
+        session.append(Msg(role="user", content="port OnlyOffice to Haiku"))
+        session.append(Msg(role="assistant", tool_calls=[
+            ToolCall(id="c1", name="grep", arguments={})]))
+        session.append(Msg(role="tool", tool_call_id="c1", content="x" * 5000))
+        session.append(Msg(role="assistant",
+                           content="Startup reaches app:ready."))
+        store.close()
+        return session.id
+
+    def _tool(self):
+        from haikode.tool import REGISTRY
+        return REGISTRY["session_history"]
+
+    def _ctx(self):
+        from haikode.tool.base import ToolContext
+        return ToolContext(cwd="/work/proj",
+                           permissions=Permissions(auto_approve=True))
+
+    def test_the_model_has_the_tool_and_is_told_it_exists(self):
+        from haikode.prompt import capability_guidance
+        from haikode.tool import REGISTRY
+        self.assertIn("session_history", REGISTRY)
+        guidance = capability_guidance(("session_history", "read"))
+        self.assertIn("session_history", guidance)
+        self.assertIn("previous", guidance.lower())
+
+    def test_recent_sessions_are_listed_for_this_workspace(self):
+        session_id = self._store_with_a_past_session()
+        result = self._tool().execute({}, self._ctx())
+        self.assertIn(session_id, result.output)
+        self.assertIn("4 messages", result.output)
+
+    def test_a_transcript_reads_back_without_the_tool_output(self):
+        session_id = self._store_with_a_past_session()
+        result = self._tool().execute({"session_id": session_id}, self._ctx())
+        self.assertIn("port OnlyOffice to Haiku", result.output)
+        self.assertIn("Startup reaches app:ready", result.output)
+        self.assertIn("[ran: grep]", result.output)
+        self.assertNotIn("x" * 100, result.output)
+
+    def test_an_empty_workspace_says_so_and_offers_the_wider_search(self):
+        result = self._tool().execute({}, self._ctx())
+        self.assertIn("No earlier sessions", result.output)
+        self.assertIn("all_projects", result.output)
+
+    def test_an_unknown_id_is_an_error_not_an_empty_transcript(self):
+        with self.assertRaises(ValueError) as caught:
+            self._tool().execute({"session_id": "ses_nope"}, self._ctx())
+        self.assertIn("without arguments", str(caught.exception))
+
+
 class TestsCannotReachTheRealStore(unittest.TestCase):
     """The suite must not write sessions into the user's own store.
 

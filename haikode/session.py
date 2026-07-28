@@ -51,6 +51,7 @@ from .context import (DEFAULT_TAIL_TURNS, MAX_KEEP_TOKENS, SUMMARY_MAX_TOKENS,
                       needs_compaction, plan_compaction, summarize_with_reason)
 from .palette import fuzzy_score
 from .schema import Msg, ToolCall
+from .tool.base import Tool, ToolResult
 
 DEFAULT_DB_NAME = "sessions.db"
 # What /compact keeps verbatim when the user names no number.
@@ -1384,3 +1385,159 @@ def capture_modified(session: Session, ctx) -> List[str]:
         session.record_snapshot(path, original)
         recorded.append(os.path.realpath(path))
     return recorded
+
+
+# --------------------------------------------------------------------------
+# the model's window into earlier conversations
+# --------------------------------------------------------------------------
+
+# Enough of a transcript to reconstruct what happened without replaying tool
+# output, which is the bulk of a session and the least useful part of it.
+HISTORY_SESSIONS = 10
+HISTORY_TURN_CHARS = 600
+HISTORY_MAX_TURNS = 40
+
+
+def _ago(when: float) -> str:
+    """Coarse relative age. Exact timestamps invite arithmetic, not recall."""
+    if not when:
+        return "unknown"
+    delta = max(0.0, time.time() - when)
+    for seconds, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if delta >= seconds:
+            return "%d%s ago" % (int(delta // seconds), unit)
+    return "just now"
+
+
+def summarize_transcript(messages: Sequence[Any],
+                         turn_chars: int = HISTORY_TURN_CHARS,
+                         max_turns: int = HISTORY_MAX_TURNS) -> str:
+    """The conversation as alternating turns, tool traffic collapsed.
+
+    Tool calls become one `[ran: name, name]` line rather than their output:
+    a single grep can outweigh every word either party said, and what the
+    reader needs is the shape of the work, not its intermediate data.
+    """
+    lines: List[str] = []
+    pending_tools: List[str] = []
+
+    def flush_tools():
+        if pending_tools:
+            names = ", ".join(dict.fromkeys(pending_tools))
+            lines.append("  [ran: %s]" % names)
+            pending_tools.clear()
+
+    for message in messages:
+        role = getattr(message, "role", "")
+        content = (getattr(message, "content", "") or "").strip()
+        if role == "tool":
+            continue
+        calls = getattr(message, "tool_calls", None) or []
+        if role == "assistant":
+            pending_tools.extend(getattr(call, "name", "?") for call in calls)
+            if not content:
+                continue
+        if role in ("user", "assistant"):
+            flush_tools()
+            label = "user" if role == "user" else "assistant"
+            text = content if len(content) <= turn_chars else \
+                content[:turn_chars].rstrip() + " ..."
+            lines.append("%s: %s" % (label, text.replace("\n", " ")))
+    flush_tools()
+    if len(lines) > max_turns:
+        dropped = len(lines) - max_turns
+        lines = ["[%d earlier lines omitted]" % dropped] + lines[-max_turns:]
+    return "\n".join(lines)
+
+
+class SessionHistoryTool(Tool):
+    name = "session_history"
+    # Reading the user's own past conversations is a read, not an action.
+    permission = "read"
+    description = (
+        "Look up what earlier sessions in this workspace were about.\n\n"
+        "Without arguments: the recent sessions, newest first. With `query`: "
+        "sessions ranked against that text. With `session_id`: that session's "
+        "transcript, tool output collapsed. Use it when the user refers to "
+        "earlier work ('what did we do last time', 'continue where we left "
+        "off') — the current conversation does not contain it."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "Optional text to rank sessions against"},
+            "session_id": {"type": "string",
+                           "description": "Read one session's transcript"},
+            "all_projects": {"type": "boolean",
+                             "description": "Include sessions from other "
+                                            "directories (default false)"},
+        },
+        "required": [],
+    }
+
+    def execute(self, args: Dict[str, Any], ctx: Any) -> ToolResult:
+        query = str(args.get("query") or "").strip()
+        session_id = str(args.get("session_id") or "").strip()
+        everywhere = bool(args.get("all_projects"))
+        ctx.ask("read", ["session history"], "Read earlier sessions",
+                {"query": query, "session": session_id})
+
+        store = SessionStore()
+        try:
+            if session_id:
+                return self._transcript(store, session_id)
+            return self._listing(store, query, everywhere, ctx)
+        finally:
+            store.close()
+
+    def _transcript(self, store: "SessionStore", session_id: str) -> ToolResult:
+        session = store.load(session_id)
+        if session is None:
+            raise ValueError(
+                "No session with id %r. Call session_history without "
+                "arguments to see the ids that exist." % session_id)
+        body = summarize_transcript(session.messages)
+        header = "# %s\n%s · %s · %s\n" % (
+            session.title or "(untitled)", session.cwd or "?",
+            session.model or "?", _ago(session.updated))
+        return ToolResult(
+            title=session.title or session_id,
+            output=header + "\n" + (body or "(no messages)"),
+            metadata={"session": session_id,
+                      "messages": len(session.messages)})
+
+    def _listing(self, store: "SessionStore", query: str, everywhere: bool,
+                 ctx: Any) -> ToolResult:
+        current = getattr(ctx, "session_id", "") or ""
+        if query:
+            rows = store.search(query, limit=HISTORY_SESSIONS)
+        else:
+            rows = store.list_sessions(
+                limit=HISTORY_SESSIONS,
+                cwd=None if everywhere else getattr(ctx, "cwd", None))
+        rows = [row for row in rows if row["id"] != current]
+        if not rows:
+            note = ("No earlier sessions match %r." % query if query
+                    else "No earlier sessions in this workspace.")
+            if not everywhere and not query:
+                note += " Pass all_projects for other directories."
+            return ToolResult(title="no sessions", output=note,
+                              metadata={"count": 0})
+
+        lines = []
+        for row in rows:
+            line = "%s  %s  (%d messages, %s)" % (
+                row["id"], row["title"] or "(untitled)",
+                row["message_count"], _ago(row["updated"]))
+            if row.get("snippet"):
+                line += "\n    ..." + row["snippet"].strip()
+            lines.append(line)
+        return ToolResult(
+            title="%d session%s" % (len(rows), "" if len(rows) == 1 else "s"),
+            output="\n".join(lines) +
+                   "\n\nPass session_id to read one of these in full.",
+            metadata={"count": len(rows)})
+
+
+SESSION_TOOLS: List[Tool] = [SessionHistoryTool()]
