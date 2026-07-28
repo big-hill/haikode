@@ -790,10 +790,21 @@ def build_user_lines(entry: Entry, width: int, opts: RenderOptions) -> List[Line
 
 
 def build_assistant_lines(entry: Entry, width: int, opts: RenderOptions) -> List[Line]:
-    body = sanitize(entry.text, opts.glyphs.unicode_ok)
+    """The agent's own words, marked as such.
+
+    Everything else in the transcript carries a sign of what it is — the user
+    gets ❯, a tool gets ⏺ and its output is dimmed and indented. The reply
+    carried none, so the one thing the user is meant to read looked like more
+    tool output. A left rule down its whole height is the cheapest mark that
+    survives wrapping: it stays visible on the tenth line of a long answer,
+    where a single leading glyph would have scrolled out of sight.
+    """
+    g = opts.glyphs
+    body = sanitize(entry.text, g.unicode_ok)
     if not body.strip():
         return []
-    return _styled(body, width, "assistant", "", "")
+    rule = "%s " % (g.vbar if g.unicode_ok else "|")
+    return _styled(body, width, "assistant", rule, rule)
 
 
 def build_reasoning_lines(entry: Entry, width: int, opts: RenderOptions) -> List[Line]:

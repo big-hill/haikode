@@ -1509,7 +1509,11 @@ class SessionHistoryTool(Tool):
 
     def _listing(self, store: "SessionStore", query: str, everywhere: bool,
                  ctx: Any) -> ToolResult:
-        current = getattr(ctx, "session_id", "") or ""
+        # ctx.session is the live Session object, not an id — reading the
+        # wrong attribute made the current conversation list itself as
+        # "earlier work", which is exactly the confusion the tool exists to
+        # remove.
+        current = getattr(getattr(ctx, "session", None), "id", "") or ""
         if query:
             rows = store.search(query, limit=HISTORY_SESSIONS)
         else:

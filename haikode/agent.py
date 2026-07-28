@@ -867,6 +867,20 @@ class Agent:
             except ToolAborted:
                 self.messages.append(Msg(role="user", content="[interrupted by user]"))
                 return final
+            except Exception:
+                # Roll the turn back. A failed request used to leave the
+                # user's message standing alone: the model saw the question
+                # again on the next attempt, the session stored it twice, and
+                # /resume replayed a conversation where the user apparently
+                # asked twice and was ignored once. The error itself must not
+                # become an assistant message — that would replay to the
+                # provider as words the model never said (see
+                # tests/test_enforcement.py ProviderErrorsAreNotAnswers) —
+                # so the failed exchange leaves no trace instead, which is
+                # already how partially streamed text is treated.
+                if self.messages and self.messages[-1].role == "user":
+                    self.messages.pop()
+                raise
 
             if text:
                 final = text

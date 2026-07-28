@@ -243,7 +243,9 @@ class EntryRenderTests(unittest.TestCase):
     def test_assistant_text_uses_the_default_style(self):
         lines = self.render(Entry("assistant", text="here you go"))
         self.assertEqual(styles(lines)[0], "assistant")
-        self.assertEqual(lines[0].text, "here you go")
+        # The rule marks the reply as the agent's own words; see
+        # TranscriptRoleMarkersTests for why it is there.
+        self.assertEqual(lines[0].text, "│ here you go")
 
     def test_empty_assistant_entry_renders_nothing(self):
         self.assertEqual(self.render(Entry("assistant", text="   ")), [])
@@ -317,7 +319,7 @@ class TranscriptTests(unittest.TestCase):
         transcript.add(Entry("user", text="a"))
         transcript.add(Entry("assistant", text="b"))
         rendered = texts(transcript.lines(40, RenderOptions(ASCII)))
-        self.assertEqual(rendered, ["> a", "", "b", ""])
+        self.assertEqual(rendered, ["> a", "", "| b", ""])
 
     def test_cache_is_reused_and_invalidated_by_width(self):
         transcript = Transcript()
@@ -331,10 +333,10 @@ class TranscriptTests(unittest.TestCase):
         transcript = Transcript()
         entry = transcript.add(Entry("assistant", text="hel"))
         opts = RenderOptions(ASCII)
-        self.assertEqual(texts(transcript.lines(40, opts))[0], "hel")
+        self.assertEqual(texts(transcript.lines(40, opts))[0], "| hel")
         entry.append_text("lo")
         transcript.invalidate()
-        self.assertEqual(texts(transcript.lines(40, opts))[0], "hello")
+        self.assertEqual(texts(transcript.lines(40, opts))[0], "| hello")
 
     def test_toggling_options_changes_the_cache_key(self):
         transcript = Transcript()
@@ -1409,6 +1411,38 @@ class TestDeviceLoginDialog(unittest.TestCase):
         for row in view.rows:
             for text, _ in row:
                 self.assertTrue(text.isascii(), repr(text))
+
+
+class TranscriptRoleMarkersTests(unittest.TestCase):
+    """Every kind of line says what it is — including the agent's reply.
+
+    The user gets an arrow and a tool gets a dot, but the reply carried no
+    mark at all, so the one thing meant to be read looked like more tool
+    output.
+    """
+
+    OPTS = tui.RenderOptions(glyphs=ASCII)
+
+    def _lines(self, kind, text, **kwargs):
+        entry = tui.Entry(kind, text=text, **kwargs)
+        return [line.text for line in
+                tui.build_entry_lines(entry, 40, self.OPTS)]
+
+    def test_the_reply_is_marked_on_every_wrapped_line(self):
+        lines = [l for l in self._lines("assistant", "word " * 40) if l.strip()]
+        self.assertGreater(len(lines), 1, "needs to wrap for this to mean anything")
+        self.assertTrue(all(line.startswith("|") for line in lines), lines)
+
+    def test_the_three_roles_do_not_share_a_marker(self):
+        first = lambda kind, text, **kw: self._lines(kind, text, **kw)[0][:2]
+        reply = first("assistant", "done")
+        user = first("user", "do it")
+        tool = first("tool", "", name="list")
+        self.assertEqual(len({reply, user, tool}), 3,
+                         (reply, user, tool))
+
+    def test_an_empty_reply_still_renders_nothing(self):
+        self.assertEqual([], self._lines("assistant", "   "))
 
 
 class PinnedTodoTests(unittest.TestCase):

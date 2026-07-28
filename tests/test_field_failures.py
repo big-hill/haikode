@@ -193,6 +193,43 @@ class StepBudgetRegressions(TemporaryProject):
                             for w in repl.warnings()), repl.warnings())
 
 
+class AFailedTurnLeavesNoTrace(TemporaryProject):
+    """From the field: the same question stored twice, 50 seconds apart.
+
+    A request that failed left the user's message standing alone. The model
+    saw the question again on the retry, /resume replayed a conversation
+    where the user apparently asked twice and was ignored once, and
+    session_history showed the same. The error must not become an assistant
+    message either — that would replay to the provider as words the model
+    never said — so the whole exchange is rolled back.
+    """
+
+    def _failing_repl(self):
+        config = self.config(
+            default_provider="x",
+            providers={"x": {"base_url": "http://127.0.0.1:9/v1",
+                             "model": "m"}})
+        repl = REPL(config, provider="x", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        return repl
+
+    def test_resending_after_a_failure_does_not_duplicate_the_question(self):
+        repl = self._failing_repl()
+        repl.send("find the bug")
+        repl.send("find the bug")
+
+        self.assertEqual([], repl.agent.messages)
+        session = repl.turn.session
+        stored = list(session.messages) if session is not None else []
+        self.assertEqual([], [m for m in stored if m.role == "user"])
+
+    def test_the_error_is_never_stored_as_something_the_model_said(self):
+        repl = self._failing_repl()
+        repl.send("find the bug")
+        self.assertEqual(
+            [], [m for m in repl.agent.messages if m.role == "assistant"])
+
+
 class SessionHistoryIsReachable(unittest.TestCase):
     """Asked three times in the field: "what did we work on last session?"
 
@@ -256,6 +293,20 @@ class SessionHistoryIsReachable(unittest.TestCase):
         result = self._tool().execute({}, self._ctx())
         self.assertIn("No earlier sessions", result.output)
         self.assertIn("all_projects", result.output)
+
+    def test_the_current_session_is_not_listed_as_earlier_work(self):
+        from haikode.session import SessionStore
+        from haikode.tool.base import ToolContext
+        store = SessionStore()
+        self.addCleanup(store.close)
+        live = store.new_session("/work/proj", "chatgpt", "gpt-5.6-sol")
+        live.append(Msg(role="user", content="what did we do last time"))
+        ctx = ToolContext(cwd="/work/proj", session=live,
+                          permissions=Permissions(auto_approve=True))
+
+        output = self._tool().execute({}, ctx).output
+
+        self.assertNotIn(live.id, output)
 
     def test_an_unknown_id_is_an_error_not_an_empty_transcript(self):
         with self.assertRaises(ValueError) as caught:
