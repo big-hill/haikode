@@ -1,0 +1,35 @@
+{
+  "name": "build-make",
+  "category": "build",
+  "description": "A C program that does not compile: main.c calls clamp() with two arguments where the header declares three. Build, read the compiler error, fix the source, rebuild.",
+  "proves": "the shell tool round trip — run a build, parse a real compiler diagnostic, edit the right file, verify by rebuilding and running the binary",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 900,
+  "command_timeout": 120,
+  "requires_commands": ["make", "cc"],
+  "ignore": ["build", "build/*"],
+  "prompt": "This C project does not build. Run `make`, read the compiler error, and fix the source so the build succeeds. Then run `make run` and check the output.\n\n`build/app` must print exactly `clamped=7`. Do not edit the Makefile and do not change `src/util.c` or `src/util.h` — the bug is on the calling side.",
+  "pre_checks": [
+    {"type": "command_exit_nonzero", "command": "make",
+     "label": "the build fails before the agent runs"},
+    {"type": "file_matches", "path": "src/main.c", "pattern": "clamp\\(raw, 0\\)",
+     "label": "the seeded call site is present"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "command_exit_zero", "command": "make", "label": "`make` exits 0"},
+    {"type": "command_stdout_matches", "command": "./build/app",
+     "pattern": "clamped=7", "label": "the built binary prints clamped=7"},
+    {"type": "file_unchanged", "path": "Makefile", "label": "the Makefile was not edited"},
+    {"type": "file_unchanged", "path": "src/util.c", "label": "util.c was not edited"},
+    {"type": "file_unchanged", "path": "src/util.h", "label": "util.h was not edited"},
+    {"type": "any_of", "label": "the build was actually run by the agent, not guessed",
+     "checks": [
+       {"type": "tool_used", "tool": "bash", "arg_pattern": "\\bmake\\b"},
+       {"type": "tool_used", "tool": "bash", "arg_pattern": "\\bcc\\b|\\bgcc\\b|\\bclang\\b"}
+     ]},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

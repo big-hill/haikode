@@ -1,0 +1,5 @@
+Load a specialized skill when the task at hand matches one of the skills listed in the system prompt.
+
+Use this tool to inject the skill's instructions and resources into the current conversation. The output may contain detailed workflow guidance as well as references to scripts, files and other material in the same directory as the skill.
+
+The skill name must match one of the skills listed under "Available skills" in your system prompt. Load a skill before starting the work it covers, not after.

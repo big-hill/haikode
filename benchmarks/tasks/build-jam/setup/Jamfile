@@ -1,0 +1,8 @@
+# Build with jam(1), the native Haiku build tool.
+#
+#   jam          builds ./app
+#   jam clean    removes the objects and the binary
+
+HDRS = src ;
+
+Main app : src/main.c src/util.c ;

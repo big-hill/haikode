@@ -1,0 +1,31 @@
+{
+  "name": "fix-failing-test",
+  "category": "fix",
+  "description": "A unit test fails because median() returns the upper middle value instead of the mean of the two middle values for an even-length input.",
+  "proves": "the canonical agent loop: run a test, read the failure, locate the cause, edit the source, re-run",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 600,
+  "command_timeout": 90,
+  "prompt": "The test suite in this project fails. Run `python3 -m unittest discover -q` to see it, find the cause in the source, and fix it so every test passes.\n\nRules: fix the implementation, not the tests. Do not edit `test_ledger.py`, do not skip, xfail or delete any test, and do not change what any test asserts.",
+  "pre_checks": [
+    {"type": "command_exit_nonzero", "command": "python3 -m unittest discover -q",
+     "label": "the fixture's test suite fails before the agent runs"},
+    {"type": "file_matches", "path": "ledger/stats.py", "pattern": "return ordered\\[middle\\]",
+     "label": "the seeded bug is present"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "command_exit_zero", "command": "python3 -m unittest discover -q",
+     "label": "the test suite passes"},
+    {"type": "file_unchanged", "path": "test_ledger.py",
+     "label": "the tests were not edited"},
+    {"type": "glob_not_matches", "glob": "**/*.py",
+     "pattern": "unittest\\.(skip|expectedFailure)|@skip",
+     "label": "no test was skipped or marked expected-failure"},
+    {"type": "file_matches", "path": "ledger/stats.py", "pattern": "def median",
+     "label": "median() still exists"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

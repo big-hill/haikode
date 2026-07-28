@@ -1,0 +1,37 @@
+{
+  "name": "tool-discipline",
+  "category": "tools",
+  "description": "A 50-file project defines X7_SENTINEL_KEY once, five directories deep, and imports it from two other files. Report the value and the defining file.",
+  "proves": "that the agent searches instead of guessing: the answer is unguessable, the definition site is not the first grep hit, and the checks assert that a search tool (grep/glob, or grep/find through bash) was actually called",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 600,
+  "prompt": "This project defines a constant named `X7_SENTINEL_KEY` exactly once. Two other files import it.\n\nReport two things:\n1. the constant's exact value\n2. the path of the file that *defines* it, relative to the project root\n\nDo not guess the value and do not change anything.",
+  "pre_checks": [
+    {"type": "file_matches", "path": "modules/ingest/adapters/legacy_v3/keys.py",
+     "pattern": "X7_SENTINEL_KEY = \"bramble-9417\"",
+     "label": "the sentinel is where the checks expect it"},
+    {"type": "file_matches", "path": "README.md", "pattern": "deliberately not listed",
+     "label": "the README does not give the answer away"},
+    {"type": "command_exit_zero",
+     "command": "test $(grep -rl X7_SENTINEL_KEY . | wc -l) -eq 3",
+     "label": "the constant appears in exactly three files (one definition, two uses)"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "answer_matches", "pattern": "bramble-9417",
+     "label": "reported the correct value"},
+    {"type": "answer_matches",
+     "pattern": "modules/ingest/adapters/legacy_v3/keys\\.py",
+     "label": "reported the correct defining file"},
+    {"type": "any_of", "label": "a search tool was actually used",
+     "checks": [
+       {"type": "tool_used", "tool": "grep"},
+       {"type": "tool_used", "tool": "glob"},
+       {"type": "tool_used", "tool": "bash", "arg_pattern": "grep|rg\\b|\\bfind\\b|ag\\b"}
+     ]},
+    {"type": "no_files_modified", "label": "the project is byte-identical"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

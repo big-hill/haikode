@@ -1,0 +1,20 @@
+Sprocket Control Panel
+======================
+
+Version: 1.2
+
+The control panel exposes three sliders and one toggle. The toggle is
+persisted between launches; the sliders are not.
+
+Keyboard shortcuts
+------------------
+
+  Alt-Q   quit
+  Alt-,   settings
+  Alt-R   reset the sliders to their defaults
+
+Known issues
+------------
+
+The reset shortcut does not clear the toggle. This is deliberate: the
+toggle belongs to the document, not to the panel.

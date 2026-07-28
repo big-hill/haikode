@@ -1,0 +1,1386 @@
+"""
+Session persistence with undo/revert.
+
+opencode lets you rewind a session: you pick a point in the conversation, every
+file the agent touched after that point goes back to how it was, and the
+messages after it are dropped. opencode implements this with git snapshots;
+Haiku installs cannot assume git exists, so we keep the pre-edit text of every
+file a tool touched instead.
+
+The model:
+  * every message gets a monotonic `seq` within its session (1-based);
+  * `checkpoint()` records the seq a run starts from — that is the revert point;
+  * every file the run modifies is stored once per (session, revert point, path)
+    together with its ORIGINAL content, NULL meaning "did not exist before";
+  * `revert_to(seq)` writes those originals back — deleting the files whose
+    original is NULL — and drops the messages after `seq`.
+
+Snapshot rows are keyed by the revert point they belong to rather than by the
+message that made the edit, so reverting to a point restores that point's
+snapshots plus every later one. When several revert points touched the same
+file, the earliest recorded original wins: that is the content the file had
+before any of the reverted runs, which is what makes repeated reverts converge
+on the true pre-run state instead of an intermediate one.
+
+On top of that the store carries the session bookkeeping a UI needs: archiving
+and per-project listing, full-text search, export, statistics, token
+accounting, and in-place compaction that folds old turns into one summary
+message without ever splitting a tool call from its result.
+
+Compaction here is the persistent half of context.compact_messages: the same
+plan_compaction() decides what folds, the same summarize() writes the summary,
+and this module stores both — the summary as the message that replaces the
+folded turns, and the folded turns themselves in the `compactions` table so
+/undo can put them back. A resumed session therefore reads the summary back
+from disk instead of starting from a hole.
+"""
+
+import json
+import os
+import secrets
+import sqlite3
+import tempfile
+import threading
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+from .context import (DEFAULT_TAIL_TURNS, MAX_KEEP_TOKENS, SUMMARY_MAX_TOKENS,
+                      CompactionResult, global_config_dir, message_tokens,
+                      needs_compaction, plan_compaction, summarize_with_reason)
+from .palette import fuzzy_score
+from .schema import Msg, ToolCall
+
+DEFAULT_DB_NAME = "sessions.db"
+# What /compact keeps verbatim when the user names no number.
+DEFAULT_COMPACT_KEEP = 10
+MAX_TITLE_CHARS = 60
+SNIPPET_CHARS = 120
+# A title hit describes the whole session, a body hit only one line of it, so
+# titles are weighted up before the two are compared.
+SEARCH_TITLE_WEIGHT = 2
+SEARCH_TITLE_BONUS = 200
+# Bound on the lines scanned per session so search stays interactive even when
+# a session holds megabytes of tool output.
+SEARCH_MAX_LINES = 4000
+
+_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        cwd TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        created REAL NOT NULL DEFAULT 0,
+        updated REAL NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        tool_calls TEXT NOT NULL DEFAULT '[]',
+        tool_call_id TEXT NOT NULL DEFAULT '',
+        display TEXT NOT NULL DEFAULT '{}',
+        created REAL,
+        tokens INTEGER,
+        PRIMARY KEY (session_id, seq)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS snapshots (
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        original TEXT,
+        created REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (session_id, seq, path)
+    )
+    """,
+    # Surrogate key rather than (session_id, seq): compacting twice can land on
+    # the same seq, and the older record must survive so /undo can still see
+    # what that round folded away.
+    """
+    CREATE TABLE IF NOT EXISTS compactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        created REAL NOT NULL DEFAULT 0,
+        folded INTEGER NOT NULL DEFAULT 0,
+        first_seq INTEGER NOT NULL DEFAULT 0,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        summary TEXT NOT NULL DEFAULT '',
+        messages TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+)
+
+# Indexes are created *after* the migrations run, not with the tables. An index
+# names columns, so building it against a table an older build wrote -- one
+# that predates a column the index needs -- fails the whole connect(). That is
+# how a database written earlier the same day locked a user out of sessions,
+# /undo, --continue and /resume, with the error swallowed by the caller.
+_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_session ON snapshots (session_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions (cwd, updated)",
+    "CREATE INDEX IF NOT EXISTS idx_compactions_session ON compactions (session_id, id)",
+)
+
+# Columns added after the first release, applied to databases that predate
+# them. Every entry must be additive with a constant default -- that is the
+# only form of ALTER TABLE sqlite accepts, and it is also the only form that
+# cannot lose a row.
+_ADDED_COLUMNS = (
+    ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
+    ("messages", "created", "REAL"),
+    ("messages", "tokens", "INTEGER"),
+)
+
+# Tables that must be rebuilt rather than altered, because the missing piece is
+# an INTEGER PRIMARY KEY AUTOINCREMENT -- a column sqlite refuses to add with
+# ALTER TABLE at all. Each entry is (table, required_column, columns_to_carry).
+# A short-lived build shipped `compactions` without its `id`, so a database
+# from that window has the table but not the key its index needs.
+_REBUILT_TABLES = (
+    ("compactions", "id",
+     ("session_id", "seq", "created", "folded", "first_seq", "last_seq",
+      "summary", "messages")),
+)
+
+
+def default_db_path() -> Path:
+    """Where sessions live unless a caller (or a test) injects its own path."""
+    return global_config_dir() / DEFAULT_DB_NAME
+
+
+def new_session_id() -> str:
+    """Time-prefixed so ids sort chronologically, random-suffixed so they collide never."""
+    return "ses_%013x%s" % (int(time.time() * 1000), secrets.token_hex(3))
+
+
+def summarize_title(text: str, limit: int = MAX_TITLE_CHARS) -> str:
+    """One line, collapsed whitespace, never longer than `limit`."""
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set:
+    """Column names of `table`, empty when the table does not exist."""
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+    except sqlite3.DatabaseError:
+        return set()
+
+
+def _migrate(conn: sqlite3.Connection):
+    """
+    Bring a database written by an older haikode up to the current schema.
+
+    Idempotent, and additive wherever sqlite allows it: a database that is
+    already current is untouched, and one that is not keeps every row it holds.
+    A concurrent process making the same change first is not an error, it is
+    the outcome we wanted.
+    """
+    for table, column, declaration in _ADDED_COLUMNS:
+        columns = _table_columns(conn, table)
+        if not columns or column in columns:
+            continue
+        try:
+            conn.execute("ALTER TABLE %s ADD COLUMN %s %s"
+                         % (table, column, declaration))
+        except sqlite3.OperationalError:
+            pass  # another connection won the race; the column exists now
+
+    for table, required, carried in _REBUILT_TABLES:
+        _rebuild_table(conn, table, required, carried)
+
+
+def _rebuild_table(conn: sqlite3.Connection, table: str, required: str,
+                   carried: Sequence[str]) -> None:
+    """Recreate `table` with the current schema when `required` is missing.
+
+    Only reachable for a table sqlite cannot ALTER into shape (an AUTOINCREMENT
+    key). Rows are carried across by name, so a column the old build never had
+    takes its declared default rather than a NULL the schema forbids. The whole
+    move is one transaction: either the rebuilt table replaces the old one or
+    the old one survives untouched.
+    """
+    columns = _table_columns(conn, table)
+    if not columns or required in columns:
+        return
+
+    keep = [name for name in carried if name in columns]
+    names = ", ".join(keep)
+    temporary = "%s_migrating" % table
+    creator = next((s for s in _SCHEMA
+                    if ("CREATE TABLE IF NOT EXISTS %s" % table) in s), "")
+    if not creator:
+        return
+    try:
+        conn.execute("SAVEPOINT haikode_rebuild")
+        conn.execute("DROP TABLE IF EXISTS %s" % temporary)
+        conn.execute(creator.replace(table, temporary, 1))
+        if keep:
+            conn.execute("INSERT INTO %s (%s) SELECT %s FROM %s"
+                         % (temporary, names, names, table))
+        conn.execute("DROP TABLE %s" % table)
+        conn.execute("ALTER TABLE %s RENAME TO %s" % (temporary, table))
+        conn.execute("RELEASE haikode_rebuild")
+    except sqlite3.DatabaseError:
+        # Losing the rebuild is survivable; losing the rows is not.
+        try:
+            conn.execute("ROLLBACK TO haikode_rebuild")
+            conn.execute("RELEASE haikode_rebuild")
+        except sqlite3.DatabaseError:
+            pass
+
+
+def _reason(exc: BaseException) -> str:
+    return getattr(exc, "strerror", None) or str(exc) or exc.__class__.__name__
+
+
+def _serialize_calls(calls: List[ToolCall]) -> str:
+    # default=str: a tool argument the model never round-tripped through JSON
+    # (a Path, a set) must not crash the run at persist time.
+    return json.dumps([asdict(call) for call in calls], default=str)
+
+
+def _deserialize_calls(raw: Optional[str]) -> List[ToolCall]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    calls: List[ToolCall] = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        arguments = item.get("arguments")
+        calls.append(ToolCall(
+            id=str(item.get("id", "")),
+            name=str(item.get("name", "")),
+            arguments=arguments if isinstance(arguments, dict) else {}))
+    return calls
+
+
+def _deserialize_display(raw: Optional[str]) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def message_files(message: Msg) -> List[str]:
+    """Paths a message touched, read from the tool metadata the UI already gets."""
+    found: List[str] = []
+    path = (message.display or {}).get("path")
+    if isinstance(path, str) and path:
+        found.append(path)
+    for call in message.tool_calls:
+        arguments = call.arguments if isinstance(call.arguments, dict) else {}
+        for key in ("filePath", "path", "file"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                found.append(value)
+                break
+    return found
+
+
+def summarize_messages(messages: List[Msg], prompts: int = 8) -> str:
+    """
+    A factual digest of the messages a compaction is about to fold away.
+
+    Used when the caller has no model-written summary. It stays to what
+    provably happened -- prompts, tools, files -- because the model reads this
+    text back as its own memory, and an invented narrative there is worse than
+    a terse one.
+    """
+    if not messages:
+        return ""
+    lines = ["[earlier conversation, condensed]",
+             "%d messages were folded into this summary." % len(messages)]
+
+    asked = [m.content.strip() for m in messages
+             if m.role == "user" and m.content.strip()]
+    if asked:
+        lines.append("")
+        lines.append("Requests made:")
+        for text in asked[:prompts]:
+            lines.append("- " + summarize_title(text, 100))
+        if len(asked) > prompts:
+            lines.append("- ... and %d more" % (len(asked) - prompts))
+
+    tools: Dict[str, int] = {}
+    files: List[str] = []
+    for message in messages:
+        for call in message.tool_calls:
+            tools[call.name] = tools.get(call.name, 0) + 1
+        for path in message_files(message):
+            if path not in files:
+                files.append(path)
+    if tools:
+        ranked = sorted(tools.items(), key=lambda item: (-item[1], item[0]))
+        lines.append("")
+        lines.append("Tools used: " + ", ".join(
+            "%s x%d" % (name, count) for name, count in ranked))
+    if files:
+        lines.append("Files involved: " + ", ".join(files[:20]))
+        if len(files) > 20:
+            lines.append("... and %d more files" % (len(files) - 20))
+
+    replies = [m.content.strip() for m in messages
+               if m.role == "assistant" and m.content.strip()]
+    if replies:
+        lines.append("")
+        lines.append("Last answer: " + summarize_title(replies[-1], 200))
+    return "\n".join(lines)
+
+
+def _directory_keys(cwd: Union[str, Path]) -> List[str]:
+    """Every spelling of `cwd` a session row may have been stored under."""
+    raw = str(cwd)
+    keys = [raw]
+    for variant in (os.path.abspath(raw), os.path.realpath(raw),
+                    raw.rstrip(os.sep) or os.sep):
+        if variant not in keys:
+            keys.append(variant)
+    return keys
+
+
+def _fence(text: str, language: str = "") -> str:
+    """
+    Wrap `text` in a code fence long enough to survive backticks inside it.
+
+    Exported transcripts routinely contain markdown (the model writes it) and a
+    three-backtick fence around a message that itself uses three backticks
+    would end the block in the middle of the quote.
+    """
+    body = text if text.endswith("\n") or not text else text + "\n"
+    longest = 0
+    run = 0
+    for char in text:
+        run = run + 1 if char == "`" else 0
+        longest = max(longest, run)
+    ticks = "`" * max(3, longest + 1)
+    return "%s%s\n%s%s" % (ticks, language, body, ticks)
+
+
+def _timestamp(value: Optional[float]) -> str:
+    """Local, human-readable, empty for a missing timestamp."""
+    if not value:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value)))
+
+
+def _snippet(text: str, positions: List[int], width: int = SNIPPET_CHARS) -> str:
+    """A one-line excerpt of `text` centred on the first matched character."""
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= width:
+        return collapsed
+    # positions index the raw text; whitespace collapsing shifts them slightly,
+    # which is fine for an excerpt -- it only has to land near the match.
+    focus = positions[0] if positions else 0
+    start = max(0, min(focus - width // 3, len(collapsed) - width))
+    excerpt = collapsed[start:start + width].strip()
+    return ("..." if start > 0 else "") + excerpt + (
+        "..." if start + width < len(collapsed) else "")
+
+
+def _atomic_write(path: Path, text: str):
+    """Restore through a sibling temp file so a crash cannot leave a half file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # mkstemp creates 0600; without this a reverted shell script would come
+        # back non-executable. Restoring content must not restyle permissions.
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+    handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=".haikode-revert-")
+    try:
+        # newline="" keeps the stored bytes exactly as they were captured.
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        try:
+            os.chmod(temp, mode)
+        except OSError:
+            pass  # filesystems without permission bits (some Haiku mounts)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+class SessionStore:
+    """SQLite-backed session storage. One store per database file."""
+
+    def __init__(self, db_path: Union[str, Path, None] = None):
+        self.path = Path(db_path) if db_path is not None else default_db_path()
+        self._conn: Optional[sqlite3.Connection] = None
+        # Tools may run from a worker thread; serialize every statement.
+        self._lock = threading.RLock()
+        # Held open while this store is in use; another process holding it is
+        # how we know a WAL belongs to a live instance rather than a corpse.
+        self._guard = None
+
+    # --- connection ------------------------------------------------------
+
+    def connect(self) -> sqlite3.Connection:
+        """Open (and on first use create) the database."""
+        with self._lock:
+            if self._conn is not None:
+                return self._conn
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                conn = self._open()
+            except sqlite3.OperationalError as first:
+                # A process that died mid-write leaves the WAL index behind,
+                # and every later open fails with "locking protocol" until it
+                # is cleared. Observed on Haiku after a killed run: 15 sessions
+                # intact on disk, unreachable, and the only symptom the user
+                # saw was one line saying undo was unavailable.
+                if not self._clear_stale_wal(first):
+                    raise
+                conn = self._open()
+            self._conn = conn
+            return conn
+
+    def _open(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError:
+            # Some network/older filesystems reject WAL; the rollback
+            # journal is slower but correct.
+            pass
+        # Order matters: tables, then migrations, then indexes. An index
+        # names columns, so it can only be built once every table has the
+        # shape this build expects.
+        for statement in _SCHEMA:
+            conn.execute(statement)
+        _migrate(conn)
+        for statement in _INDEXES:
+            conn.execute(statement)
+        conn.commit()
+        return conn
+
+    def _claim(self) -> bool:
+        """Take the cross-process guard for this database.
+
+        True when no other haikode holds it. The guard is advisory and only
+        gates recovery: two instances may share the store, but only a lone
+        one may conclude that a leftover WAL is a corpse's.
+        """
+        if self._guard is not None:
+            return True
+        try:
+            import fcntl
+        except ImportError:
+            return False  # no advisory locks: never assume we are alone
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(str(self.path) + ".guard", "a+")
+        except OSError:
+            return False
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self._guard = handle
+        return True
+
+    def _clear_stale_wal(self, error: sqlite3.OperationalError) -> bool:
+        """Remove a dead process's WAL index so the database opens again.
+
+        Only the `-shm` file is deleted, and only for the errors that actually
+        mean "the lock state is unusable". The `-shm` is a rebuildable index
+        into the `-wal`, so dropping it costs nothing; the `-wal` itself holds
+        committed data and is moved aside rather than deleted, so a bad guess
+        here can still be undone by hand.
+
+        Recovery only runs when this process holds the guard. Haiku reports
+        "locking protocol" for a *live* second instance too, and without the
+        guard a newly started haikode would rip the running one's WAL out from
+        under it — losing the turns it had committed but not checkpointed.
+
+        Returns True when something was cleared and a retry is worth making.
+        """
+        message = str(error).lower()
+        if not any(token in message for token in
+                   ("locking protocol", "unable to open database",
+                    "disk i/o error")):
+            return False
+        if not self.path.exists():
+            return False
+        if not self._claim():
+            return False
+
+        cleared = False
+        index = Path(str(self.path) + "-shm")
+        try:
+            if index.exists():
+                index.unlink()
+                cleared = True
+        except OSError:
+            return False
+
+        journal = Path(str(self.path) + "-wal")
+        try:
+            if journal.exists() and journal.stat().st_size:
+                # Keep it: if this recovery turns out to be wrong, the data is
+                # still on disk next to the database rather than gone.
+                journal.replace(Path(str(self.path) + "-wal.recovered"))
+                cleared = True
+        except OSError:
+            pass
+        return cleared
+
+    def close(self):
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+            if self._guard is not None:
+                try:
+                    self._guard.close()
+                except OSError:
+                    pass
+                self._guard = None
+
+    def _query(self, sql: str, params=()) -> List[sqlite3.Row]:
+        with self._lock:
+            return self.connect().execute(sql, params).fetchall()
+
+    def _write(self, sql: str, params=()):
+        with self._lock:
+            conn = self.connect()
+            conn.execute(sql, params)
+            conn.commit()
+
+    # --- sessions --------------------------------------------------------
+
+    def new_session(self, cwd: str, provider: str, model: str,
+                    title: str = "") -> "Session":
+        now = time.time()
+        session_id = new_session_id()
+        self._write(
+            "INSERT INTO sessions "
+            "(id, title, cwd, provider, model, created, updated, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (session_id, title, str(cwd), provider, model, now, now))
+        return Session(self, session_id, title=title, cwd=str(cwd),
+                       provider=provider, model=model, created=now, updated=now)
+
+    def load(self, session_id: str) -> Optional["Session"]:
+        rows = self._query(
+            "SELECT id, title, cwd, provider, model, created, updated, archived "
+            "FROM sessions WHERE id = ?", (session_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        session = Session(self, row["id"], title=row["title"] or "",
+                          cwd=row["cwd"] or "", provider=row["provider"] or "",
+                          model=row["model"] or "", created=row["created"] or 0.0,
+                          updated=row["updated"] or 0.0,
+                          archived=bool(row["archived"]))
+        session.reload()
+        return session
+
+    def list_sessions(self, limit: int = 50, include_archived: bool = False,
+                      cwd: Union[str, Path, None] = None) -> List[Dict[str, Any]]:
+        """
+        Most recently updated first.
+
+        `cwd` restricts the list to one project, the way opencode's session
+        dialog does. Both the stored and the requested directory are compared
+        raw and resolved, because a session may have been opened through a
+        symlinked path (/var vs /private/var on macOS, /boot/home symlinks on
+        Haiku) and the user still means the same project.
+        """
+        where: List[str] = []
+        params: List[Any] = []
+        if not include_archived:
+            where.append("s.archived = 0")
+        if cwd is not None:
+            candidates = _directory_keys(cwd)
+            where.append("s.cwd IN (%s)" % ", ".join("?" * len(candidates)))
+            params.extend(candidates)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        params.append(int(limit))
+        rows = self._query(
+            "SELECT s.id, s.title, s.cwd, s.provider, s.model, s.created, "
+            "s.updated, s.archived, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS n "
+            "FROM sessions s" + clause +
+            " ORDER BY s.updated DESC, s.id DESC LIMIT ?", tuple(params))
+        return [self._row_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "title": row["title"] or "",
+            "cwd": row["cwd"] or "",
+            "provider": row["provider"] or "",
+            "model": row["model"] or "",
+            "created": row["created"] or 0.0,
+            "updated": row["updated"] or 0.0,
+            "archived": bool(row["archived"]),
+            "message_count": row["n"],
+        }
+
+    def search(self, query: str, limit: int = 20,
+               include_archived: bool = False) -> List[Dict[str, Any]]:
+        """
+        Rank sessions against `query` over titles and message text.
+
+        Rows have the same shape as list_sessions() plus "score" and
+        "snippet". Message bodies are scored line by line rather than whole:
+        fuzzy matching is subsequence matching, and over a ten-kilobyte tool
+        output almost any query matches, which would rank noise first.
+        """
+        where = "" if include_archived else " WHERE s.archived = 0"
+        rows = self._query(
+            "SELECT s.id, s.title, s.cwd, s.provider, s.model, s.created, "
+            "s.updated, s.archived, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS n "
+            "FROM sessions s" + where + " ORDER BY s.updated DESC, s.id DESC")
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            scored = self._score_session(row["id"], row["title"] or "", query)
+            if scored is None:
+                continue
+            score, snippet = scored
+            item = self._row_to_dict(row)
+            item["score"] = score
+            item["snippet"] = snippet
+            results.append(item)
+        # Stable tie-break on recency so an empty query degrades exactly into
+        # list_sessions() rather than into an arbitrary order.
+        results.sort(key=lambda item: (-item["score"], -item["updated"], item["id"]))
+        return results[:max(0, int(limit))]
+
+    def _score_session(self, session_id: str, title: str,
+                       query: str) -> Optional[Tuple[int, str]]:
+        best: Optional[Tuple[int, str]] = None
+        title_hit = fuzzy_score(query, title)
+        if title_hit is not None:
+            best = (title_hit[0] * SEARCH_TITLE_WEIGHT + SEARCH_TITLE_BONUS,
+                    _snippet(title, title_hit[1]))
+        scanned = 0
+        for row in self._query(
+                "SELECT content FROM messages WHERE session_id = ? ORDER BY seq",
+                (session_id,)):
+            for line in (row["content"] or "").splitlines():
+                if not line.strip():
+                    continue
+                scanned += 1
+                if scanned > SEARCH_MAX_LINES:
+                    break
+                hit = fuzzy_score(query, line)
+                if hit is None:
+                    continue
+                if best is None or hit[0] > best[0]:
+                    best = (hit[0], _snippet(line, hit[1]))
+            if scanned > SEARCH_MAX_LINES:
+                break
+        return best
+
+    def delete(self, session_id: str):
+        with self._lock:
+            conn = self.connect()
+            conn.execute("DELETE FROM snapshots WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM compactions WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.commit()
+
+
+class Session:
+    """A conversation plus the file snapshots that make it revertible."""
+
+    def __init__(self, store: SessionStore, session_id: str, title: str = "",
+                 cwd: str = "", provider: str = "", model: str = "",
+                 created: float = 0.0, updated: float = 0.0,
+                 archived: bool = False):
+        self.store = store
+        self.id = session_id
+        self.title = title
+        self.cwd = cwd
+        self.provider = provider
+        self.model = model
+        self.created = created
+        self.updated = updated
+        self.archived = archived
+        self.messages: List[Msg] = []
+        # Sequence number of each entry in `messages`. After a compaction the
+        # numbers are no longer 1..n (folded rows are gone and snapshots still
+        # point at the old ones), so index and seq must be tracked separately.
+        self.seqs: List[int] = []
+        self._seq = 0
+        # The revert point new snapshots belong to; None until a run starts.
+        self._checkpoint: Optional[int] = None
+
+    # --- loading ---------------------------------------------------------
+
+    def reload(self):
+        """Re-read messages from the database into `self.messages`."""
+        rows = self.store._query(
+            "SELECT seq, role, content, tool_calls, tool_call_id, display "
+            "FROM messages WHERE session_id = ? ORDER BY seq", (self.id,))
+        self.messages = [Msg(role=row["role"], content=row["content"] or "",
+                             tool_calls=_deserialize_calls(row["tool_calls"]),
+                             tool_call_id=row["tool_call_id"] or "",
+                             display=_deserialize_display(row["display"]))
+                         for row in rows]
+        self.seqs = [int(row["seq"]) for row in rows]
+        self._seq = rows[-1]["seq"] if rows else 0
+
+    # --- messages --------------------------------------------------------
+
+    def append(self, message: Msg, tokens: Optional[int] = None) -> int:
+        """
+        Persist one message immediately; returns its seq.
+
+        `tokens` is the provider's own count for this message when the caller
+        has one. It is stored as-is and never invented: a NULL means "not
+        reported", which token_totals() then fills in with an estimate.
+        """
+        now = time.time()
+        # Allocating the seq under the store lock: two threads (the task tool
+        # runs tools off the main thread) would otherwise pick the same seq and
+        # INSERT OR REPLACE would silently drop one of the messages.
+        with self.store._lock:
+            seq = self._seq + 1
+            conn = self.store.connect()
+            conn.execute(
+                "INSERT OR REPLACE INTO messages "
+                "(session_id, seq, role, content, tool_calls, tool_call_id, "
+                "display, created, tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (self.id, seq, message.role, message.content or "",
+                 _serialize_calls(message.tool_calls), message.tool_call_id or "",
+                 json.dumps(message.display or {}, default=str), now,
+                 None if tokens is None else int(tokens)))
+            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
+                         (now, self.id))
+            conn.commit()
+            # Only after the write succeeded, so a failed insert cannot leave a
+            # hole in the sequence or a message in memory that is not on disk.
+            self._seq = seq
+            self.updated = now
+            self.messages.append(message)
+            self.seqs.append(seq)
+        if message.role == "user":
+            self.auto_title(message.content)
+        return seq
+
+    def extend(self, messages: List[Msg]):
+        for message in messages:
+            self.append(message)
+
+    def set_tokens(self, seq: int, tokens: Optional[int]):
+        """Attach (or clear) a provider token count for an already stored message."""
+        self.store._write("UPDATE messages SET tokens = ? WHERE session_id = ? AND seq = ?",
+                          (None if tokens is None else int(tokens), self.id, int(seq)))
+
+    def token_totals(self) -> Dict[str, Any]:
+        """
+        Token usage of the stored history.
+
+        Messages the caller reported a count for are summed as reported;
+        the rest are estimated with context.message_tokens so the total is
+        always usable, and "recorded"/"estimated" say how much of it is which.
+        """
+        rows = self.store._query(
+            "SELECT role, content, tool_calls, tokens FROM messages "
+            "WHERE session_id = ? ORDER BY seq", (self.id,))
+        recorded = estimated = counted = 0
+        by_role: Dict[str, int] = {}
+        for row in rows:
+            value = row["tokens"]
+            if value is None:
+                value = message_tokens(Msg(
+                    role=row["role"], content=row["content"] or "",
+                    tool_calls=_deserialize_calls(row["tool_calls"])))
+                estimated += value
+            else:
+                value = int(value)
+                recorded += value
+                counted += 1
+            by_role[row["role"]] = by_role.get(row["role"], 0) + value
+        return {"total": recorded + estimated, "recorded": recorded,
+                "estimated": estimated, "counted": counted,
+                "messages": len(rows), "by_role": by_role}
+
+    # --- title and state -------------------------------------------------
+
+    def rename(self, title: str) -> str:
+        """Set the title explicitly; returns the stored (stripped) value."""
+        self.title = (title or "").strip()
+        self.updated = time.time()
+        self.store._write("UPDATE sessions SET title = ?, updated = ? WHERE id = ?",
+                          (self.title, self.updated, self.id))
+        return self.title
+
+    def set_title(self, text: str):
+        """Older name for rename(); kept because the REPL and TUI call it."""
+        self.rename(text)
+
+    def touch(self) -> float:
+        """Mark the session as active now so it sorts to the top of a listing."""
+        self.updated = time.time()
+        self.store._write("UPDATE sessions SET updated = ? WHERE id = ?",
+                          (self.updated, self.id))
+        return self.updated
+
+    def archive(self):
+        """Hide the session from the default listing without deleting it."""
+        self._set_archived(True)
+
+    def unarchive(self):
+        self._set_archived(False)
+
+    def _set_archived(self, flag: bool):
+        self.archived = bool(flag)
+        # `updated` is deliberately left alone: archiving is not activity, and
+        # unarchiving must not push an old session to the top of the list.
+        self.store._write("UPDATE sessions SET archived = ? WHERE id = ?",
+                          (1 if flag else 0, self.id))
+
+    def auto_title(self, first_user_message: str) -> str:
+        """Derive a short title from the first prompt, unless one is already set."""
+        if self.title.strip():
+            return self.title
+        title = summarize_title(first_user_message)
+        if title:
+            self.set_title(title)
+        return self.title
+
+    # --- revert points ---------------------------------------------------
+
+    def checkpoint(self) -> int:
+        """Mark a revert point before a run; returns the seq to revert back to."""
+        self._checkpoint = self._seq
+        return self._checkpoint
+
+    @property
+    def current_point(self) -> int:
+        """The revert point snapshots attach to, opened implicitly if needed."""
+        if self._checkpoint is None:
+            self._checkpoint = self._seq
+        return self._checkpoint
+
+    def last_checkpoint(self) -> Optional[int]:
+        """
+        The newest revert point: the open in-memory one or the newest one that
+        has snapshots, whichever is later.
+
+        Both halves are needed. The stored maximum survives a restart, but a run
+        that only talked (no file edits) leaves no snapshot row, and reverting to
+        the stored maximum would then throw away that run *plus* every earlier
+        one. The open checkpoint alone is not enough either — it is None in a
+        session that was just loaded from disk.
+        """
+        rows = self.store._query(
+            "SELECT MAX(seq) AS seq FROM snapshots WHERE session_id = ?", (self.id,))
+        stored = int(rows[0]["seq"]) if rows and rows[0]["seq"] is not None else None
+        if stored is None:
+            return self._checkpoint
+        if self._checkpoint is None:
+            return stored
+        return max(stored, self._checkpoint)
+
+    def record_snapshot(self, path: str, original: Optional[str]):
+        """
+        Remember a file's pre-edit content for the current revert point.
+
+        Only the first record for a (revert point, path) is kept — later edits in
+        the same run must not overwrite the content the run started with. The key
+        is the realpath, matching ToolContext.resolve(), so /var/x and
+        /private/var/x cannot become two rows that then restore over each other.
+        """
+        self.store._write(
+            "INSERT OR IGNORE INTO snapshots (session_id, seq, path, original, created) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (self.id, self.current_point, os.path.realpath(path), original, time.time()))
+
+    def snapshots(self, seq: int = 0) -> Dict[str, Optional[str]]:
+        """Original content per path for every revert point at or after `seq`."""
+        rows = self.store._query(
+            "SELECT path, original FROM snapshots WHERE session_id = ? AND seq >= ? "
+            "ORDER BY seq DESC, created DESC, rowid DESC", (self.id, int(seq)))
+        # Descending order means the *last* row written for a path is the
+        # earliest one recorded, i.e. the true pre-run content.
+        originals: Dict[str, Optional[str]] = {}
+        for row in rows:
+            originals[row["path"]] = row["original"]
+        return originals
+
+    # --- revert ----------------------------------------------------------
+
+    def revert_to(self, seq: int) -> List[str]:
+        """
+        Undo everything after message `seq`: restore snapshotted files, drop the
+        later messages, and return the paths that were restored. A path that
+        could not be restored is reported as "path (failed: reason)" rather than
+        aborting the rest of the revert.
+        """
+        seq = max(0, int(seq))
+        restored: List[str] = []
+        for path, original in self.snapshots(seq).items():
+            target = Path(path)
+            if not self._within_cwd(path):
+                # Snapshot rows are just data: a database moved between
+                # machines, or a tool that followed a symlink out of the
+                # project, must never let undo write outside the session.
+                restored.append("%s (skipped: outside %s)" % (path, self.cwd))
+                continue
+            try:
+                if original is None:
+                    if target.is_dir():
+                        raise IsADirectoryError(f"{path} is a directory")
+                    if target.exists() or target.is_symlink():
+                        os.unlink(target)
+                else:
+                    _atomic_write(target, original)
+                restored.append(path)
+            except (OSError, ValueError) as e:
+                restored.append(f"{path} (failed: {_reason(e)})")
+
+        with self.store._lock:
+            conn = self.store.connect()
+            conn.execute("DELETE FROM messages WHERE session_id = ? AND seq > ?",
+                         (self.id, seq))
+            conn.execute("DELETE FROM snapshots WHERE session_id = ? AND seq >= ?",
+                         (self.id, seq))
+            # A compaction record whose summary message just disappeared would
+            # otherwise describe messages that are no longer in the timeline.
+            conn.execute("DELETE FROM compactions WHERE session_id = ? AND seq > ?",
+                         (self.id, seq))
+            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
+                         (time.time(), self.id))
+            conn.commit()
+
+        self.reload()
+        self._checkpoint = None
+        return restored
+
+    def revert_last(self) -> List[str]:
+        """Undo the most recent checkpoint. No checkpoint means nothing to do."""
+        point = self.last_checkpoint()
+        if point is None:
+            return []
+        return self.revert_to(point)
+
+    def _within_cwd(self, path: str) -> bool:
+        """
+        True when `path` lies inside the session's own directory.
+
+        A session with no recorded directory (rows from before cwd was stored)
+        is trusted, because there is nothing to compare against and refusing
+        every restore would break undo for those sessions entirely.
+        """
+        root = (self.cwd or "").strip()
+        if not root:
+            return True
+        try:
+            root_real = os.path.realpath(root)
+            target = os.path.realpath(path)
+        except (OSError, ValueError):
+            return False
+        if target == root_real:
+            return True
+        return target.startswith(root_real.rstrip(os.sep) + os.sep)
+
+    # --- compaction ------------------------------------------------------
+
+    def needs_compaction(self, window: int, reserve: float = 0.4) -> bool:
+        """
+        True when the stored history no longer fits its share of `window`.
+
+        Estimated with context.message_tokens rather than with the recorded
+        provider counts: those are per-request totals that overlap heavily
+        between messages, so summing them would demand compaction far too
+        early. Literally the same budget rule as context.compact_messages --
+        the same function -- so the automatic trigger and this answer can never
+        disagree.
+        """
+        return needs_compaction(self.messages, window, reserve)
+
+    def previous_summary(self) -> str:
+        """The newest stored summary, so the next one updates it in place.
+
+        opencode re-anchors: every compaction rewrites one summary rather than
+        stacking a summary of a summary, which is what keeps a session's oldest
+        decisions readable after the tenth fold.
+        """
+        rows = self.store._query(
+            "SELECT summary FROM compactions WHERE session_id = ? "
+            "ORDER BY id DESC LIMIT 1", (self.id,))
+        return (rows[0]["summary"] or "") if rows else ""
+
+    def compact_now(self, keep_last: int = DEFAULT_COMPACT_KEEP, *,
+                    summary: str = "", provider: Any = None, model: str = "",
+                    trigger: str = "manual",
+                    tail_turns: int = DEFAULT_TAIL_TURNS,
+                    keep_tokens: int = MAX_KEEP_TOKENS,
+                    max_tokens: int = SUMMARY_MAX_TOKENS) -> CompactionResult:
+        """
+        Fold the old turns into one summary, in memory and on disk.
+
+        With a `provider` the summary is written by the model, the way opencode
+        does it: the folded turns go up as a transcript and come back as the
+        anchored summary that replaces them. Without one — or when that call
+        fails — the mechanical digest from summarize_messages() is stored
+        instead, so a failing summariser costs detail and never the
+        conversation. The folded messages themselves are kept verbatim in the
+        compactions table either way, so restore_compaction() can undo it.
+
+        Sequence numbers are never renumbered: snapshot rows are keyed by seq,
+        and renumbering would silently point them at the wrong revert points.
+        """
+        plan = plan_compaction(self.messages, keep_last=int(keep_last),
+                               tail_turns=tail_turns, keep_tokens=keep_tokens)
+        if not plan.folded:
+            return CompactionResult(messages=list(self.messages),
+                                    kept=len(self.messages), trigger=trigger)
+
+        folded = [self.messages[index] for index in plan.folded]
+        # Planned and summarised outside the store lock: the provider round can
+        # take tens of seconds, and holding the lock through it would block
+        # every other thread's append. The write below re-checks that nothing
+        # moved underneath us.
+        seen = list(self.seqs)
+        text, error, summarized = (summary or "").strip(), "", True
+        if not text:
+            if provider is None:
+                error, summarized = "no summariser available", False
+            else:
+                text, error = summarize_with_reason(
+                    folded, provider, model,
+                    previous_summary=self.previous_summary(),
+                    max_tokens=max_tokens)
+                summarized = bool(text)
+        if not text:
+            text = summarize_messages(folded)
+
+        with self.store._lock:
+            if self.seqs[:len(seen)] != seen:
+                # A revert or a concurrent fold rewrote the timeline while the
+                # summary was being written; the plan describes messages that
+                # may no longer be there, so refuse rather than delete blindly.
+                return CompactionResult(
+                    messages=list(self.messages), kept=len(self.messages),
+                    error="the session changed while it was being summarised",
+                    trigger=trigger)
+            folded_seqs = [seen[index] for index in plan.folded]
+            summary_seq = folded_seqs[-1]
+            first_seq = folded_seqs[0]
+            # Expressed as "everything up to the summary except what stays"
+            # rather than as an IN list of the folded seqs: the kept set before
+            # the boundary is only the system and pinned messages, while the
+            # folded one can be thousands of rows and blow sqlite's variable
+            # limit.
+            protected = [seq for seq in
+                         (seen[index] for index in plan.keep)
+                         if seq <= summary_seq]
+            holes = " AND seq NOT IN (%s)" % ", ".join("?" * len(protected)) \
+                if protected else ""
+            params = (self.id, summary_seq, *protected)
+            conn = self.store.connect()
+            stored = conn.execute(
+                "SELECT seq, role, content, tool_calls, tool_call_id, display, "
+                "created, tokens FROM messages WHERE session_id = ? AND seq <= ?"
+                + holes + " ORDER BY seq", params).fetchall()
+            now = time.time()
+            conn.execute("DELETE FROM messages WHERE session_id = ? AND seq <= ?"
+                         + holes, params)
+            # role "user": the summary must be replayed as context, and a
+            # history that opens with an assistant turn is rejected by some
+            # providers while a user turn is accepted by all of them.
+            conn.execute(
+                "INSERT INTO messages "
+                "(session_id, seq, role, content, tool_calls, tool_call_id, "
+                "display, created, tokens) VALUES (?, ?, ?, ?, '[]', '', ?, ?, NULL)",
+                (self.id, summary_seq, "user", text,
+                 json.dumps({"summary": True, "folded": len(folded)}), now))
+            conn.execute(
+                "INSERT INTO compactions (session_id, seq, created, folded, "
+                "first_seq, last_seq, summary, messages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (self.id, summary_seq, now, len(folded), first_seq, summary_seq,
+                 text, json.dumps([dict(row) for row in stored], default=str)))
+            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
+                         (now, self.id))
+            conn.commit()
+            self.updated = now
+            self.reload()
+        return CompactionResult(messages=list(self.messages), folded=len(folded),
+                                kept=len(plan.keep), summary=text,
+                                summarized=summarized, error=error,
+                                trigger=trigger)
+
+    def compact(self, keep_last: int = DEFAULT_COMPACT_KEEP, summary: str = "",
+                provider: Any = None, model: str = "") -> int:
+        """compact_now() for callers that only want the folded count."""
+        return self.compact_now(keep_last=keep_last, summary=summary,
+                                provider=provider, model=model).folded
+
+    def compactions(self) -> List[Dict[str, Any]]:
+        """Every compaction of this session, oldest first."""
+        rows = self.store._query(
+            "SELECT id, seq, created, folded, first_seq, last_seq, summary, messages "
+            "FROM compactions WHERE session_id = ? ORDER BY id", (self.id,))
+        records = []
+        for row in rows:
+            try:
+                messages = json.loads(row["messages"])
+            except (TypeError, ValueError):
+                messages = []
+            records.append({
+                "id": int(row["id"]),
+                "seq": int(row["seq"]),
+                "created": row["created"] or 0.0,
+                "folded": int(row["folded"]),
+                "first_seq": int(row["first_seq"]),
+                "last_seq": int(row["last_seq"]),
+                "summary": row["summary"] or "",
+                "messages": messages if isinstance(messages, list) else [],
+            })
+        return records
+
+    def restore_compaction(self, record_id: Optional[int] = None) -> int:
+        """
+        Undo a compaction: drop its summary message and put the folded ones
+        back at their original seqs. Defaults to the most recent compaction.
+        Returns how many messages were restored.
+        """
+        with self.store._lock:
+            conn = self.store.connect()
+            if record_id is None:
+                rows = conn.execute(
+                    "SELECT id, seq, messages FROM compactions WHERE session_id = ? "
+                    "ORDER BY id DESC LIMIT 1", (self.id,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, seq, messages FROM compactions "
+                    "WHERE session_id = ? AND id = ?",
+                    (self.id, int(record_id))).fetchall()
+            if not rows:
+                return 0
+            row = rows[0]
+            try:
+                stored = json.loads(row["messages"])
+            except (TypeError, ValueError):
+                stored = []
+            stored = [item for item in stored if isinstance(item, dict)]
+            conn.execute("DELETE FROM messages WHERE session_id = ? AND seq = ?",
+                         (self.id, row["seq"]))
+            for item in stored:
+                conn.execute(
+                    "INSERT OR REPLACE INTO messages "
+                    "(session_id, seq, role, content, tool_calls, tool_call_id, "
+                    "display, created, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (self.id, int(item.get("seq", 0)), str(item.get("role", "user")),
+                     item.get("content") or "", item.get("tool_calls") or "[]",
+                     item.get("tool_call_id") or "", item.get("display") or "{}",
+                     item.get("created"), item.get("tokens")))
+            conn.execute("DELETE FROM compactions WHERE id = ?", (int(row["id"]),))
+            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
+                         (time.time(), self.id))
+            conn.commit()
+            self.reload()
+        return len(stored)
+
+    # --- reporting -------------------------------------------------------
+
+    def files_touched(self) -> List[str]:
+        """Every file this session snapshotted, i.e. every file it changed."""
+        rows = self.store._query(
+            "SELECT DISTINCT path FROM snapshots WHERE session_id = ? ORDER BY path",
+            (self.id,))
+        return [row["path"] for row in rows]
+
+    def stats(self) -> Dict[str, Any]:
+        """Everything a status view wants to say about this session."""
+        rows = self.store._query(
+            "SELECT seq, role, content, tool_calls, display, created "
+            "FROM messages WHERE session_id = ? ORDER BY seq", (self.id,))
+        roles: Dict[str, int] = {}
+        tools: Dict[str, int] = {}
+        first: Optional[float] = None
+        last: Optional[float] = None
+        for row in rows:
+            roles[row["role"]] = roles.get(row["role"], 0) + 1
+            for call in _deserialize_calls(row["tool_calls"]):
+                tools[call.name] = tools.get(call.name, 0) + 1
+            stamp = row["created"]
+            if stamp:
+                first = stamp if first is None else min(first, stamp)
+                last = stamp if last is None else max(last, stamp)
+        # Messages written before per-message timestamps existed carry none;
+        # the session's own dates are the honest fallback.
+        if rows and first is None:
+            first, last = self.created or None, self.updated or None
+        compactions = self.compactions()
+        return {
+            "id": self.id,
+            "title": self.title,
+            "cwd": self.cwd,
+            "provider": self.provider,
+            "model": self.model,
+            "archived": self.archived,
+            "created": self.created,
+            "updated": self.updated,
+            "messages": len(rows),
+            "roles": roles,
+            "tools": tools,
+            "tool_calls": sum(tools.values()),
+            "first_message": first,
+            "last_message": last,
+            "files": self.files_touched(),
+            "tokens": self.token_totals(),
+            "compactions": len(compactions),
+            "folded_messages": sum(item["folded"] for item in compactions),
+        }
+
+    # --- export ----------------------------------------------------------
+
+    def export(self, fmt: str = "markdown") -> str:
+        """Render the transcript. fmt is markdown, text or json."""
+        name = (fmt or "markdown").strip().lower()
+        if name in ("markdown", "md"):
+            return self._export_markdown()
+        if name in ("text", "txt", "plain"):
+            return self._export_text()
+        if name == "json":
+            return self.export_json()
+        raise ValueError("unknown export format: %s" % fmt)
+
+    def export_json(self, indent: int = 2) -> str:
+        """The transcript as JSON text, for tooling rather than for reading."""
+        return json.dumps(self.export_data(), indent=indent, default=str)
+
+    def export_data(self) -> Dict[str, Any]:
+        """The dict export_json() serialises; useful on its own for the desktop UI."""
+        messages = []
+        for index, message in enumerate(self.messages):
+            messages.append({
+                "seq": self.seqs[index] if index < len(self.seqs) else index + 1,
+                "role": message.role,
+                "content": message.content or "",
+                "tool_calls": [asdict(call) for call in message.tool_calls],
+                "tool_call_id": message.tool_call_id or "",
+                "display": message.display or {},
+            })
+        return {
+            "id": self.id,
+            "title": self.title,
+            "cwd": self.cwd,
+            "provider": self.provider,
+            "model": self.model,
+            "created": self.created,
+            "updated": self.updated,
+            "archived": self.archived,
+            "messages": messages,
+            "stats": self.stats(),
+        }
+
+    def _header_lines(self) -> List[str]:
+        model = "/".join(part for part in (self.provider, self.model) if part)
+        rows = [("Session", self.id), ("Directory", self.cwd), ("Model", model),
+                ("Created", _timestamp(self.created)),
+                ("Updated", _timestamp(self.updated)),
+                ("Messages", str(len(self.messages)))]
+        return ["- %s: %s" % (label, value) for label, value in rows if value]
+
+    def _export_markdown(self) -> str:
+        out = ["# " + (self.title or "Untitled session"), ""]
+        out.extend(self._header_lines())
+        for message in self.messages:
+            out.append("")
+            if message.role == "user":
+                out.append("## User")
+                out.append("")
+                out.append(message.content or "")
+            elif message.role == "assistant":
+                out.append("## Assistant")
+                out.append("")
+                if message.content:
+                    out.append(message.content)
+                for call in message.tool_calls:
+                    out.append("")
+                    out.append("**%s** `%s`" % (
+                        call.name, json.dumps(call.arguments, default=str)))
+            elif message.role == "tool":
+                display = message.display or {}
+                name = str(display.get("tool") or "tool")
+                title = str(display.get("title") or "")
+                heading = "### Tool: %s" % name
+                if title:
+                    heading += " - %s" % title
+                out.append(heading)
+                out.append("")
+                diff = display.get("diff")
+                if display.get("denied"):
+                    out.append("_denied by the user_")
+                elif isinstance(diff, str) and diff.strip():
+                    # The diff is the readable form of an edit; the raw output
+                    # of the tool repeats it less legibly.
+                    out.append(_fence(diff, "diff"))
+                else:
+                    out.append(_fence(message.content or ""))
+            else:
+                out.append("## " + (message.role or "message").title())
+                out.append("")
+                out.append(message.content or "")
+        return "\n".join(out).rstrip() + "\n"
+
+    def _export_text(self) -> str:
+        out = [self.title or "Untitled session"]
+        out.extend(line[2:] for line in self._header_lines())
+        for message in self.messages:
+            display = message.display or {}
+            label = message.role.upper()
+            if message.role == "tool":
+                label = "TOOL %s" % (display.get("tool") or "")
+            out.append("")
+            out.append("--- %s ---" % label.strip())
+            if message.content:
+                out.append(message.content)
+            for call in message.tool_calls:
+                out.append("%s(%s)" % (call.name,
+                                       json.dumps(call.arguments, default=str)))
+        return "\n".join(out).rstrip() + "\n"
+
+
+def capture_modified(session: Session, ctx) -> List[str]:
+    """
+    Snapshot every file an agent run touched.
+
+    `ctx` is a ToolContext: its `modified_files` maps absolute path -> the text
+    the file held before the run, or None when the file was created. Returns the
+    paths that were recorded.
+    """
+    recorded: List[str] = []
+    for path, original in dict(getattr(ctx, "modified_files", {}) or {}).items():
+        session.record_snapshot(path, original)
+        recorded.append(os.path.realpath(path))
+    return recorded

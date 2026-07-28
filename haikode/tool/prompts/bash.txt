@@ -1,0 +1,29 @@
+Executes a command in a shell and returns its output.
+
+Usage:
+- The command runs through the system shell, so pipes, redirects, `&&`, `||`
+  and subshells all work.
+- Provide a `workdir` instead of using `cd`; the working directory does not
+  persist between calls.
+- `timeout` is in seconds (default 60, maximum 600).
+- Output is truncated if it is very large; use `head`/`tail`/`grep` to narrow it.
+
+IMPORTANT: This tool is for terminal operations like builds, tests, git and
+package management. DO NOT use it for file operations (reading, writing,
+editing, searching, finding files) — use the specialized tools for that.
+
+# Haiku OS notes
+- The package manager is `pkgman` (search / install / full-sync), not apt/brew.
+- Native builds use `jam` (Jamfile), `make`, or `g++ ... -lbe` for BeAPI apps.
+- GUI apps run as teams; `ps` lists them and `kill <team-id>` stops one.
+- System paths: /boot/system/bin, /boot/system/apps, /boot/home/config.
+- Do not launch GUI applications unless the user asks — they open on the
+  machine's physical screen.
+
+# Git
+- Only commit, amend, push or create PRs when explicitly requested.
+- Before committing, inspect `git status`, `git diff` and `git log --oneline -10`;
+  stage only intended files and never commit secrets.
+- Write a concise commit message that matches the repo style.
+- Do not update git config, skip hooks, use interactive `-i`, force-push, or
+  create empty commits unless explicitly requested.

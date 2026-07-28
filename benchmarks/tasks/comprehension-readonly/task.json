@@ -1,0 +1,30 @@
+{
+  "name": "comprehension-readonly",
+  "category": "comprehension",
+  "description": "One of six functions slices one element too few. Name it, change nothing.",
+  "proves": "reading and reasoning about code without touching it — and that a read-only instruction actually suppresses edits",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 480,
+  "prompt": "Exactly one function in the `series/` package has an off-by-one error: it reduces over one element fewer than its docstring promises. Which function is it?\n\nAnswer with the function's name and nothing else. This is a read-only question: do not create, modify or delete any file, and do not run any command that changes the project.",
+  "pre_checks": [
+    {"type": "file_matches", "path": "series/windows.py",
+     "pattern": "values\\[start:start \\+ size - 1\\]",
+     "label": "the seeded off-by-one is present"},
+    {"type": "command_exit_zero",
+     "command": "python3 -c \"import series; assert series.moving_sum([1,2,3],2)==[3,5]; assert series.window_max([1,2,3],2)==[2,3]\"",
+     "label": "the decoy functions are genuinely correct"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "answer_matches", "pattern": "\\bwindow_average\\b",
+     "label": "named the buggy function"},
+    {"type": "answer_not_matches", "pattern": "\\b(moving_sum|window_max|normalize_series|clamp_series)\\b",
+     "label": "did not also name an innocent function"},
+    {"type": "no_files_modified", "label": "the project is byte-identical"},
+    {"type": "tool_not_used", "tool": "write", "label": "the write tool was never called"},
+    {"type": "tool_not_used", "tool": "edit", "label": "the edit tool was never called"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

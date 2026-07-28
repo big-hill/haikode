@@ -1,0 +1,10 @@
+#!/bin/sh
+# Installed as /boot/home/config/non-packaged/bin/haikode.
+# A "hai" symlink to this launcher is installed alongside it so older
+# muscle memory, scripts and Deskbar entries keep working.
+set -eu
+
+# HAI_HOME is honoured for pre-rename installs that still export it.
+HAIKODE_HOME="${HAIKODE_HOME:-${HAI_HOME:-/boot/home/haikode}}"
+export PYTHONPATH="$HAIKODE_HOME${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m haikode "$@"

@@ -1,0 +1,443 @@
+"""Standalone subscription OAuth for Haiku.
+
+This module mirrors the public device-code flows implemented by OpenCode's
+built-in OpenAI Codex and xAI plugins, but runs entirely inside haikode's
+Python process.  It deliberately has no OpenCode server, Bun, Node, or SSH
+runtime dependency.
+
+OAuth tokens are stored in a separate mode-0600 JSON file.  API keys continue
+to use Haiku BKeyStore through :mod:`haikode.config`.
+"""
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
+
+from .config import register_secret, secure_write_json, settings_lock
+from .net import USER_AGENT
+
+
+CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CHATGPT_ISSUER = "https://auth.openai.com"
+CHATGPT_DEVICE_URL = f"{CHATGPT_ISSUER}/codex/device"
+CHATGPT_API_BASE = "https://chatgpt.com/backend-api/codex"
+
+# Public Grok CLI OAuth client used by OpenCode's built-in xAI plugin.
+XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+XAI_ISSUER = "https://auth.x.ai"
+XAI_DEVICE_AUTHORIZATION_URL = f"{XAI_ISSUER}/oauth2/device/code"
+XAI_TOKEN_URL = f"{XAI_ISSUER}/oauth2/token"
+XAI_SCOPE = "openid profile email offline_access grok-cli:access api:access"
+XAI_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+POLL_SAFETY_SECONDS = 3
+REFRESH_SKEW_SECONDS = 120
+
+
+class OAuthError(RuntimeError):
+    pass
+
+
+def _json_bytes(value: Dict[str, Any]) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def _http_json(request: urllib.request.Request, timeout: int = 30,
+               opener: Callable = urllib.request.urlopen) -> Tuple[int, Dict[str, Any]]:
+    try:
+        with opener(request, timeout=timeout) as response:
+            raw = response.read()
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        raw = exc.read()
+    try:
+        body = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        body = {"error_description": raw.decode("utf-8", errors="replace")[:500]}
+    return int(status), body if isinstance(body, dict) else {}
+
+
+def _post_json(url: str, value: Dict[str, Any], timeout: int = 30,
+               opener: Callable = urllib.request.urlopen) -> Tuple[int, Dict[str, Any]]:
+    request = urllib.request.Request(
+        url, data=_json_bytes(value), method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
+    return _http_json(request, timeout, opener)
+
+
+def _post_form(url: str, value: Dict[str, Any], timeout: int = 30,
+               opener: Callable = urllib.request.urlopen) -> Tuple[int, Dict[str, Any]]:
+    request = urllib.request.Request(
+        url, data=urllib.parse.urlencode(value).encode("utf-8"), method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        })
+    return _http_json(request, timeout, opener)
+
+
+def _error_detail(body: Dict[str, Any]) -> str:
+    return str(body.get("error_description") or body.get("error") or "").strip()
+
+
+def _jwt_claims(token: str) -> Dict[str, Any]:
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        value = json.loads(decoded.decode("utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def extract_chatgpt_account_id(tokens: Dict[str, Any]) -> str:
+    for key in ("id_token", "access_token"):
+        claims = _jwt_claims(str(tokens.get(key, "")))
+        auth = claims.get("https://api.openai.com/auth", {})
+        candidates = [
+            claims.get("chatgpt_account_id"),
+            auth.get("chatgpt_account_id") if isinstance(auth, dict) else None,
+        ]
+        organizations = claims.get("organizations", [])
+        if isinstance(organizations, list) and organizations:
+            first = organizations[0]
+            if isinstance(first, dict):
+                candidates.append(first.get("id"))
+        for candidate in candidates:
+            if candidate:
+                return str(candidate)
+    return ""
+
+
+class OAuthStore:
+    def __init__(self, path: str):
+        self.path = Path(path)
+
+    @classmethod
+    def for_config(cls, config) -> "OAuthStore":
+        return cls(str(config.path.parent / "oauth.json"))
+
+    def _read(self) -> Dict[str, Any]:
+        try:
+            with self.path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write(self, value: Dict[str, Any]):
+        """Caller must hold settings_lock(self.path)."""
+        secure_write_json(self.path, value)
+
+    def get(self, provider: str) -> Dict[str, Any]:
+        value = self._read().get(provider, {})
+        if not isinstance(value, dict):
+            return {}
+        for field in ("access", "refresh"):
+            register_secret(str(value.get(field, "")))
+        return dict(value)
+
+    def _set_locked(self, provider: str, tokens: Dict[str, Any]):
+        """Merge one provider into the file. Caller holds the lock."""
+        value = self._read()
+        value[provider] = dict(tokens)
+        self._write(value)
+
+    def set(self, provider: str, tokens: Dict[str, Any]):
+        # The read and the write must be one critical section: two providers
+        # refreshing at the same time would otherwise each write back the file
+        # they read, and the loser's tokens would vanish.
+        with settings_lock(self.path):
+            self._set_locked(provider, tokens)
+
+    def remove(self, provider: str):
+        with settings_lock(self.path):
+            value = self._read()
+            if provider in value:
+                del value[provider]
+                self._write(value)
+
+    def status(self, provider: str) -> str:
+        tokens = self.get(provider)
+        return "oauth" if tokens.get("refresh") or tokens.get("access") else "none"
+
+    def pending_path(self, provider: str) -> Path:
+        safe = "".join(c for c in provider if c.isalnum() or c in "-_")
+        return self.path.with_name(f"oauth-{safe}.pending.json")
+
+    def save_pending(self, provider: str, pending: Dict[str, Any]):
+        # A device code is a bearer credential until it is redeemed, so it gets
+        # the same 0600-from-creation treatment as the tokens themselves.
+        secure_write_json(self.pending_path(provider), pending)
+
+    def load_pending(self, provider: str) -> Dict[str, Any]:
+        path = self.pending_path(provider)
+        try:
+            with path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def clear_pending(self, provider: str):
+        try:
+            self.pending_path(provider).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def begin_device_authorization(provider: str,
+                               opener: Callable = urllib.request.urlopen) -> Dict[str, Any]:
+    now = int(time.time())
+    if provider == "chatgpt":
+        status, body = _post_json(
+            f"{CHATGPT_ISSUER}/api/accounts/deviceauth/usercode",
+            {"client_id": CHATGPT_CLIENT_ID}, opener=opener)
+        if status // 100 != 2:
+            raise OAuthError(
+                f"ChatGPT device authorization failed ({status}): {_error_detail(body)}")
+        required = ("device_auth_id", "user_code")
+        if any(not body.get(key) for key in required):
+            raise OAuthError("ChatGPT device response is missing an ID or user code")
+        interval = max(int(body.get("interval") or 5), 1)
+        return {
+            "provider": provider,
+            "device_auth_id": body["device_auth_id"],
+            "user_code": body["user_code"],
+            "verification_uri": CHATGPT_DEVICE_URL,
+            "verification_uri_complete": CHATGPT_DEVICE_URL,
+            "interval": interval,
+            "expires_at": now + int(body.get("expires_in") or 600),
+        }
+
+    if provider == "supergrok":
+        status, body = _post_form(XAI_DEVICE_AUTHORIZATION_URL, {
+            "client_id": XAI_CLIENT_ID,
+            "scope": XAI_SCOPE,
+        }, opener=opener)
+        if status // 100 != 2:
+            raise OAuthError(
+                f"xAI device authorization failed ({status}): {_error_detail(body)}")
+        required = ("device_code", "user_code", "verification_uri")
+        if any(not body.get(key) for key in required):
+            raise OAuthError("xAI device response is missing device_code, user_code or URL")
+        return {
+            "provider": provider,
+            "device_code": body["device_code"],
+            "user_code": body["user_code"],
+            "verification_uri": body["verification_uri"],
+            "verification_uri_complete": (
+                body.get("verification_uri_complete") or body["verification_uri"]),
+            "interval": max(int(body.get("interval") or 5), 1),
+            "expires_at": now + int(body.get("expires_in") or 300),
+        }
+
+    raise OAuthError(f"Unsupported subscription OAuth provider: {provider}")
+
+
+def _normalize_tokens(provider: str, tokens: Dict[str, Any],
+                      previous_refresh: str = "") -> Dict[str, Any]:
+    access = str(tokens.get("access_token", ""))
+    refresh = str(tokens.get("refresh_token") or previous_refresh)
+    if not access or not refresh:
+        raise OAuthError(f"{provider} token response is missing access/refresh token")
+    normalized = {
+        "type": "oauth",
+        "access": access,
+        "refresh": refresh,
+        "expires": int((time.time() + int(tokens.get("expires_in") or 3600)) * 1000),
+    }
+    if provider == "chatgpt":
+        account_id = extract_chatgpt_account_id(tokens)
+        if account_id:
+            normalized["account_id"] = account_id
+    return normalized
+
+
+def poll_device_authorization(provider: str, pending: Dict[str, Any],
+                              opener: Callable = urllib.request.urlopen,
+                              sleep: Callable[[float], None] = time.sleep,
+                              now: Callable[[], float] = time.time) -> Dict[str, Any]:
+    interval = max(int(pending.get("interval") or 5), 1)
+    deadline = int(pending.get("expires_at") or int(now()) + 300)
+
+    while now() < deadline:
+        if provider == "chatgpt":
+            status, body = _post_json(
+                f"{CHATGPT_ISSUER}/api/accounts/deviceauth/token", {
+                    "device_auth_id": pending.get("device_auth_id", ""),
+                    "user_code": pending.get("user_code", ""),
+                }, opener=opener)
+            if status // 100 == 2:
+                authorization_code = body.get("authorization_code")
+                verifier = body.get("code_verifier")
+                if not authorization_code or not verifier:
+                    raise OAuthError("ChatGPT authorization response is incomplete")
+                token_status, tokens = _post_form(f"{CHATGPT_ISSUER}/oauth/token", {
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": f"{CHATGPT_ISSUER}/deviceauth/callback",
+                    "client_id": CHATGPT_CLIENT_ID,
+                    "code_verifier": verifier,
+                }, opener=opener)
+                if token_status // 100 != 2:
+                    raise OAuthError(
+                        f"ChatGPT token exchange failed ({token_status}): "
+                        f"{_error_detail(tokens)}")
+                return _normalize_tokens(provider, tokens)
+            if status not in (403, 404):
+                raise OAuthError(
+                    f"ChatGPT device polling failed ({status}): {_error_detail(body)}")
+        else:
+            status, body = _post_form(XAI_TOKEN_URL, {
+                "grant_type": XAI_DEVICE_GRANT,
+                "client_id": XAI_CLIENT_ID,
+                "device_code": pending.get("device_code", ""),
+            }, opener=opener)
+            if status // 100 == 2:
+                return _normalize_tokens(provider, body)
+            error = str(body.get("error", ""))
+            if error == "slow_down":
+                interval += 5
+            elif error not in ("authorization_pending", ""):
+                if error in ("access_denied", "authorization_denied"):
+                    raise OAuthError("xAI device authorization was denied")
+                if error == "expired_token":
+                    raise OAuthError("xAI device code expired; run login again")
+                raise OAuthError(
+                    f"xAI device polling failed ({status}): {_error_detail(body)}")
+        remaining = max(0, deadline - now())
+        sleep(min(interval + POLL_SAFETY_SECONDS, remaining))
+
+    raise OAuthError(f"{provider} device authorization timed out")
+
+
+def refresh_tokens(provider: str, current: Dict[str, Any],
+                   opener: Callable = urllib.request.urlopen) -> Dict[str, Any]:
+    refresh = str(current.get("refresh", ""))
+    if not refresh:
+        raise OAuthError(f"No refresh token stored for {provider}; run `haikode login {provider}`")
+    if provider == "chatgpt":
+        url = f"{CHATGPT_ISSUER}/oauth/token"
+        client_id = CHATGPT_CLIENT_ID
+    elif provider == "supergrok":
+        url = XAI_TOKEN_URL
+        client_id = XAI_CLIENT_ID
+    else:
+        raise OAuthError(f"Unsupported subscription OAuth provider: {provider}")
+    status, tokens = _post_form(url, {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+        "client_id": client_id,
+    }, opener=opener)
+    if status // 100 != 2:
+        raise OAuthError(
+            f"{provider} token refresh failed ({status}): {_error_detail(tokens)}")
+    normalized = _normalize_tokens(provider, tokens, previous_refresh=refresh)
+    if provider == "chatgpt" and not normalized.get("account_id"):
+        normalized["account_id"] = current.get("account_id", "")
+    return normalized
+
+
+def _is_expired(tokens: Dict[str, Any]) -> bool:
+    expires = int(tokens.get("expires") or 0)
+    return expires <= int((time.time() + REFRESH_SKEW_SECONDS) * 1000)
+
+
+def access_token(provider: str, store: OAuthStore,
+                 opener: Callable = urllib.request.urlopen) -> Dict[str, Any]:
+    current = store.get(provider)
+    if not current.get("access"):
+        raise OAuthError(f"Not signed in to {provider}; run `haikode login {provider}`")
+    if not _is_expired(current):
+        return current
+    # Refreshing under the store lock keeps two processes from rotating the
+    # same refresh token, which would invalidate one of the two copies. The
+    # re-read is what makes it worthwhile: whoever waited usually finds the
+    # other process has already put a fresh token in place.
+    with settings_lock(store.path):
+        latest = store.get(provider)
+        if latest.get("access") and not _is_expired(latest):
+            return latest
+        # Prefer the stored refresh token, but never lose ours to a file that
+        # another process emptied or truncated between our two reads.
+        source = latest if latest.get("refresh") else current
+        refreshed = refresh_tokens(provider, source, opener=opener)
+        store._set_locked(provider, refreshed)
+    return refreshed
+
+
+def open_authorization_url(url: str):
+    try:
+        if webbrowser.open(url):
+            return
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(["open", url], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def login_interactive(provider: str, store: OAuthStore) -> Dict[str, Any]:
+    pending = begin_device_authorization(provider)
+    print(f"Open: {pending['verification_uri']}")
+    print(f"Code: {pending['user_code']}")
+    print("Waiting for authorization; Ctrl-C cancels locally.")
+    open_authorization_url(str(pending.get("verification_uri_complete")
+                               or pending["verification_uri"]))
+    tokens = poll_device_authorization(provider, pending)
+    store.set(provider, tokens)
+    return tokens
+
+
+def spawn_background_completion(provider: str, store: OAuthStore,
+                                pending: Dict[str, Any]):
+    store.save_pending(provider, pending)
+    env = os.environ.copy()
+    subprocess.Popen(
+        [sys.executable, "-m", "haikode.oauth", "complete", provider,
+         str(store.path)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+
+
+def complete_pending(provider: str, store: OAuthStore) -> int:
+    pending = store.load_pending(provider)
+    if not pending:
+        return 2
+    try:
+        tokens = poll_device_authorization(provider, pending)
+        store.set(provider, tokens)
+        return 0
+    except OAuthError:
+        return 1
+    finally:
+        store.clear_pending(provider)
+
+
+def main(argv=None) -> int:
+    argv = list(argv if argv is not None else sys.argv[1:])
+    if len(argv) == 3 and argv[0] == "complete":
+        return complete_pending(argv[1], OAuthStore(argv[2]))
+    print("usage: python3 -m haikode.oauth complete <provider> <store>",
+          file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

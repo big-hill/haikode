@@ -1,0 +1,33 @@
+{
+  "name": "build-jam",
+  "category": "build",
+  "description": "The build-make fixture, built with jam(1) — the native Haiku build tool — so the shell/build category is exercised with the toolchain haikode actually ships next to.",
+  "proves": "the same build round trip as build-make, but against jam, whose diagnostics and output layout differ from make's. Requires jam on PATH; the harness reports it as unavailable rather than as a failure when jam is missing.",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 900,
+  "command_timeout": 120,
+  "requires_commands": ["jam"],
+  "ignore": ["app", "*.o", "bin", "bin/*"],
+  "notes": "Not verified on macOS: jam is not installed there. On Haiku, `pkgman install jam`.",
+  "prompt": "This C project does not build. Run `jam`, read the compiler error, and fix the source so the build succeeds. Then run `./app` and check the output.\n\n`./app` must print exactly `clamped=7`. Do not edit the Jamfile and do not change `src/util.c` or `src/util.h` — the bug is on the calling side.",
+  "pre_checks": [
+    {"type": "command_exit_nonzero", "command": "jam",
+     "label": "the jam build fails before the agent runs"},
+    {"type": "file_matches", "path": "src/main.c", "pattern": "clamp\\(raw, 0\\)",
+     "label": "the seeded call site is present"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "command_exit_zero", "command": "jam", "label": "`jam` exits 0"},
+    {"type": "command_stdout_matches", "command": "./app",
+     "pattern": "clamped=7", "label": "the built binary prints clamped=7"},
+    {"type": "file_unchanged", "path": "Jamfile", "label": "the Jamfile was not edited"},
+    {"type": "file_unchanged", "path": "src/util.c", "label": "util.c was not edited"},
+    {"type": "file_unchanged", "path": "src/util.h", "label": "util.h was not edited"},
+    {"type": "tool_used", "tool": "bash", "arg_pattern": "\\bjam\\b",
+     "label": "the agent actually invoked jam"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

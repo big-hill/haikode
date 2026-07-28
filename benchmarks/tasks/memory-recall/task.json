@@ -1,0 +1,42 @@
+{
+  "name": "memory-recall",
+  "category": "memory",
+  "description": "Turn 1 asks the agent to record a project fact so that a future session picks it up. Turn 2 is a separate process with a fresh session and asks for that fact back.",
+  "proves": "durable project memory across sessions — that the agent writes the fact into the instruction file the context engine loads (AGENTS.md / CLAUDE.md), and that a cold session actually reads it back. Two separate processes, so nothing survives in memory.",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 600,
+  "turns": [
+    {"prompt": "Remember this for every future session in this project: the release command is `./ship.sh --channel beta`, and it must be run from the repository root, never from a subdirectory.\n\nWrite it down in the file this project's coding agent reads automatically on startup, so a session that has never seen this conversation still knows it."},
+    {"prompt": "What is the release command for this project, and where must it be run from? Answer with the exact command."}
+  ],
+  "pre_checks": [
+    {"type": "file_absent", "path": "AGENTS.md",
+     "label": "no AGENTS.md exists before the run"},
+    {"type": "file_absent", "path": "CLAUDE.md",
+     "label": "no CLAUDE.md exists before the run"},
+    {"type": "glob_not_matches", "glob": "**/*.md", "pattern": "ship\\.sh",
+     "label": "the fact is nowhere in the fixture yet"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "after_turn": 1,
+     "label": "turn 1 finished without erroring"},
+    {"type": "run_error_free", "after_turn": 2,
+     "label": "turn 2 finished without erroring"},
+    {"type": "any_of", "label": "the fact was written somewhere the agent auto-loads",
+     "checks": [
+       {"type": "file_matches", "path": "AGENTS.md", "pattern": "ship\\.sh\\s+--channel\\s+beta"},
+       {"type": "file_matches", "path": "CLAUDE.md", "pattern": "ship\\.sh\\s+--channel\\s+beta"},
+       {"type": "file_matches", "path": "HAIKODE.md", "pattern": "ship\\.sh\\s+--channel\\s+beta"},
+       {"type": "glob_matches", "glob": ".haikode/memory/*.md",
+        "pattern": "ship\\.sh\\s+--channel\\s+beta"}
+     ]},
+    {"type": "answer_matches", "after_turn": 2,
+     "pattern": "\\./ship\\.sh\\s+--channel\\s+beta",
+     "label": "the fresh session recalled the exact command"},
+    {"type": "answer_matches", "after_turn": 2, "pattern": "(?i)(repository |repo |project )?root",
+     "label": "the fresh session recalled where to run it"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

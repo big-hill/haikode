@@ -1,0 +1,42 @@
+{
+  "name": "json-interface",
+  "category": "tools",
+  "description": "An ordinary small job — bump a version constant, then run the suite — driven through each engine's machine-readable interface instead of its human one: `haikode --json` and `opencode run --format json`.",
+  "proves": "that a script can drive the agent. Every non-blank line of stdout has to parse as a JSON object with a type, the tool calls have to be recoverable from that stream by name, and the final answer has to be readable from it — one line of banner or progress text and `while read line; do … | jq; done` is broken. The filesystem checks are there so this measures a real turn and not an empty well-formed stream.",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "timeout": 600,
+  "interface": "json",
+  "notes": "The runner is driven through its scripted interface for this task regardless of --haikode-mode: the driver's own JSONL would be measuring the harness rather than haikode.",
+  "prompt": "Bump the version in `app/version.py` from 0.9.0 to 1.0.0, then run `python3 -m unittest discover -s tests -t .` to prove the suite passes. End your reply with the new version string on a line of its own.",
+  "pre_checks": [
+    {"type": "file_matches", "path": "app/version.py", "pattern": "VERSION = \"0\\.9\\.0\"",
+     "label": "the fixture is still at 0.9.0"},
+    {"type": "command_exit_nonzero", "command": "python3 -m unittest discover -s tests -t .",
+     "label": "the suite really does fail before the run"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "stdout_is_jsonl", "min_events": 3,
+     "label": "every line of stdout is a JSON object with a type"},
+    {"type": "file_matches", "path": "app/version.py", "pattern": "VERSION = \"1\\.0\\.0\"",
+     "label": "the version was bumped"},
+    {"type": "command_exit_zero", "command": "python3 -m unittest discover -s tests -t .",
+     "label": "the suite passes"},
+    {"type": "any_of",
+     "label": "an edit or write tool call is recoverable from the JSON stream",
+     "checks": [
+       {"type": "tool_used", "tool": "edit"},
+       {"type": "tool_used", "tool": "write"},
+       {"type": "tool_used", "tool": "patch"}
+     ]},
+    {"type": "tool_used", "tool": "bash", "arg_pattern": "unittest",
+     "label": "the test run is recoverable from the JSON stream, with its arguments"},
+    {"type": "answer_matches", "pattern": "1\\.0\\.0",
+     "label": "the final answer is readable from the JSON stream"},
+    {"type": "file_unchanged", "path": "tests/test_version.py",
+     "label": "the tests were not edited"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}

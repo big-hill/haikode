@@ -1,0 +1,24 @@
+# Jamfile for "haikode" — native Haiku desktop AI coding agent (BeAPI only)
+# Native UI + cancellable provider worker (Tracker-style BeAPI controls)
+#
+# Note: the Application rule is Haiku source-tree specific. For reliable M0 builds
+# on any Haiku with dev tools, prefer the makefile-engine Makefile below.
+# This Jamfile kept for future when a proper Jamrules is added.
+
+Application haikode :
+    src/app/HaiApplication.cpp
+    src/ui/HaiWindow.cpp
+    src/ui/SettingsWindow.cpp
+    src/domain/AppController.cpp
+    src/domain/ConfigBridge.cpp
+    : be tracker stdc++
+    : resources/haikode.rdef
+;
+
+# Include paths so "HaiWindow.h" and "Messages.h" resolve from anywhere
+LOCATE_TARGET on src = src ;
+LOCATE_TARGET on src/ui = src/ui ;
+LOCATE_TARGET on src/domain = src/domain ;
+LOCATE_TARGET on src/app = src/app ;
+
+# M1+ : add network (curl_devel or BNetKit), more sources, haikode_core static lib target.

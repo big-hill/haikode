@@ -1,0 +1,165 @@
+=== acme-build 5.2.0 — job build-02 ===
+host: builder-07 (haiku hrev57937, x86_64)
+toolchain: gcc 13.3.0, jam 2.5-haiku, python 3.10.14
+
+--- step 1/4: configure ---
+  checking for kqueue                       ... yes
+  checking for posix_memalign               ... yes
+  checking for BApplication                 ... yes
+  checking for iconv_open                   ... yes
+  checking for BMessage                     ... no (using fallback)
+  checking for BMessage                     ... no (using fallback)
+  checking for iconv_open                   ... no (using fallback)
+  checking for libz                         ... yes
+  checking for BMessage                     ... yes
+  checking for epoll                        ... yes
+  checking for posix_memalign               ... no (using fallback)
+  checking for libssl                       ... yes
+  checking for kqueue                       ... yes
+  checking for pthread_create               ... no (using fallback)
+  checking for epoll                        ... no (using fallback)
+  checking for kqueue                       ... yes
+  checking for libssl                       ... yes
+  checking for posix_memalign               ... yes
+  checking for clock_gettime                ... no (using fallback)
+  checking for kqueue                       ... yes
+  checking for attr support                 ... yes
+  checking for pthread_create               ... yes
+  checking for libz                         ... yes
+  checking for iconv_open                   ... no (using fallback)
+  checking for sendfile                     ... yes
+  checking for BApplication                 ... yes
+  checking for BApplication                 ... yes
+  checking for libssl                       ... yes
+  configure: wrote build/Jamconfig in 4.1s
+
+--- step 2/4: compile ---
+  [  1/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [  2/96] CC   core/list.c        -> build/obj/core_list.o
+    core/list.c:364:55: warning [W4482]: declaration shadows a previous local
+  [  3/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [  4/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:397:28: warning [W1041]: unused parameter 'flags'
+  [  5/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+    pkg/repo.cpp:39:49: warning [W1041]: comparison between signed and unsigned
+  [  6/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [  7/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [  8/96] CC   core/list.c        -> build/obj/core_list.o
+  [  9/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 10/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 11/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:280:23: warning [W1041]: comparison between signed and unsigned
+  [ 12/96] CC   core/list.c        -> build/obj/core_list.o
+    core/list.c:599:33: warning [W1041]: implicit conversion loses precision
+  [ 13/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 14/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 15/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+  [ 16/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:130:12: warning [W1041]: unused parameter 'flags'
+  [ 17/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 18/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 19/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 20/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 21/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 22/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 23/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 24/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 25/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 26/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 27/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 28/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [ 29/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 30/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 31/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 32/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 33/96] CC   fs/node.c          -> build/obj/fs_node.o
+    fs/node.c:693:42: warning [W4482]: field 'len' will be initialized after field 'cap'
+  [ 34/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:815:28: warning [W1041]: unused parameter 'flags'
+  [ 35/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:791:55: warning [W1041]: implicit conversion loses precision
+  [ 36/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+  [ 37/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 38/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [ 39/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:52:6: warning [W4482]: implicit conversion loses precision
+  [ 40/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 41/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 42/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 43/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 44/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 45/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 46/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 47/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 48/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 49/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 50/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 51/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:55:25: warning [W1041]: implicit conversion loses precision
+  [ 52/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 53/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:586:47: warning [W1041]: field 'len' will be initialized after field 'cap'
+  [ 54/96] CC   core/hash.c        -> build/obj/core_hash.o
+    core/hash.c:21:59: warning [W1041]: implicit conversion loses precision
+  [ 55/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+    core/alloc.c:123:17: warning [W1041]: declaration shadows a previous local
+  [ 56/96] CC   fs/node.c          -> build/obj/fs_node.o
+    fs/node.c:277:40: warning [W4482]: field 'len' will be initialized after field 'cap'
+  [ 57/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 58/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 59/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 60/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 61/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 62/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+    core/alloc.c:507:35: warning [W1041]: field 'len' will be initialized after field 'cap'
+  [ 63/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 64/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [ 65/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 66/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 67/96] CC   core/hash.c        -> build/obj/core_hash.o
+    core/hash.c:417:20: warning [W1041]: field 'len' will be initialized after field 'cap'
+  [ 68/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [ 69/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 70/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+    ui/window.cpp:181:57: warning [W4482]: declaration shadows a previous local
+  [ 71/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 72/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 73/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 74/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+    ui/window.cpp:421:15: warning [W4482]: implicit conversion loses precision
+  [ 75/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 76/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+    core/alloc.c:301:17: warning [W1041]: field 'len' will be initialized after field 'cap'
+  [ 77/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 78/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 79/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 80/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 81/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+    pkg/solver.cpp:649:29: warning [W4482]: declaration shadows a previous local
+  [ 82/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 83/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 84/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 85/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+  [ 86/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 87/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:114:33: warning [W1041]: comparison between signed and unsigned
+  [ 88/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 89/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 90/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 91/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 92/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 93/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:104:26: warning [W4482]: declaration shadows a previous local
+  [ 94/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 95/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 96/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  compile: 96 objects in 61.8s
+
+--- step 3/4: link ---
+  LD   build/bin/acme
+  build/obj/pkg_solver.o: in function `solve_repo':
+  pkg/solver.cpp:412: error: undefined reference to `acme_checksum'
+  collect2: error: ld returned 1 exit status
+
+*** BUILD FAILED at step 3/4 (link) after 78.4s ***
+*** cause: undefined reference to `acme_checksum' ***

@@ -1,0 +1,190 @@
+=== acme-build 5.2.0 — job build-03 ===
+host: builder-07 (haiku hrev57937, x86_64)
+toolchain: gcc 13.3.0, jam 2.5-haiku, python 3.10.14
+
+--- step 1/4: configure ---
+  checking for kqueue                       ... yes
+  checking for posix_memalign               ... yes
+  checking for clock_gettime                ... yes
+  checking for clock_gettime                ... yes
+  checking for pthread_create               ... yes
+  checking for BMessage                     ... yes
+  checking for BApplication                 ... yes
+  checking for libssl                       ... yes
+  checking for libssl                       ... yes
+  checking for attr support                 ... yes
+  checking for sendfile                     ... yes
+  checking for pthread_create               ... yes
+  checking for BApplication                 ... yes
+  checking for kqueue                       ... yes
+  checking for epoll                        ... yes
+  checking for BApplication                 ... yes
+  checking for libz                         ... no (using fallback)
+  checking for clock_gettime                ... no (using fallback)
+  checking for posix_memalign               ... yes
+  checking for pthread_create               ... yes
+  checking for libssl                       ... no (using fallback)
+  checking for attr support                 ... yes
+  checking for iconv_open                   ... yes
+  checking for libssl                       ... no (using fallback)
+  checking for epoll                        ... yes
+  checking for libz                         ... yes
+  checking for iconv_open                   ... yes
+  checking for epoll                        ... yes
+  configure: wrote build/Jamconfig in 4.1s
+
+--- step 2/4: compile ---
+  [  1/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:199:45: warning [W7128]: field 'len' will be initialized after field 'cap'
+  [  2/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [  3/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [  4/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [  5/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [  6/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [  7/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [  8/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [  9/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 10/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 11/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 12/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 13/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 14/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 15/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 16/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 17/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 18/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+    pkg/solver.cpp:583:37: warning [W6634]: declaration shadows a previous local
+  [ 19/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 20/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 21/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 22/96] CC   net/socket.c       -> build/obj/net_socket.o
+    net/socket.c:230:33: warning [W7128]: unused parameter 'flags'
+  [ 23/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:693:24: warning [W7128]: implicit conversion loses precision
+  [ 24/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:734:54: warning [W7128]: comparison between signed and unsigned
+  [ 25/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:424:56: warning [W5019]: declaration shadows a previous local
+  [ 26/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 27/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 28/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 29/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 30/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 31/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 32/96] CC   fs/node.c          -> build/obj/fs_node.o
+    fs/node.c:518:26: warning [W6634]: declaration shadows a previous local
+  [ 33/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 34/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 35/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:278:20: warning [W6634]: unused parameter 'flags'
+  [ 36/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 37/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+  [ 38/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 39/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 40/96] CC   core/hash.c        -> build/obj/core_hash.o
+    core/hash.c:105:37: warning [W7128]: comparison between signed and unsigned
+  [ 41/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 42/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 43/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 44/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:573:56: warning [W7128]: comparison between signed and unsigned
+  [ 45/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 46/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 47/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 48/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 49/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 50/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 51/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 52/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 53/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 54/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 55/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 56/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 57/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:841:9: warning [W6634]: implicit conversion loses precision
+  [ 58/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 59/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 60/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 61/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+  [ 62/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 63/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 64/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 65/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 66/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+    pkg/solver.cpp:495:6: warning [W7128]: comparison between signed and unsigned
+  [ 67/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+    net/resolve.c:612:12: warning [W6634]: field 'len' will be initialized after field 'cap'
+  [ 68/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 69/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 70/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+  [ 71/96] CC   net/socket.c       -> build/obj/net_socket.o
+    net/socket.c:849:43: warning [W6634]: field 'len' will be initialized after field 'cap'
+  [ 72/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 73/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 74/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 75/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 76/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 77/96] CC   net/socket.c       -> build/obj/net_socket.o
+  [ 78/96] CC   fs/journal.c       -> build/obj/fs_journal.o
+  [ 79/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  [ 80/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 81/96] CC   pkg/solver.cpp     -> build/obj/pkg_solver.o
+  [ 82/96] CC   core/list.c        -> build/obj/core_list.o
+  [ 83/96] CC   ui/window.cpp      -> build/obj/ui_window.o
+  [ 84/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+    pkg/repo.cpp:525:50: warning [W7128]: field 'len' will be initialized after field 'cap'
+  [ 85/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+  [ 86/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 87/96] CC   fs/node.c          -> build/obj/fs_node.o
+  [ 88/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:855:51: warning [W6634]: implicit conversion loses precision
+  [ 89/96] CC   ui/menu.cpp        -> build/obj/ui_menu.o
+    ui/menu.cpp:530:20: warning [W7128]: field 'len' will be initialized after field 'cap'
+  [ 90/96] CC   pkg/repo.cpp       -> build/obj/pkg_repo.o
+    pkg/repo.cpp:326:8: warning [W5019]: declaration shadows a previous local
+  [ 91/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 92/96] CC   ui/view.cpp        -> build/obj/ui_view.o
+    ui/view.cpp:800:18: warning [W5019]: field 'len' will be initialized after field 'cap'
+  [ 93/96] CC   core/hash.c        -> build/obj/core_hash.o
+  [ 94/96] CC   net/resolve.c      -> build/obj/net_resolve.o
+  [ 95/96] CC   fs/node.c          -> build/obj/fs_node.o
+    fs/node.c:449:29: warning [W7128]: field 'len' will be initialized after field 'cap'
+  [ 96/96] CC   core/alloc.c       -> build/obj/core_alloc.o
+  compile: 96 objects in 61.8s
+
+--- step 3/4: link ---
+  LD   build/bin/acme
+  link: 1 binary in 6.2s
+
+--- step 4/4: test ---
+  net/socket_test                    ok
+  fs/journal_test                    ok
+  pkg/solver_test                    ok
+  core/alloc_test                    ok
+  fs/node_test                       ok
+  core/alloc_test                    ok
+  fs/node_test                       ok
+  net/socket_test                    ok
+  fs/node_test                       ok
+  fs/journal_test                    ok
+  core/alloc_test                    ok
+  core/hash_test                     ok
+  fs/node_test                       ok
+  pkg/solver_test                    ok
+  pkg/solver_test                    ok
+  core/alloc_test                    ok
+  pkg/solver_test                    ok
+  fs/journal_test                    ok
+  core/hash_test                     ok
+  fs/journal_test                    ok
+  core/hash_test                     ok
+  net/socket_test                    ok
+  pkg/solver_test                    ok
+  core/hash_test                     ok
+  fs/journal_test                    FAILED
+    journal_test.c:207: expected sequence 41, got 40
+    journal_test.c:231: expected sequence 42, got 40
+    journal_test.c:255: replay left 1 orphan block
+
+*** BUILD FAILED at step 4/4 (test) after 191.2s ***
+*** cause: 3 of 118 assertions failed in fs/journal_test.c ***

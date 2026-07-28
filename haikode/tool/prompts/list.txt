@@ -1,0 +1,10 @@
+Lists files and directories in a given path.
+
+Usage:
+- The `path` parameter should be an absolute path; it defaults to the current
+  working directory.
+- Directories are marked with a trailing `/`.
+- Use `ignore` to skip glob patterns in addition to the built-in ignores
+  (.git, build artifacts, __pycache__, node_modules, objects.*).
+- Prefer the glob tool when you are looking for files by name pattern, and the
+  grep tool when you are looking for file contents.

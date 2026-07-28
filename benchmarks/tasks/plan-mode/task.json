@@ -1,0 +1,34 @@
+{
+  "name": "plan-mode",
+  "category": "plan",
+  "description": "Ask for a plan to add per-client rate limiting to the router, with the plan agent selected. The plan must name the real dispatch point and the real handler modules; nothing on disk may change.",
+  "proves": "that a read-only planning mode exists, can be selected, produces a concrete plan grounded in the actual files, and cannot write",
+  "provider": "zen",
+  "model": "north-mini-code-free",
+  "agent": "plan",
+  "timeout": 600,
+  "prompt": "Plan how to add per-client rate limiting to this service: at most N requests per client id per minute, applied to every route, returning HTTP 429 when the limit is exceeded.\n\nGive me the plan only — which files you would create or change and what each change does, as numbered steps. Do not implement anything.",
+  "pre_checks": [
+    {"type": "command_exit_zero", "command": "python3 -m unittest discover -q",
+     "label": "the fixture's suite passes before the run"},
+    {"type": "glob_not_matches", "glob": "**/*.py", "pattern": "(?i)rate.?limit",
+     "label": "no rate limiting exists in the fixture yet"}
+  ],
+  "checks": [
+    {"type": "run_error_free", "label": "the runner finished without erroring"},
+    {"type": "no_files_modified", "label": "the project is byte-identical"},
+    {"type": "tool_not_used", "tool": "write", "label": "the write tool was never called"},
+    {"type": "tool_not_used", "tool": "edit", "label": "the edit tool was never called"},
+    {"type": "tool_not_used", "tool": "bash",
+     "arg_pattern": ">>?|\\brm\\b|\\bmv\\b|\\bcp\\b|sed\\s+-i|\\btee\\b|\\btouch\\b|\\bmkdir\\b|git\\s+(commit|checkout|apply|add)",
+     "label": "no mutating shell command was run (read-only bash is allowed)"},
+    {"type": "answer_matches", "pattern": "server\\.(py|handle)",
+     "label": "the plan names the single dispatch point in server.py"},
+    {"type": "answer_matches", "pattern": "429",
+     "label": "the plan mentions the required status code"},
+    {"type": "answer_matches", "pattern": "(?m)^\\s*(?:\\d+[.)]|[-*])\\s+\\S",
+     "min_count": 3, "label": "the plan has at least three enumerated steps"},
+    {"type": "no_side_effects_outside_project",
+     "label": "nothing outside the project was touched"}
+  ]
+}
