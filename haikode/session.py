@@ -429,6 +429,13 @@ def _atomic_write(path: Path, text: str):
 class SessionStore:
     """SQLite-backed session storage. One store per database file."""
 
+    # Databases this process already has open, by resolved path. Recovery may
+    # never run against one of them: the WAL it would move aside belongs to a
+    # connection that is still using it, and moving it corrupts that
+    # connection's view of the file.
+    _open_paths: Dict[str, int] = {}
+    _open_lock = threading.Lock()
+
     def __init__(self, db_path: Union[str, Path, None] = None):
         self.path = Path(db_path) if db_path is not None else default_db_path()
         self._conn: Optional[sqlite3.Connection] = None
@@ -437,6 +444,7 @@ class SessionStore:
         # Held open while this store is in use; another process holding it is
         # how we know a WAL belongs to a live instance rather than a corpse.
         self._guard = None
+        self._registered = False
 
     # --- connection ------------------------------------------------------
 
@@ -458,6 +466,7 @@ class SessionStore:
                     raise
                 conn = self._open()
             self._conn = conn
+            self._register()
             return conn
 
     def _open(self) -> sqlite3.Connection:
@@ -479,6 +488,38 @@ class SessionStore:
             conn.execute(statement)
         conn.commit()
         return conn
+
+    def _key(self) -> str:
+        try:
+            return str(self.path.resolve())
+        except OSError:
+            return str(self.path)
+
+    def _open_here(self) -> bool:
+        """True when this process already has a connection to this file."""
+        with SessionStore._open_lock:
+            return SessionStore._open_paths.get(self._key(), 0) > 0
+
+    def _register(self) -> None:
+        if self._registered:
+            return
+        with SessionStore._open_lock:
+            key = self._key()
+            SessionStore._open_paths[key] = \
+                SessionStore._open_paths.get(key, 0) + 1
+        self._registered = True
+
+    def _unregister(self) -> None:
+        if not self._registered:
+            return
+        with SessionStore._open_lock:
+            key = self._key()
+            remaining = SessionStore._open_paths.get(key, 1) - 1
+            if remaining > 0:
+                SessionStore._open_paths[key] = remaining
+            else:
+                SessionStore._open_paths.pop(key, None)
+        self._registered = False
 
     def _claim(self) -> bool:
         """Take the cross-process guard for this database.
@@ -529,6 +570,8 @@ class SessionStore:
             return False
         if not self.path.exists():
             return False
+        if self._open_here():
+            return False
         if not self._claim():
             return False
 
@@ -557,6 +600,7 @@ class SessionStore:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+                self._unregister()
             if self._guard is not None:
                 try:
                     self._guard.close()
@@ -1483,13 +1527,23 @@ class SessionHistoryTool(Tool):
         ctx.ask("read", ["session history"], "Read earlier sessions",
                 {"query": query, "session": session_id})
 
-        store = SessionStore()
+        # The live session's own store, never a second connection to the same
+        # file. Opening one from inside the running agent ran schema DDL
+        # against a database another connection already held, and on a failed
+        # open the stale-WAL recovery would move that live WAL aside — which
+        # is how a session store ended up reporting "database disk image is
+        # malformed" mid-conversation. Only fall back to opening the default
+        # store when there is no session yet (a tool call before the first
+        # turn was persisted), where nothing else has it open.
+        live = getattr(getattr(ctx, "session", None), "store", None)
+        store = live if isinstance(live, SessionStore) else SessionStore()
         try:
             if session_id:
                 return self._transcript(store, session_id)
             return self._listing(store, query, everywhere, ctx)
         finally:
-            store.close()
+            if store is not live:
+                store.close()
 
     def _transcript(self, store: "SessionStore", session_id: str) -> ToolResult:
         session = store.load(session_id)

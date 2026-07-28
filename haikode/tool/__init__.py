@@ -43,6 +43,7 @@ _ALL_TOOLS: List[Tool] = [
 _REGISTRY: Dict[str, Tool] = {tool.name: tool for tool in _ALL_TOOLS}
 
 _memory_registered = False
+_session_registered = False
 
 
 def _register_memory() -> None:
@@ -61,13 +62,31 @@ def _register_memory() -> None:
         return
     _memory_registered = True
     deferred = list(MEMORY_TOOLS)
+    _register_deferred(deferred)
+
+
+def _register_session() -> None:
+    """Add session_history once haikode.session has finished loading.
+
+    Tracked apart from the memory tools: session imports tool.base, so a call
+    made while that import is still in flight cannot see SESSION_TOOLS. One
+    shared "already registered" flag meant that first failed attempt marked
+    the whole job done and session_history never appeared — but only when
+    something imported haikode.session first, which is why it showed up as a
+    test that passed alone and failed in company.
+    """
+    global _session_registered
+    if _session_registered:
+        return
     try:
-        # Same circular-import dance: session imports tool.base, so it can
-        # only contribute its tool once it has finished loading.
         from ..session import SESSION_TOOLS
-        deferred.extend(SESSION_TOOLS)
     except ImportError:
-        pass
+        return
+    _session_registered = True
+    _register_deferred(list(SESSION_TOOLS))
+
+
+def _register_deferred(deferred) -> None:
     for tool in deferred:
         if tool.name in _REGISTRY:
             continue
@@ -85,15 +104,18 @@ def __getattr__(name: str):
     """
     if name == "REGISTRY":
         _register_memory()
+        _register_session()
         return _REGISTRY
     if name == "ALL_TOOLS":
         _register_memory()
+        _register_session()
         return _ALL_TOOLS
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_tools(names: Optional[List[str]] = None) -> Dict[str, Tool]:
     _register_memory()
+    _register_session()
     if names is None:
         return dict(_REGISTRY)
     return {name: _REGISTRY[name] for name in names if name in _REGISTRY}
