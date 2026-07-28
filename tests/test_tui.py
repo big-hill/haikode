@@ -273,7 +273,7 @@ class EntryRenderTests(unittest.TestCase):
                       output="\n".join("f%d" % n for n in range(20)))
         lines = self.render(entry, opts=RenderOptions(UNICODE, result_lines=4))
         self.assertEqual(lines[0].text, "⏺ bash  ls")
-        self.assertEqual(texts(lines)[1:5], ["  f0", "  f1", "  f2", "  f3"])
+        self.assertEqual(texts(lines)[1:5], ["    f0", "    f1", "    f2", "    f3"])
         self.assertEqual(lines[5].style, "hint")
         self.assertIn("+16 lines", lines[5].text)
 
@@ -673,7 +673,7 @@ class ExpandTests(unittest.TestCase):
         lines = build_entry_lines(self.entry(), 40,
                                   RenderOptions(glyphs=UNICODE, expand=True))
         self.assertNotIn("  … +32 lines", texts(lines))
-        self.assertIn("  line 39", texts(lines))
+        self.assertIn("    line 39", texts(lines))
 
     def test_the_toggle_flips_and_invalidates_the_cache(self):
         ui = make_tui()

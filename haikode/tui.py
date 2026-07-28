@@ -933,7 +933,11 @@ def build_tool_lines(entry: Entry, width: int, opts: RenderOptions) -> List[Line
         out.extend(build_diff_lines(entry.diff, width, opts))
         return out
     if entry.output.strip():
-        body = _styled(sanitize(entry.output, g.unicode_ok), width, "result", "  ", "  ")
+        # Indented under its own ⏺ header rather than beside it: with dim
+        # unavailable this is the only thing left that says "this is what the
+        # tool printed, not what the agent told you".
+        body = _styled(sanitize(entry.output, g.unicode_ok), width, "result",
+                       "    ", "    ")
         out.extend(_truncate_styled(body, 0 if opts.expand else opts.result_lines, g))
     return out
 
@@ -2056,8 +2060,16 @@ def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
 
 
 # style name -> (foreground colour index, extra attribute)
+# Haiku Terminal reports 8 colours, no grey (colour 8 is absent), cannot
+# redefine colours, and does not render SGR 2 — a screenshot from the owner's
+# machine shows dim-styled text at exactly the brightness of normal text. The
+# hierarchy therefore cannot rest on dim, which is what made a session read as
+# one undifferentiated wall: tool output, reasoning and hints were all styled
+# "quieter" and all came out the same. Bold and the eight colours do work, so
+# the reply is made louder rather than the noise quieter, and indentation
+# carries the rest for terminals with neither.
 _STYLE_SPECS = {
-    "assistant": (-1, 0),
+    "assistant": (-1, "bold"),     # the one thing to read: the loudest row
     "user": (6, "bold"),           # cyan
     "reasoning": (-1, "dim"),
     "tool": (6, 0),
