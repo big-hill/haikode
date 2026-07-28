@@ -251,6 +251,34 @@ class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
         self.assertEqual("", store.read_error)
         self.assertGreater(calls["n"], 1, "the retry never happened")
 
+    def test_every_failed_attempt_is_recorded_even_when_a_retry_wins(self):
+        # The one field report cost us the answer because the code caught the
+        # exception and dropped its errno. A read that recovers is the only
+        # trace a transient failure leaves, so it must not vanish.
+        from haikode.oauth import CREDENTIAL_LOG
+        store = self._store()
+        self.path.write_text("{ broken")
+        store.get("chatgpt")
+
+        log = Path(self.root, CREDENTIAL_LOG)
+        self.assertTrue(log.exists(), "no diagnostics were written")
+        entries = [json.loads(line) for line in
+                   log.read_text().splitlines() if line.strip()]
+        self.assertEqual(3, len(entries), "one line per attempt")
+        first = entries[0]
+        self.assertIn("file", first)
+        self.assertIn("ino", first["file"])
+        self.assertIn("parent", first)
+        self.assertIsInstance(first["fds_open"], int)
+        self.assertNotIn("access", log.read_text(),
+                         "diagnostics must never carry token material")
+
+    def test_an_errno_is_kept_where_the_old_code_discarded_it(self):
+        from haikode.oauth import _describe_read_failure
+        described = _describe_read_failure(OSError(24, "Too many open files"))
+        self.assertIn("errno 24", described)
+        self.assertIn("EMFILE", described)
+
 
 class TheStoreKeepsItsOwnBackups(unittest.TestCase):
     """Two defects destroyed a live store in one day.

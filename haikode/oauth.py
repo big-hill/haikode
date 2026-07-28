@@ -9,7 +9,9 @@ OAuth tokens are stored in a separate mode-0600 JSON file.  API keys continue
 to use Haiku BKeyStore through :mod:`haikode.config`.
 """
 import base64
+import errno
 import json
+import resource
 import os
 import subprocess
 import sys
@@ -40,6 +42,8 @@ XAI_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 POLL_SAFETY_SECONDS = 3
 REFRESH_SKEW_SECONDS = 120
+# Where a failed credential read leaves its trace, beside the file itself.
+CREDENTIAL_LOG = "credential-reads.log"
 
 
 class OAuthError(RuntimeError):
@@ -122,6 +126,72 @@ def extract_chatgpt_account_id(tokens: Dict[str, Any]) -> str:
     return ""
 
 
+def _describe_read_failure(exc: BaseException) -> str:
+    """The failure with its errno kept — the part the old code threw away."""
+    number = getattr(exc, "errno", None)
+    if number is None:
+        return "%s: %s" % (type(exc).__name__, exc)
+    return "%s [errno %d %s]: %s" % (type(exc).__name__, number,
+                                     errno.errorcode.get(number, "?"), exc)
+
+
+def _record_read_failure(path: Path, attempt: int, exc: BaseException) -> None:
+    """Append one line about a failed credential read, then get out of the way.
+
+    Written to a file opened per call rather than held open, and every failure
+    here is swallowed: this is diagnostics, and diagnostics that can break a
+    login are worse than none. Identity of the file is recorded (device,
+    inode, size, mtime) because a rename, a symlink swap or a replaced parent
+    directory would all look identical from the error alone — and the file's
+    own mtime was what ruled out the first theory. No token material is ever
+    written: only shape.
+    """
+    try:
+        line = {
+            "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "attempt": attempt + 1,
+            "error": _describe_read_failure(exc),
+            "path": str(path),
+        }
+        for label, target in (("file", path), ("parent", path.parent)):
+            try:
+                info = os.stat(str(target))
+                line[label] = {"dev": info.st_dev, "ino": info.st_ino,
+                               "size": info.st_size,
+                               "mtime_ns": info.st_mtime_ns,
+                               "ctime_ns": info.st_ctime_ns}
+            except OSError as stat_exc:
+                line[label] = {"stat_failed": _describe_read_failure(stat_exc)}
+        line["fds_open"] = _open_descriptor_count()
+        with open(str(path.parent / CREDENTIAL_LOG), "a",
+                  encoding="utf-8") as handle:
+            handle.write(json.dumps(line) + "\n")
+    except Exception:
+        return
+
+
+def _open_descriptor_count() -> int:
+    """Descriptors this process holds, without allocating one to find out.
+
+    os.fstat on each number in turn: socket.fromfd() would duplicate the
+    descriptor and so change the very thing being measured, and Haiku has no
+    /proc to read instead. Returns -1 if even this fails.
+    """
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        limit = int(soft) if 0 < soft < 65536 else 4096
+        count = 0
+        for number in range(limit):
+            try:
+                os.fstat(number)
+                count += 1
+            except OSError:
+                continue
+        return count
+    except Exception:
+        return -1
+
+
 class OAuthStore:
     def __init__(self, path: str):
         self.path = Path(path)
@@ -138,25 +208,39 @@ class OAuthStore:
 
         A file that cannot be read is not the same thing as a user who never
         signed in, and conflating the two produced "Not signed in to chatgpt"
-        in the middle of a working session with valid tokens on disk. The
-        distinction is what lets access_token() say something true.
+        in the middle of a working session with valid tokens on disk.
 
-        Reads are retried briefly because the failure was transient: the file
-        is replaced atomically on refresh, so anything that fails here is a
-        moment, not a state.
+        Every failed attempt is recorded even when a later one succeeds. The
+        one field report of this cost us the answer: the code caught the
+        exception, dropped its errno and returned {}, so afterwards there was
+        no way to tell EMFILE from EIO from ENOENT — and those point at
+        completely different causes. A read that recovers on the second try is
+        exactly the evidence worth keeping, because it is the only trace the
+        transient failure leaves.
+
+        There is deliberately no exists() check in front: it is a second
+        syscall whose own failure would slip past unrecorded, and the file can
+        change between the two calls. Open once; FileNotFoundError is the
+        answer to "is it there".
         """
-        if not self.path.exists():
-            self.read_error = ""
-            return {}
         last = ""
         for attempt in range(3):
             try:
                 with self.path.open(encoding="utf-8") as handle:
                     value = json.load(handle)
                 self.read_error = ""
-                return value if isinstance(value, dict) else {}
-            except (OSError, json.JSONDecodeError) as exc:
-                last = "%s: %s" % (type(exc).__name__, exc)
+                if not isinstance(value, dict):
+                    self.read_error = ("malformed: top level is %s, not an "
+                                       "object" % type(value).__name__)
+                    return {}
+                return value
+            except FileNotFoundError:
+                self.read_error = ""       # genuinely never signed in
+                return {}
+            except (OSError, json.JSONDecodeError,
+                    UnicodeDecodeError) as exc:
+                last = _describe_read_failure(exc)
+                _record_read_failure(self.path, attempt, exc)
                 if attempt < 2:
                     time.sleep(0.05)
         self.read_error = last
