@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -191,6 +192,74 @@ class StepBudgetRegressions(TemporaryProject):
         self.assertNotEqual(repl.agent.reasoning_effort, "max")
         self.assertTrue(any("reasoning effort" in w
                             for w in repl.warnings()), repl.warnings())
+
+
+class TheStoreKeepsItsOwnBackups(unittest.TestCase):
+    """Two defects destroyed a live store in one day.
+
+    Both times the conversations survived only because someone had taken a
+    copy by hand. The store now takes verified, rotating snapshots itself.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="haikode-bak-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.db = Path(self.root, "sessions.db")
+
+    def _store(self):
+        from haikode.session import SessionStore
+        store = SessionStore(self.db)
+        self.addCleanup(store.close)
+        return store
+
+    def _snapshots(self):
+        return sorted(p.name for p in Path(self.root).glob("sessions.db.bak*"))
+
+    def test_opening_a_populated_store_leaves_a_verified_snapshot(self):
+        first = self._store()
+        first.new_session("/p", "zen", "m")
+        first.close()
+        self._store().connect()
+
+        self.assertIn("sessions.db.bak1", self._snapshots())
+        backup = sqlite3.connect(str(Path(self.root, "sessions.db.bak1")))
+        self.addCleanup(backup.close)
+        self.assertEqual("ok",
+                         backup.execute("PRAGMA quick_check").fetchone()[0])
+        self.assertEqual(
+            1, backup.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+
+    def test_snapshots_rotate_instead_of_overwriting_one_slot(self):
+        from haikode.session import BACKUP_GENERATIONS, SessionStore
+        for _ in range(BACKUP_GENERATIONS + 2):
+            store = SessionStore(self.db)
+            store.new_session("/p", "zen", "m")
+            store.close()
+        self.assertEqual(
+            ["sessions.db.bak%d" % n
+             for n in range(1, BACKUP_GENERATIONS + 1)],
+            self._snapshots())
+
+    def test_a_corrupt_store_never_overwrites_a_good_snapshot(self):
+        store = self._store()
+        store.new_session("/p", "zen", "m")
+        store.close()
+        self._store().connect()          # snapshot taken while healthy
+        good = Path(self.root, "sessions.db.bak1")
+        keep = good.read_bytes()
+
+        with open(self.db, "r+b") as handle:   # scribble over the page data
+            handle.seek(4096)
+            handle.write(b"\xff" * 8192)
+
+        from haikode.session import SessionStore
+        try:
+            SessionStore(self.db).connect()
+        except Exception:
+            pass
+
+        self.assertEqual(keep, good.read_bytes(),
+                         "a corrupt store overwrote the last good snapshot")
 
 
 class AFailedTurnLeavesNoTrace(TemporaryProject):

@@ -54,6 +54,8 @@ from .schema import Msg, ToolCall
 from .tool.base import Tool, ToolResult
 
 DEFAULT_DB_NAME = "sessions.db"
+# Verified snapshots kept beside the store, newest first.
+BACKUP_GENERATIONS = 3
 # What /compact keeps verbatim when the user names no number.
 DEFAULT_COMPACT_KEEP = 10
 MAX_TITLE_CHARS = 60
@@ -467,7 +469,51 @@ class SessionStore:
                 conn = self._open()
             self._conn = conn
             self._register()
+            self._rotate_backup(conn)
             return conn
+
+    def _rotate_backup(self, conn: sqlite3.Connection) -> None:
+        """Keep a few verified snapshots beside the database.
+
+        Twice in one day a defect destroyed a live store, and both times the
+        only thing that saved the conversations was a copy someone had taken
+        by hand. This takes it automatically, once per process at open.
+
+        Two rules make it a safety net rather than a second way to lose data:
+        the source is checked before anything is written, so a store that is
+        already corrupt never overwrites a good snapshot; and the snapshots
+        rotate, so one bad generation cannot erase every earlier one. The
+        sqlite backup API is used rather than a file copy because it produces
+        a consistent image even while another connection is writing.
+
+        Any failure here is silent: a missing backup must never stop a user
+        from reaching their sessions.
+        """
+        try:
+            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                return
+            if not conn.execute(
+                    "SELECT 1 FROM sessions LIMIT 1").fetchone():
+                return          # nothing worth keeping yet
+            newest = Path("%s.bak1" % self.path)
+            oldest = Path("%s.bak%d" % (self.path, BACKUP_GENERATIONS))
+            if oldest.exists():
+                oldest.unlink()
+            for index in range(BACKUP_GENERATIONS - 1, 0, -1):
+                older = Path("%s.bak%d" % (self.path, index))
+                if older.exists():
+                    older.replace(Path("%s.bak%d" % (self.path, index + 1)))
+            staging = Path("%s.bak.tmp" % self.path)
+            if staging.exists():
+                staging.unlink()
+            target = sqlite3.connect(str(staging))
+            try:
+                conn.backup(target)
+            finally:
+                target.close()
+            staging.replace(newest)
+        except Exception:
+            return
 
     def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), check_same_thread=False)
