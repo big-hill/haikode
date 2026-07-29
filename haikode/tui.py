@@ -2347,6 +2347,16 @@ class TUI:
         """
         if self.agent is None:
             self.agent = self.agent_factory()
+        # `--session` and `--continue` restore the conversation into the agent
+        # before this screen exists, and the transcript is built from entries
+        # rather than from messages — so a resumed session came up looking
+        # empty while every following turn behaved as though it were not. The
+        # picker's own /resume already replays; this is the same for the two
+        # paths that arrive with history already in place.
+        restored = getattr(self.agent, "messages", None) or []
+        if restored and not self.transcript.entries:
+            self._replay(restored)
+            self.follow = True
         return self.agent
 
     def _shutdown(self):

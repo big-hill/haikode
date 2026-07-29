@@ -281,6 +281,57 @@ class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
         self.assertIn("EMFILE", described)
 
 
+class AResumedSessionShowsItsHistory(unittest.TestCase):
+    """`--session` and `--continue` came up looking like an empty chat.
+
+    The conversation was restored into the agent before the screen existed,
+    and the transcript is built from entries rather than from messages, so
+    every following turn behaved as though the history were there while the
+    user could see none of it. The picker's /resume already replayed.
+    """
+
+    def _agent_with_history(self):
+        class Restored:
+            def __init__(self):
+                self.messages = [
+                    Msg(role="user", content="fix the parser"),
+                    Msg(role="assistant", content="Reading the file."),
+                    Msg(role="assistant",
+                        tool_calls=[ToolCall(id="c1", name="read",
+                                             arguments={})]),
+                    Msg(role="tool", tool_call_id="c1", content="line 1"),
+                    Msg(role="assistant", content="The bug is on line 2."),
+                ]
+        return Restored()
+
+    def test_startup_replays_a_restored_conversation(self):
+        agent = self._agent_with_history()
+        ui = tui_mod.TUI(lambda: agent, config=None, cwd=".")
+
+        ui._startup_agent()
+
+        rendered = [entry.text for entry in ui.transcript.entries
+                    if entry.kind in ("user", "assistant")]
+        self.assertIn("fix the parser", rendered)
+        self.assertIn("The bug is on line 2.", rendered)
+        self.assertTrue(ui.follow, "a resumed session should start at the end")
+
+    def test_a_fresh_start_still_shows_the_home_screen(self):
+        class Empty:
+            messages = []
+        ui = tui_mod.TUI(lambda: Empty(), config=None, cwd=".")
+        ui._startup_agent()
+        self.assertEqual([], ui.transcript.entries)
+
+    def test_replaying_twice_does_not_double_the_history(self):
+        agent = self._agent_with_history()
+        ui = tui_mod.TUI(lambda: agent, config=None, cwd=".")
+        ui._startup_agent()
+        before = len(ui.transcript.entries)
+        ui._startup_agent()
+        self.assertEqual(before, len(ui.transcript.entries))
+
+
 class SteeringReachesTheModelMidTurn(TemporaryProject):
     """A correction typed mid-run must not wait for the turn to end.
 
