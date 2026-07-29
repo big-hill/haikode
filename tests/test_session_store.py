@@ -710,9 +710,11 @@ class SessionStoreTests(unittest.TestCase):
         for index in range(6):
             session.append(Msg(role="assistant", content="x" * 400))
 
-        # 6 messages of ~104 tokens each is far past 40% of a 1000 window,
-        # and nowhere near 40% of a 100000 one.
-        self.assertTrue(session.needs_compaction(1000))
+        # 6 messages of ~104 tokens each is past the default share of a 500
+        # window and nowhere near it in a 100000 one. `reserve` still means
+        # "fraction of the window the history may use"; only the default moved
+        # up, so haikode stops folding a conversation away at 40% full.
+        self.assertTrue(session.needs_compaction(500))
         self.assertFalse(session.needs_compaction(100000))
         self.assertTrue(session.needs_compaction(100000, reserve=0.001))
         self.assertFalse(session.needs_compaction(0))

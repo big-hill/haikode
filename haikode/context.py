@@ -370,6 +370,13 @@ class ContextManager:
 # opencode's DEFAULT_TAIL_TURNS / DEFAULT_KEEP_TOKENS / SUMMARY_OUTPUT_TOKENS.
 DEFAULT_TAIL_TURNS = 2
 MIN_KEEP_TOKENS = 2000
+# Fraction of the context window the history may occupy before it is folded,
+# and the room always left for the reply on top of it. opencode compacts at
+# the window minus about one maximum output (session/overflow.ts); 0.92 with a
+# 20k floor lands in the same place without needing the model's output limit.
+DEFAULT_RESERVE = 0.92
+MIN_REPLY_RESERVE = 20000
+
 MAX_KEEP_TOKENS = 8000
 SUMMARY_MAX_TOKENS = 4096
 # Per tool result fed to the summariser. A single 200 kB grep result would
@@ -834,9 +841,20 @@ def keep_token_budget(budget: int) -> int:
 
 
 def needs_compaction(messages: Sequence[Msg], window: int,
-                     reserve: float = 0.4) -> bool:
-    """True when the history no longer fits its share of `window`."""
-    budget = int(max(0, int(window or 0)) * reserve)
+                     reserve: float = DEFAULT_RESERVE) -> bool:
+    """True when the history no longer fits its share of `window`.
+
+    `reserve` is the fraction of the window the history may occupy — the same
+    meaning it has always had here. Only the default moved, from 0.4 to
+    DEFAULT_RESERVE: folding the conversation away at 40% discarded 280k
+    tokens of a 500k window that the model could have used, and a summary is
+    always lossier than the turns it replaces. opencode compacts when the
+    count reaches the window minus roughly one maximum output
+    (session/overflow.ts `usable`), which is what this now approximates.
+    """
+    total = max(0, int(window or 0))
+    budget = min(int(total * reserve), max(0, total - MIN_REPLY_RESERVE)) \
+        if total > MIN_REPLY_RESERVE else int(total * reserve)
     if budget <= 0 or len(messages) <= 4:
         return False
     return sum(message_tokens(m) for m in messages) > budget

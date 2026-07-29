@@ -3244,10 +3244,22 @@ class TUI:
         try again" meant the typed text was simply gone. opencode queues; so
         do we, and the queue is visible so the user knows it will be sent.
         """
-        self.queued.append(text)
         self.history.append(text)
         self.history_index = len(self.history)
         first = text.strip().splitlines()[0] if text.strip() else text
+
+        # Steer by default: the model sees this at its next step rather than
+        # after the whole turn. Waiting for the turn was the old behaviour and
+        # it is wrong once turns are unlimited — by the time a correction
+        # arrives, it is about work already finished.
+        steer = getattr(self.agent, "steer", None)
+        if callable(steer) and steer(text):
+            self.transcript.add(Entry("info", text="steering: %s" % first[:60]))
+            self.status_hint = "steering — the model sees this at its next step"
+            self._dirty = True
+            return
+
+        self.queued.append(text)
         self.transcript.add(Entry("info", text="queued: %s" % first[:60]))
         self.status_hint = ("%d queued" % len(self.queued)
                             if len(self.queued) > 1 else "queued")

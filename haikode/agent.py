@@ -310,6 +310,9 @@ class Agent:
         self.cost = 0.0
         self.tokens = {"input": 0, "output": 0}
         self.usage = UsageTracker()
+        # Prompts typed while a turn is running; folded in at the next step.
+        self._steering: List[str] = []
+        self._steer_lock = threading.Lock()
 
         self.cwd = cwd
         # What the project config left enabled. Every agent filters this list
@@ -845,6 +848,30 @@ class Agent:
 
     # --- public API ------------------------------------------------------
 
+    def steer(self, text: str) -> bool:
+        """Add to what the model is told, without stopping what it is doing.
+
+        A prompt typed mid-run used to wait for the whole turn to finish, and
+        with no step limit a turn can run for many minutes — by which time the
+        correction is about work already done. This delivers it at the next
+        step instead, which is the point where the model chooses what to do
+        next anyway. Returns False for empty text so callers can fall through.
+        """
+        if not (text or "").strip():
+            return False
+        with self._steer_lock:
+            self._steering.append(text)
+        return True
+
+    def _drain_steering(self, on_event: Optional[Callable]) -> None:
+        """Fold anything steered in since the last step into the history."""
+        with self._steer_lock:
+            pending, self._steering = self._steering, []
+        for text in pending:
+            self.messages.append(Msg(role="user", content=text))
+            if on_event:
+                on_event("steered", {"text": text})
+
     def run(self, user_message: str, on_text: Optional[Callable] = None,
             on_event: Optional[Callable] = None) -> str:
         """Run until the model stops calling tools. Returns the final text."""
@@ -867,6 +894,7 @@ class Agent:
         self.steps_used = 0
 
         while self.max_steps is None or self.steps_used < self.max_steps:
+            self._drain_steering(on_event)
             self.steps_used += 1
             final_step = (self.max_steps is not None
                           and self.steps_used >= self.max_steps)
