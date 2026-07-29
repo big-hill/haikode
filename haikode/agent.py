@@ -849,6 +849,15 @@ class Agent:
             on_event: Optional[Callable] = None) -> str:
         """Run until the model stops calling tools. Returns the final text."""
         self.usage.start_run()
+        # A turn is the boundary at which credentials are re-checked: within
+        # one, the provider may reuse what it read, so a long turn does not
+        # re-read the token file once per model request.
+        invalidate = getattr(self.provider, "invalidate_auth", None)
+        if callable(invalidate):
+            try:
+                invalidate()
+            except Exception:
+                pass
         self.messages.append(Msg(role="user", content=self._compose(user_message)))
         # A sub-agent borrows its parent's handle; clearing it here would undo
         # the abort that is on its way to us.

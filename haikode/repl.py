@@ -734,6 +734,13 @@ class REPL:
         if not arg:
             return "Usage: /logout <provider>"
         self.config.clear_api_key(arg)
+        # Removing the file is not enough: the live provider holds what it
+        # read, so without this the session keeps working as the account it
+        # was just logged out of.
+        invalidate = getattr(getattr(self.agent, "provider", None),
+                             "invalidate_auth", None)
+        if callable(invalidate):
+            invalidate()
         return f"Credentials for {arg} removed."
 
     def _cmd_keys(self, arg):

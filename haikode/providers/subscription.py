@@ -5,7 +5,8 @@ from typing import Iterator, List, Optional
 
 from ..net import (DEFAULT_TIMEOUT, Aborted, RetryPolicy, USER_AGENT,
                    sse_json_events)
-from ..oauth import CHATGPT_API_BASE, OAuthStore, access_token
+from ..oauth import (CHATGPT_API_BASE, OAuthStore, _is_expired,
+                     access_token)
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import (Provider, classify_error, error_chunk, error_from_exception,
                    reasoning_from_delta)
@@ -28,6 +29,8 @@ class ChatGPTSubscriptionProvider(Provider):
         self.store = store
         self.base_url = base_url.rstrip("/")
         self.session_id = str(uuid.uuid4())
+        # Credentials for this turn; see invalidate_auth().
+        self._auth = None
         self.retry = retry
         self.timeout = timeout
         self.connect_timeout = connect_timeout
@@ -58,8 +61,34 @@ class ChatGPTSubscriptionProvider(Provider):
         self.reasoning_effort = value
         return value
 
+    def invalidate_auth(self) -> None:
+        """Force the next request to re-read the credential file.
+
+        Called at the start of every user turn, and by /logout. That bounds
+        how long this process can keep using credentials another process has
+        replaced or removed to a single turn, which is the price of not
+        reading the file hundreds of times.
+        """
+        self._auth = None
+
     def _headers(self) -> dict:
-        auth = access_token("chatgpt", self.store)
+        # Read once per turn, not once per request. haikode asks the model
+        # many times inside one turn — 346 requests in a single observed
+        # session — and each one used to re-read oauth.json from disk. That
+        # is why haikode, and not other programs, kept hitting a filesystem
+        # anomaly on Haiku: a read that comes back empty roughly once in
+        # thousands is invisible to a program that reads the file once at
+        # startup, and near-certain for one that reads it 346 times a
+        # session. Three such reads were captured in 14 hours.
+        #
+        # The access token is cached; the refresh token deliberately is not
+        # used from here. When the cached token nears expiry this falls
+        # through to access_token(), which re-reads under the store lock so a
+        # rotation performed by another process is not lost.
+        auth = self._auth
+        if auth is None or _is_expired(auth):
+            auth = access_token("chatgpt", self.store)
+            self._auth = auth
         headers = {
             "Authorization": f"Bearer {auth['access']}",
             "Content-Type": "application/json",

@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -278,6 +279,70 @@ class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
         described = _describe_read_failure(OSError(24, "Too many open files"))
         self.assertIn("errno 24", described)
         self.assertIn("EMFILE", described)
+
+
+class CredentialsAreReadOncePerTurn(unittest.TestCase):
+    """Why haikode hit a filesystem anomaly no other program noticed.
+
+    _headers() re-read oauth.json on every model request. One observed
+    session made 346 of them, so a read that comes back empty once in
+    thousands — invisible to a program that reads the file at startup — was
+    near-certain here. Three were captured in 14 hours.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="haikode-turn-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = Path(self.root, "oauth.json")
+        self.path.write_text(json.dumps({"chatgpt": {
+            "access": "a", "refresh": "r", "account_id": "acct",
+            "expires": int((time.time() + 3600) * 1000)}}))
+
+    def _provider(self):
+        from haikode.oauth import OAuthStore
+        return ChatGPTSubscriptionProvider(OAuthStore(str(self.path)))
+
+    def _count_reads(self, provider, times):
+        reads = {"n": 0}
+        real = Path.open
+
+        def counting(self_path, *args, **kwargs):
+            if str(self_path) == str(self.path):
+                reads["n"] += 1
+            return real(self_path, *args, **kwargs)
+
+        with patch.object(Path, "open", counting):
+            for _ in range(times):
+                provider._headers()
+        return reads["n"]
+
+    def test_many_requests_in_one_turn_read_the_file_once(self):
+        provider = self._provider()
+        self.assertEqual(1, self._count_reads(provider, 25))
+
+    def test_a_new_turn_re_reads_so_another_process_is_noticed(self):
+        provider = self._provider()
+        self._count_reads(provider, 5)
+        provider.invalidate_auth()
+        self.assertEqual(1, self._count_reads(provider, 5))
+
+    def test_the_agent_invalidates_at_the_start_of_every_turn(self):
+        provider = ScriptedProvider([text_turn("done"), text_turn("done")])
+        provider.invalidated = 0
+        provider.invalidate_auth = lambda: setattr(
+            provider, "invalidated", provider.invalidated + 1)
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        agent.run("first")
+        agent.run("second")
+        self.assertEqual(2, provider.invalidated)
+
+    def test_logout_drops_the_cached_credentials(self):
+        provider = self._provider()
+        self._count_reads(provider, 3)
+        self.assertIsNotNone(provider._auth)
+        provider.invalidate_auth()
+        self.assertIsNone(provider._auth)
 
 
 class TheStoreKeepsItsOwnBackups(unittest.TestCase):
