@@ -1,0 +1,72 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: the test suite reports **13 failures in
+        `tests/test_wiring_audit.py` by design** — see the README. That is not
+        a bug. Any other failure is.
+
+        Please do not paste API keys, OAuth tokens or the contents of
+        `oauth.json`. haikode redacts secrets from its own output, but a
+        pasted config file is not its output.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        I ran `haikode -p ollama-local` and asked it to read a file.
+        I expected the file contents. I got "no key for ollama-local".
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        The exact commands. If it only happens sometimes, say roughly how
+        often — an intermittent fault is a different investigation from a
+        deterministic one, and knowing which saves a lot of guessing.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: haikode version or commit
+      description: "`haikode --version`, or the commit you are on."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Haiku (x86_64)
+        - Haiku (other)
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: "For example `chatgpt / gpt-5.6-sol`, or `ollama-local / qwen3-coder:30b`."
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `haikode doctor`
+      description: >
+        Reports configuration and what is broken, with secrets redacted.
+        Optional, but it answers most of the follow-up questions in advance.
+      render: text

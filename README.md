@@ -36,6 +36,24 @@ haikode doctor                # what is configured and what is broken
 
 ---
 
+## The test suite fails 13 tests on purpose
+
+Before you conclude the project is broken: `python3 -m unittest discover -s
+tests -t .` reports **13 failures, all in `tests/test_wiring_audit.py`**, and
+that is the expected result. Any other failure is a real one.
+
+Those 13 are executable bug reports. Each names a subsystem that exists, is
+tested in isolation and is reachable from nothing — MCP, LSP, the skill
+catalogue, automatic compaction and a few dead config keys. They are kept
+failing rather than deleted so the gap is visible in every run instead of
+living in a stale TODO. Fixing one should make its test pass without the test
+being weakened.
+
+The count is the same on macOS and on Haiku. See
+[issue #4](https://github.com/big-hill/haikode/issues/4) for the list.
+
+---
+
 ## Requirements
 
 | Need | How |

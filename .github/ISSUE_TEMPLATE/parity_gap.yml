@@ -1,0 +1,40 @@
+name: opencode parity gap
+description: Something opencode does that haikode does not, or does differently
+labels: ["parity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        haikode is an independent reimplementation of opencode. Divergence is
+        expected and sometimes deliberate — [docs/PARITY.md](../../docs/PARITY.md)
+        records what is ported, what is partial and what is missing, and why.
+
+        Check there first: if the difference is already listed as deliberate,
+        the interesting question is whether the reasoning still holds, which is
+        worth raising as a discussion rather than a gap.
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What opencode does
+      description: The behaviour, and where in opencode it comes from if you know.
+    validations:
+      required: true
+
+  - type: textarea
+    id: haikode
+    attributes:
+      label: What haikode does instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-it-matters
+    attributes:
+      label: Why it matters in use
+      description: >
+        What this costs someone actually working. A gap that never shows up in
+        practice is worth knowing about but not worth the same priority as one
+        that does.
+    validations:
+      required: true
