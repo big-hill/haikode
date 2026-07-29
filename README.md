@@ -1,5 +1,14 @@
 # haikode — an AI coding agent that runs on Haiku
 
+```
+⠀⠀⠀⠀⠀⠀⠀⠀⣀⣠⣤⣤⣄⣀⣀⡀⠀⠀⠀
+⠀⠀⠀⠀⠀⢀⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣶⠶   ▄         ▀ ▄            ▄
+⠀⠀⠀⠀⢠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠃⠀   █▀▀▄  ▀▀█ █ █ ▄▀ █▀▀█ █▀▀█ █▀▀█
+⠀⠀⠀⢀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀⠀   █  █ █▀▀█ █ █▀▄  █  █ █  █ █▀▀▀
+⢀⣠⠞⠋⠉⠛⠻⠿⣿⣿⣿⠿⠟⠋⠀⠀⠀⠀⠀   ▀▀▀▀ ▀▀▀▀ ▀ ▀ ▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+```
+
 `haikode` is a coding agent that runs **natively on Haiku** and talks **directly
 to cloud providers** over HTTPS. There is no `opencode serve`, no SSH tunnel, no
 Node, no Bun and no second computer in the loop. The agent loop, the provider
