@@ -1110,12 +1110,12 @@ class LocalServerCase(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self):
-        self._real_pin = misc_module._pinned_address
-        misc_module._pinned_address = lambda host: (
-            host if host in ("127.0.0.1", "::1") else self._real_pin(host))
+        self._real_pin = misc_module._pinned_addresses
+        misc_module._pinned_addresses = lambda host: (
+            [host] if host in ("127.0.0.1", "::1") else self._real_pin(host))
 
     def tearDown(self):
-        misc_module._pinned_address = self._real_pin
+        misc_module._pinned_addresses = self._real_pin
 
 
 class WebFetchGuardTests(unittest.TestCase):

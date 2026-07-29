@@ -178,15 +178,21 @@ def _assert_public_url(url: str) -> None:
         raise WebFetchBlocked("Refusing to fetch %s: %s" % (url, reason))
 
 
-def _pinned_address(host: str) -> str:
+def _pinned_addresses(host: str) -> List[str]:
     """
-    The single address this connection is allowed to use.
+    Every address this connection is allowed to use, in resolution order.
 
     Checking the name and then letting urllib look it up again is a
     time-of-check/time-of-use hole: DNS rebinding answers "93.184.216.34" to
     the screening lookup and "127.0.0.1" to the one that matters. Resolving
-    here and connecting to *this* result closes the window, because the
-    address that was screened is the address the socket gets.
+    here and connecting to *these* results closes the window, because the
+    addresses that were screened are the only ones the socket may get.
+
+    All of them, not just the first: a host with an AAAA record resolves to
+    IPv6 first, and on a machine with no IPv6 route — the owner's Haiku box —
+    pinning to that one address made every such host unreachable while
+    IPv4-only hosts worked. That is most of the modern web. The screening is
+    unchanged, since a single private answer still rejects the whole name.
     """
     addresses = _resolve_addresses(host)
     if not addresses:
@@ -197,7 +203,32 @@ def _pinned_address(host: str) -> str:
         raise WebFetchBlocked(
             "Refusing to connect to %s: it resolves to a private or loopback "
             "address (%s)" % (host, ", ".join(sorted(set(private)))))
-    return addresses[0].split("%")[0]
+    seen, ordered = set(), []
+    for address in addresses:
+        cleaned = address.split("%")[0]
+        if cleaned not in seen:
+            seen.add(cleaned)
+            ordered.append(cleaned)
+    return ordered
+
+
+def _connect_pinned(connection, hostname: str) -> None:
+    """Try each screened address until one connects.
+
+    Mirrors what socket.create_connection does for a name, except the
+    candidate list is the screened one rather than a fresh lookup.
+    """
+    last = None
+    for address in connection.pinned or [hostname]:
+        connection.host = address
+        try:
+            http.client.HTTPConnection.connect(connection)
+            return
+        except OSError as exc:
+            last = exc
+        finally:
+            connection.host = hostname
+    raise last if last is not None else OSError("no address could be reached")
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -205,18 +236,13 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pinned = _pinned_address(self.host)
+        self.pinned = _pinned_addresses(self.host)
 
     def connect(self) -> None:
-        hostname = self.host
-        if self.pinned:
-            self.host = self.pinned
-        try:
-            super().connect()
-        finally:
-            # putrequest() builds the Host header from self.host, and the
-            # server must see the name it was asked for, not the address.
-            self.host = hostname
+        # putrequest() builds the Host header from self.host, and the server
+        # must see the name it was asked for, not the address — which is why
+        # _connect_pinned restores it after every attempt.
+        _connect_pinned(self, self.host)
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -224,16 +250,11 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pinned = _pinned_address(self.host)
+        self.pinned = _pinned_addresses(self.host)
 
     def connect(self) -> None:
         hostname = self.host
-        if self.pinned:
-            self.host = self.pinned
-        try:
-            http.client.HTTPConnection.connect(self)
-        finally:
-            self.host = hostname
+        _connect_pinned(self, hostname)
         server_hostname = self._tunnel_host or hostname
         self.sock = self._context.wrap_socket(self.sock,
                                               server_hostname=server_hostname)
