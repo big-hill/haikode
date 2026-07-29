@@ -1,104 +1,103 @@
 # hai-keystore
 
-Liten native Haiku-CLI som lagrer API-nøkler i Haikus innebygde nøkkelring
-(`BKeyStore`/`BPasswordKey` — samme mekanisme som WebPositive bruker for
-passord). Brukes av Python-CLI-en `haikode` via subprocess.
+A small native Haiku CLI that stores API keys in Haiku's own keyring
+(`BKeyStore`/`BPasswordKey` — the same mechanism WebPositive uses for
+passwords). The Python CLI `haikode` calls it through a subprocess.
 
-> **Binærnavnet forblir `hai-keystore` — ikke døp det om.**
-> Haiku knytter nøkkelring-godkjenningen til app-signatur **og** sti til
-> binæren. Et nytt navn (eller ny signatur) ville gjort den eksisterende
-> godkjenningen ugyldig, re-trigget «Application keyring access»-dialogen på
-> maskinens *fysiske* skjerm, og gjort allerede lagrede nøkler (bl.a.
-> Ollama-nøkkelen) utilgjengelige. Kun *identifier-navnerommet* ble endret ved
-> omdøpingen til `haikode`, fordi det er data vi kan migrere i programvare.
+> **The binary is named `hai-keystore` and must stay that way.**
+> Haiku ties keyring approval to the application signature **and** the path to
+> the binary. A new name (or a new signature) would invalidate the existing
+> grant, re-trigger the "Application keyring access" dialog on the machine's
+> *physical* screen, and orphan every key already stored. Only the
+> *identifier namespace* changed when the project was renamed to `haikode`,
+> because that is data software can migrate.
 
-Nøklene lagres i standard-nøkkelringen som `B_KEY_TYPE_PASSWORD` med
-`B_KEY_PURPOSE_GENERIC` og `secondaryIdentifier = "hai"`, slik at `list`
-kun viser nøkler denne CLI-en selv har lagret.
+Keys are stored in the default keyring as `B_KEY_TYPE_PASSWORD` with
+`B_KEY_PURPOSE_GENERIC` and `secondaryIdentifier = "hai"`, so `list` shows
+only the keys this CLI stored itself.
 
-## Bygging (på Haiku)
+## Building (on Haiku)
 
 ```sh
 make            # g++ -O2 -Wall -o hai-keystore main.cpp -lbe
-make install    # kopierer til ~/config/non-packaged/bin/ (i PATH)
+make install    # copies to ~/config/non-packaged/bin/ (on PATH)
 ```
 
-## Bruk
+## Use
 
 ```sh
-printf '%s' <secret> | hai-keystore set-stdin <identifier>   # lagre/oppdater
-hai-keystore get <identifier>            # skriver hemmeligheten til stdout + \n
-hai-keystore remove <identifier>         # fjern nøkkel
-hai-keystore list                        # alle identifiers (én per linje)
-hai-keystore set <identifier> <secret>   # UTFASET, se «Sikkerhet» under
+printf '%s' <secret> | hai-keystore set-stdin <identifier>   # store/update
+hai-keystore get <identifier>            # writes the secret to stdout + \n
+hai-keystore remove <identifier>         # remove a key
+hai-keystore list                        # every identifier, one per line
+hai-keystore set <identifier> <secret>   # DEPRECATED, see "Security" below
 ```
 
-Identifier er en opak streng; `haikode` bruker konvensjonen
-`haikode:<leverandør>`, f.eks. `haikode:xai`, `haikode:anthropic`.
+The identifier is an opaque string; `haikode` uses the convention
+`haikode:<provider>`, for example `haikode:xai`, `haikode:anthropic`.
 
-Nøkler lagret før omdøpingen ligger under `hai:<leverandør>`.
-`haikode/config.py` leser den gamle identifieren automatisk hvis den nye ikke
-finnes, og skriver da en kopi under den nye — uten å slette den gamle. Ingen
-manuell migrering trengs, og ingen ny godkjenningsdialog dukker opp siden
-binæren er den samme.
+Keys stored before the rename live under `hai:<provider>`.
+`haikode/config.py` reads the old identifier automatically when the new one is
+absent, and writes a copy under the new one without deleting the old. No
+manual migration is needed, and no new approval dialog appears, because the
+binary is unchanged.
 
-Exit-koder:
+Exit codes:
 
-| Kode | Betydning |
-|------|-----------|
-| 0    | Suksess |
-| 1    | Nøkkel ikke funnet (`get`/`remove`; ingenting på stdout, melding på stderr) |
-| 2    | Feil bruk (usage på stderr) |
-| 3    | Keystore-feil eller timeout (se nedenfor) |
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
+| 1    | Key not found (`get`/`remove`; nothing on stdout, message on stderr) |
+| 2    | Bad usage (usage on stderr) |
+| 3    | Keystore error or timeout (see below) |
 
-## Kjente begrensninger
+## Known limitations
 
-- **GUI-godkjenningsdialog (verifisert på Haiku hrev57937):** Første gang
-  programmet aksesserer nøkkelringen viser `keystore_server` en dialog på
-  maskinens *fysiske* skjerm:
+- **GUI approval dialog (verified on Haiku hrev57937):** the first time the
+  program touches the keyring, `keystore_server` shows a dialog on the
+  machine's *physical* screen:
 
   > **Application keyring access**
-  > The application: `application/x-vnd.hai-keystore (<sti til binæren>)`
+  > The application: `application/x-vnd.hai-keystore (<path to the binary>)`
   > requests access to keyring: Master
   > to perform the following action: Get keys from the keyring.
   > This application hasn't been granted access before.
   > [Disallow] [Allow once] [Allow always]
 
-  Kjøres kommandoen headless (f.eks. over SSH) henger den til dialogen
-  besvares — derfor har binæren en innebygd `alarm()`-timeout på 10 sekunder
-  som avbryter med exit-kode 3 og en feilmelding på stderr. Engangsfix: kjør
-  `hai-keystore list` én gang, gå til skjermen og velg **Allow always**.
-  Deretter fungerer alt headless.
-- **Krever BApplication/registrar:** `keystore_server` identifiserer
-  klienter via registrar; uten en registrert `BApplication` svarer serveren
-  `B_BAD_TEAM_ID` («Operation on invalid team»). Derfor oppretter `main()` en
-  `BApplication` med signaturen `application/x-vnd.hai-keystore`. Signaturen
-  beholdes uendret av samme grunn som binærnavnet — se boksen øverst.
-- **Godkjenning er bundet til signatur + sti:** Dialogen viser både
-  app-signaturen og stien til binæren. Godkjenn derfor fra den *installerte*
-  binæren (`~/config/non-packaged/bin/hai-keystore`), ikke fra byggkatalogen.
-  Rebygging/reinstallering kan re-trigge dialogen.
-- **Låst nøkkelring:** Hvis standard-nøkkelringen er låst med passord, må den
-  låses opp (via GUI) før kommandoene fungerer.
-## Sikkerhet: hemmeligheten skal aldri i argv
+  Run headless — over SSH, say — the command hangs until the dialog is
+  answered, which is why the binary carries a built-in `alarm()` timeout of
+  10 seconds that aborts with exit code 3 and a message on stderr. One-time
+  fix: run `hai-keystore list` once, go to the screen and choose **Allow
+  always**. Everything works headless afterwards.
+- **Requires BApplication/registrar:** `keystore_server` identifies clients
+  through the registrar; without a registered `BApplication` the server
+  answers `B_BAD_TEAM_ID` ("Operation on invalid team"). `main()` therefore
+  creates a `BApplication` with the signature
+  `application/x-vnd.hai-keystore`. The signature stays fixed for the same
+  reason the binary name does — see the box at the top.
+- **Approval is bound to signature + path:** the dialog shows both the
+  application signature and the path to the binary, so approve from the
+  *installed* binary (`~/config/non-packaged/bin/hai-keystore`), not from the
+  build directory. Rebuilding or reinstalling can re-trigger the dialog.
+- **Locked keyring:** if the default keyring is password-locked it must be
+  unlocked through the GUI before any command works.
 
-`argv` er lesbart for alle brukere på maskinen (`ps`), så `set <identifier>
-<secret>` lekket hver eneste nøkkel den lagret. Bruk `set-stdin`, som leser
-hemmeligheten fra stdin (én avsluttende `\n` strippes).
+## Security: the secret must never reach argv
 
-`set` er beholdt én utgivelse til fordi brukere kan ha skript som kaller den.
-Den advarer på stderr og nuller ut `argv[3]` så snart nøkkelen er lagret —
-det forkorter vinduet, men lukker det ikke.
+`argv` is readable by every user on the machine (`ps`), so
+`set <identifier> <secret>` leaked every key it stored. Use `set-stdin`, which
+reads the secret from stdin (one trailing `\n` is stripped).
 
-`haikode/config.py` bruker kun `set-stdin`. Møter den en eldre binær som ikke
-kjenner verbet (exit 2), faller den *ikke* tilbake til `set`; den advarer og
-lagrer nøkkelen i konfigfila (modus 0600) i stedet. Rebygg og reinstaller
-binæren for å få nøkkelringen tilbake i bruk.
+`set` is kept for one more release because users may have scripts calling it.
+It warns on stderr and zeroes `argv[3]` as soon as the key is stored — which
+shortens the window without closing it.
 
-## Filer
+`haikode/config.py` uses `set-stdin` only. Meeting an older binary that does
+not know the verb (exit 2) it does *not* fall back to `set`; it warns and
+stores the key in the config file (mode 0600) instead. Rebuild and reinstall
+the binary to get the keyring back in use.
 
-- `main.cpp` — hele implementasjonen
-- `Makefile` — bygg med `make`
-- Master-kopi ligger på Mac-en i `~/hai/tools/hai-keystore/` (repo-katalogen
-  heter fortsatt `hai`); bygges på Haiku-maskinen (`shredder`), der kilden
-  installeres til `/boot/home/haikode/tools/hai-keystore/`.
+## Files
+
+- `main.cpp` — the whole implementation
+- `Makefile` — build with `make`

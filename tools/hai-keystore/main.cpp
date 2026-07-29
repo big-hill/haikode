@@ -1,23 +1,23 @@
 /*
- * hai-keystore — lagrer API-nøkler i Haikus innebygde nøkkelring
- * (BKeyStore/BPasswordKey, samme mekanisme som WebPositive bruker).
+ * hai-keystore — stores API keys in Haiku's own keyring
+ * (BKeyStore/BPasswordKey, the same mechanism WebPositive uses).
  *
- * Brukes av Python-CLI-en "hai" via subprocess.
+ * Called by the Python CLI "haikode" through a subprocess.
  *
- * Bruk:
- *   hai-keystore set-stdin <identifier>      (hemmelighet leses fra stdin)
- *   hai-keystore get <identifier>            (secret på stdout, exit 0; exit 1 hvis ikke funnet)
- *   hai-keystore remove <identifier>         (exit 0; exit 1 hvis ikke funnet)
- *   hai-keystore list                        (identifiers, én per linje)
- *   hai-keystore set <identifier> <secret>   (UTFASET — se under)
+ * Use:
+ *   hai-keystore set-stdin <identifier>      (secret is read from stdin)
+ *   hai-keystore get <identifier>            (secret on stdout, exit 0; exit 1 if absent)
+ *   hai-keystore remove <identifier>         (exit 0; exit 1 if absent)
+ *   hai-keystore list                        (identifiers, one per line)
+ *   hai-keystore set <identifier> <secret>   (DEPRECATED — see below)
  *
- * "set" tar hemmeligheten som argument, og argv er lesbart for alle brukere
- * på maskinen via ps. Verbet beholdes én utgivelse til for skript som
- * fortsatt bruker det, men advarer på stderr; "set-stdin" er erstatningen.
+ * "set" takes the secret as an argument, and argv is readable by every user
+ * on the machine through ps. The verb is kept for one more release for
+ * scripts that still call it, but warns on stderr; "set-stdin" replaces it.
  *
- * Exit-koder: 0 = suksess, 1 = ikke funnet, 2 = feil bruk,
- *             3 = keystore-feil eller timeout (f.eks. GUI-godkjenningsdialog
- *                 som venter på maskinens fysiske skjerm).
+ * Exit codes: 0 = success, 1 = not found, 2 = bad usage,
+ *             3 = keystore error or timeout (a GUI approval dialog waiting
+ *                 on the machine's physical screen, for instance).
  */
 
 #include <signal.h>
@@ -33,13 +33,13 @@
 #include <KeyStore.h>
 #include <String.h>
 
-// Alle nøkler denne CLI-en eier merkes med denne secondaryIdentifier,
-// slik at "list" kun viser våre egne nøkler.
+// Every key this CLI owns is tagged with this secondaryIdentifier, so
+// "list" shows only our own.
 static const char* kSecondaryIdentifier = "hai";
 
-// Failsafe: første aksess mot keystore_server kan utløse en
-// GUI-godkjenningsdialog på maskinens fysiske skjerm. Kjøres kommandoen
-// over SSH ville den ellers henge for alltid.
+// Failsafe: the first access to keystore_server can raise a GUI approval
+// dialog on the machine's physical screen. Run over SSH, the command would
+// otherwise hang forever.
 static const unsigned int kTimeoutSeconds = 10;
 
 
@@ -49,7 +49,7 @@ timeout_handler(int)
 	static const char message[] =
 		"hai-keystore: timed out waiting for keystore_server "
 		"(an approval dialog may be waiting on the machine's screen)\n";
-	// Kun async-signal-sikre kall her.
+	// Async-signal-safe calls only in here.
 	write(STDERR_FILENO, message, sizeof(message) - 1);
 	_exit(3);
 }
@@ -74,9 +74,9 @@ is_not_found(status_t status)
 }
 
 
-// Leser hele stdin. Hemmeligheten sendes denne veien nettopp for å holde den
-// ute av argv; én avsluttende linjeskift strippes slik at `printf '%s\n'` og
-// `printf '%s'` gir samme nøkkel.
+// Reads all of stdin. The secret travels this way precisely to keep it out
+// of argv; one trailing newline is stripped so that `printf '%s\n'` and
+// `printf '%s'` store the same key.
 static status_t
 read_secret_from_stdin(std::string& out)
 {
@@ -94,7 +94,7 @@ read_secret_from_stdin(std::string& out)
 }
 
 
-// Erstatter en eventuell eksisterende nøkkel med samme identifier.
+// Replaces any existing key with the same identifier.
 static int
 store_secret(BKeyStore& keyStore, const char* identifier, const char* secret)
 {
@@ -137,8 +137,8 @@ main(int argc, char** argv)
 	signal(SIGALRM, timeout_handler);
 	alarm(kTimeoutSeconds);
 
-	// keystore_server identifiserer klienter via registrar; uten en
-	// registrert BApplication svarer serveren med B_BAD_TEAM_ID
+	// keystore_server identifies clients through the registrar; without a
+	// registered BApplication the server answers B_BAD_TEAM_ID
 	// ("Operation on invalid team").
 	BApplication app("application/x-vnd.hai-keystore");
 
@@ -158,8 +158,8 @@ main(int argc, char** argv)
 			return 2;
 		}
 		int result = store_secret(keyStore, argv[2], secret.c_str());
-		// Ikke la hemmeligheten ligge igjen i prosessens minne lenger enn
-		// nødvendig.
+		// Do not leave the secret in this process's memory any longer than
+		// necessary.
 		if (!secret.empty())
 			memset(&secret[0], 0, secret.size());
 		return result;
@@ -176,8 +176,9 @@ main(int argc, char** argv)
 		char* secret = argv[3];
 
 		int result = store_secret(keyStore, identifier, secret);
-		// Overskriv argumentet så snart nøkkelen er lagret. Det lukker ikke
-		// hullet — ps kan ha lest argv allerede — men det forkorter vinduet.
+		// Overwrite the argument as soon as the key is stored. That does not
+		// close the hole — ps may have read argv already — but it shortens
+		// the window.
 		memset(secret, 0, strlen(secret));
 		return result;
 	}
@@ -216,7 +217,7 @@ main(int argc, char** argv)
 		}
 		const char* identifier = argv[2];
 
-		// Hent den eksakte nøkkelen først, slik at RemoveKey matcher.
+		// Fetch the exact key first, so RemoveKey matches.
 		BPasswordKey key;
 		status_t status = keyStore.GetKey(B_KEY_TYPE_PASSWORD, identifier,
 			kSecondaryIdentifier, key);
