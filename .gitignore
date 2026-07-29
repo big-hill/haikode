@@ -1,3 +1,28 @@
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
+
+# Local state: sessions, credentials, memories. Never committed.
+sessions.db*
+oauth.json
+credential-reads.log
+
+# Build and run artefacts
+build/
+dist/
+*.hpkg
+*.o
+
+# Benchmark output records absolute paths and the network it ran on.
+benchmarks/results/
+
+# The pre-rename prototype; superseded by haikode/ and referenced by nothing.
+hai/
+
+# Raw AI working notes: absolute paths, machine names, no value to a reader.
+specs/hai_desktop_*_2026*.txt
+specs/hai_desktop_spec_codex*.txt
+specs/hai_desktop_spec_from_codex.txt
+specs/hai_desktop_spec_raw.txt
+specs/hai_desktop_spec_prompt.txt

@@ -872,7 +872,33 @@ tests/              unittest suite + render_tui.py
 docs/PARITY.md      verified opencode-vs-haikode status
 ```
 
+## How this was built
+
+haikode was written with AI assistance, and that is worth stating plainly
+rather than leaving for someone to infer from the commit style.
+
+Most of the code was written by **Claude** (Anthropic) working from the
+maintainer's direction, with **GPT-5.6** (OpenAI, via the Codex CLI) used
+repeatedly as an adversarial reviewer — asked to attack the design and find
+what the author had missed, not to approve it. Several of the defects
+recorded in the git history were found that way, including a session-store
+corruption bug, a credential-handling failure and an OAuth caching design
+that would have lost tokens across concurrent processes.
+
+What that does *not* mean is that the code is unreviewed. Every change is
+covered by the test suite (`python3 -m unittest discover -s tests -t .`),
+much of it was verified end-to-end on real Haiku hardware, and the failures
+that shaped it came from real use rather than from imagination. Where a fix
+was made on a guess, the commit message says so.
+
+Judge it the way you would judge any other code: read it, run the tests, and
+try to break it. If you find something, the history above is the honest
+record of how much was already found that way.
+
 ## Licence
 
-MIT. Ported from opencode (MIT); the prompt texts and keybinding tables are
-derived from that project.
+MIT — see [LICENSE](LICENSE). haikode is an independent reimplementation of
+[opencode](https://github.com/sst/opencode) (MIT) and contains none of its
+source, but its behaviour, tool surface, prompt texts and keybinding tables
+are derived from that project. The same licence is used so that what was
+derived carries the terms it was given.

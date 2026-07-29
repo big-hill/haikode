@@ -13,22 +13,24 @@ zen). The reference implementation is opencode (`sst/opencode`); when a design
 question comes up, look at what opencode does before inventing something.
 Divergences are allowed but deliberate: document why.
 
-Who you work with, language and tone live in the global AGENTS.md
-(`~/config/settings/haikode/AGENTS.md` on the Haiku machine). In short:
-answer the maintainer in their own language; everything in this tree stays in English.
+Everything in this tree is written in English. A maintainer's own language,
+tone and personal context belong in their global instruction file
+(`~/config/settings/haikode/AGENTS.md` on Haiku, `~/.config/haikode/AGENTS.md`
+elsewhere), which is per-machine and never committed.
 
 The bar for "done" is explicit: a feature does not exist until it is proven
-working on the Haiku machine — the suite green, and the behaviour shown
+working on real Haiku hardware — the suite green, and the behaviour shown
 end-to-end. "The code looks right" has repeatedly turned out to be false in
-this project; the field session that shaped the current fixes failed five
+this project; the field session that shaped several current fixes failed five
 times on things that "looked right".
 
 ## Source of truth
 
-The Mac tree (`the development checkout`) is the source of truth. `~/haikode` on
-the Haiku machine is a deploy target: anything edited directly there can be
-overwritten by the next deploy. If you change code on the Haiku box, say so
-explicitly at the end of the session so the change can be ported back.
+Development happens on a workstation and deploys to a Haiku machine, so the
+development checkout is the source of truth and the Haiku copy is a deploy
+target: anything edited directly there can be overwritten by the next deploy.
+If you change code on the Haiku box, say so explicitly at the end of the
+session so the change can be ported back.
 
 ## Verification
 
