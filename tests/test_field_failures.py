@@ -281,6 +281,62 @@ class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
         self.assertIn("EMFILE", described)
 
 
+class SteeringReachesTheModelMidTurn(TemporaryProject):
+    """A correction typed mid-run must not wait for the turn to end.
+
+    With no step limit a turn runs for many minutes, so a prompt held until
+    the end arrives after the work it was meant to redirect. And between
+    typing and the next step the user may change their mind, so what is
+    pending has to be visible and editable.
+    """
+
+    def _agent(self, provider):
+        return Agent(provider, "m", cwd=self.root, tool_names=["list"],
+                     permissions=Permissions(auto_approve=True))
+
+    def test_it_is_delivered_at_the_next_step_not_at_the_end(self):
+        provider = ScriptedProvider([tool_turn(), text_turn("done")])
+        agent = self._agent(provider)
+        agent.steer("actually, do B instead")
+
+        agent.run("do A")
+
+        second = [(m.role, m.content) for m in provider.messages[1]
+                  if m.role == "user"]
+        self.assertIn(("user", "actually, do B instead"), second)
+
+    def test_an_event_says_it_was_delivered(self):
+        provider = ScriptedProvider([text_turn("done")])
+        agent = self._agent(provider)
+        agent.steer("note this")
+        events = []
+        agent.run("go", on_event=lambda kind, data: events.append((kind, data)))
+        self.assertIn("steered", [kind for kind, _ in events])
+
+    def test_pending_messages_can_be_listed_edited_and_dropped(self):
+        provider = ScriptedProvider([text_turn("done")])
+        agent = self._agent(provider)
+        agent.steer("first")
+        agent.steer("second")
+        self.assertEqual(["first", "second"], agent.pending_steering())
+
+        self.assertTrue(agent.edit_steering(0, "corrected"))
+        self.assertEqual(["corrected", "second"], agent.pending_steering())
+
+        self.assertTrue(agent.edit_steering(1, "   "))   # empty drops it
+        self.assertEqual(["corrected"], agent.pending_steering())
+
+        self.assertFalse(agent.edit_steering(9, "nope"))
+        self.assertEqual(1, agent.clear_steering())
+        self.assertEqual([], agent.pending_steering())
+
+    def test_empty_text_is_not_queued_at_all(self):
+        provider = ScriptedProvider([text_turn("done")])
+        agent = self._agent(provider)
+        self.assertFalse(agent.steer("   "))
+        self.assertEqual([], agent.pending_steering())
+
+
 class CredentialsAreReadOncePerTurn(unittest.TestCase):
     """Why haikode hit a filesystem anomaly no other program noticed.
 

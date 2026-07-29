@@ -863,6 +863,35 @@ class Agent:
             self._steering.append(text)
         return True
 
+    def pending_steering(self) -> List[str]:
+        """What is waiting to be handed to the model, in delivery order."""
+        with self._steer_lock:
+            return list(self._steering)
+
+    def edit_steering(self, index: int, text: str) -> bool:
+        """Replace one pending message; empty text drops it.
+
+        Between typing and the next step there is a window — often minutes,
+        since a step can be a long tool call — in which the user changes their
+        mind about what they just typed. Without this the only options were to
+        let a stale instruction through or abort the whole turn.
+        """
+        with self._steer_lock:
+            if not 0 <= index < len(self._steering):
+                return False
+            if (text or "").strip():
+                self._steering[index] = text
+            else:
+                del self._steering[index]
+            return True
+
+    def clear_steering(self) -> int:
+        """Drop everything pending. Returns how many were discarded."""
+        with self._steer_lock:
+            count = len(self._steering)
+            self._steering = []
+            return count
+
     def _drain_steering(self, on_event: Optional[Callable]) -> None:
         """Fold anything steered in since the last step into the history."""
         with self._steer_lock:

@@ -504,6 +504,7 @@ class REPL:
             ("permissions", self._cmd_permissions, "show permission rules"),
             ("reasoning", self._cmd_reasoning, "toggle reasoning display"),
             ("effort", self._cmd_effort, "show or set model reasoning effort"),
+            ("steer", self._cmd_steer, "show, edit or drop pending steering"),
             ("yolo", self._cmd_yolo, "toggle bypassing every permission gate"),
             ("status", self._cmd_status, "show the current setup"),
             ("config", self._cmd_config, "show effective settings and their source"),
@@ -873,6 +874,41 @@ class REPL:
                             for value in before),
                    "/".join(str(value if value is not None else "unlimited")
                             for value in after)))
+
+    def _cmd_steer(self, arg):
+        """Inspect and change what the running turn will be told next."""
+        agent = self.agent
+        pending = agent.pending_steering()
+        parts = (arg or "").split(None, 2)
+        verb = parts[0].lower() if parts else ""
+
+        if not verb:
+            if not pending:
+                return ("Nothing pending. Type while a turn is running and it "
+                        "reaches the model at its next step.")
+            lines = ["  %d  %s" % (index + 1, text.splitlines()[0][:70])
+                     for index, text in enumerate(pending)]
+            lines.append(_c("/steer edit <n> <text> · /steer drop <n> · "
+                            "/steer clear", DIM))
+            return "\n".join(lines)
+
+        if verb == "clear":
+            return "Dropped %d pending message(s)." % agent.clear_steering()
+
+        if verb in ("edit", "drop"):
+            if len(parts) < 2 or not parts[1].isdigit():
+                return "Usage: /steer %s <n>%s" % (
+                    verb, " <text>" if verb == "edit" else "")
+            index = int(parts[1]) - 1
+            text = parts[2] if verb == "edit" and len(parts) > 2 else ""
+            if verb == "edit" and not text:
+                return "Usage: /steer edit <n> <text>"
+            if not agent.edit_steering(index, text):
+                return "No pending message %s." % parts[1]
+            return ("Replaced message %s." if verb == "edit"
+                    else "Dropped message %s.") % parts[1]
+
+        return "Usage: /steer [edit <n> <text> | drop <n> | clear]"
 
     def _cmd_yolo(self, arg):
         """Turn every gate off, or back on. Session-only: never persisted."""
