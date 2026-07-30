@@ -646,7 +646,20 @@ AppController::_StartRun(const char* prompt, BMessenger sink, int32 generation)
 
 		// Nothing here allocates: the environment was built before the fork.
 		environ = environment;
-		execlp("python3", "python3", "-m", "haikode.desktop_worker", NULL);
+		// Haiku nightlies ship the interpreter as `python3.10` with no
+		// unversioned `python3` command — hrev59917's package provides
+		// `cmd:python3.10` and nothing else. execlp on a name that does not
+		// exist fails, the child exits 127, and the app comes up with no
+		// engine behind it. Try the plain name first, so a system that has it
+		// behaves exactly as before, then the versioned ones newest-first.
+		static const char* const kInterpreters[] = {
+			"python3", "python3.13", "python3.12", "python3.11", "python3.10"
+		};
+		for (size_t i = 0; i < sizeof(kInterpreters) / sizeof(kInterpreters[0]); i++) {
+			execlp(kInterpreters[i], kInterpreters[i], "-m",
+				"haikode.desktop_worker", NULL);
+			// execlp only returns on failure; try the next candidate.
+		}
 		_exit(127);
 	}
 

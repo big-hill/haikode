@@ -1,5 +1,6 @@
 """Regressions from the 447-message Haiku field session."""
 
+import errno
 import json
 import os
 import shutil
@@ -276,8 +277,13 @@ class UnreadableCredentialsAreNotASignedOutUser(unittest.TestCase):
 
     def test_an_errno_is_kept_where_the_old_code_discarded_it(self):
         from haikode.oauth import _describe_read_failure
-        described = _describe_read_failure(OSError(24, "Too many open files"))
-        self.assertIn("errno 24", described)
+        # errno.EMFILE, not the literal 24: Haiku numbers its errnos from a
+        # different base (-2147459062 there), so a hardcoded POSIX value makes
+        # this pass on Linux and macOS and fail on the platform the project
+        # targets. Reported from a real hrev59917 install.
+        described = _describe_read_failure(
+            OSError(errno.EMFILE, "Too many open files"))
+        self.assertIn("errno %d" % errno.EMFILE, described)
         self.assertIn("EMFILE", described)
 
 
@@ -330,6 +336,78 @@ class AResumedSessionShowsItsHistory(unittest.TestCase):
         before = len(ui.transcript.entries)
         ui._startup_agent()
         self.assertEqual(before, len(ui.transcript.entries))
+
+
+class ATransientBackendErrorIsRetried(unittest.TestCase):
+    """The field failure the owner hit repeatedly: `server_error`.
+
+    Established by measurement, not assumption: an over-long prompt returns a
+    clean `context_overflow` (so it is not size), a tool chain with no
+    reasoning items is accepted (so it is not shape), and a 308k-token real
+    history that had failed earlier went through unchanged (so it is
+    transient). `classify_error` already marked it retryable; nothing acted
+    on that, because net.py's retry only covers failures before the stream
+    starts and this one arrives as an SSE event.
+    """
+
+    def _provider(self):
+        from haikode.providers.subscription import ChatGPTSubscriptionProvider
+        return ChatGPTSubscriptionProvider(object())
+
+    @staticmethod
+    def _error_event():
+        return {"type": "error", "error": {"message": "An error occurred.",
+                                           "code": "server_error",
+                                           "type": "server_error"}}
+
+    def _run(self, events_factory):
+        from haikode.providers import subscription as sub
+        provider = self._provider()
+        with patch.object(provider, "_headers", return_value={}), \
+                patch.object(sub, "sse_json_events", events_factory), \
+                patch.object(sub, "RETRY_BACKOFF_SECONDS", 0.001):
+            return list(provider.stream([Msg(role="user", content="go")], [],
+                                        "gpt-5.6-sol", 10))
+
+    def test_a_blip_is_retried_and_the_turn_succeeds(self):
+        calls = {"n": 0}
+
+        def flaky(url, payload, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                yield self._error_event()
+                return
+            yield {"type": "response.output_text.delta", "delta": "PONG"}
+            yield {"type": "response.completed",
+                   "response": {"usage": {"input_tokens": 5, "output_tokens": 1}}}
+
+        chunks = self._run(flaky)
+        self.assertEqual("PONG", "".join(c.text or "" for c in chunks))
+        self.assertEqual(3, calls["n"])
+
+    def test_a_persistent_failure_still_gives_up(self):
+        calls = {"n": 0}
+
+        def always(url, payload, **kwargs):
+            calls["n"] += 1
+            yield self._error_event()
+
+        chunks = self._run(always)
+        errors = [c for c in chunks if (c.usage or {}).get("error")]
+        self.assertEqual(1, len(errors), "the caller must see one failure")
+        self.assertEqual(3, calls["n"], "and not retry forever")
+
+    def test_a_failure_after_output_is_not_retried(self):
+        # Re-sending a turn whose tokens are already out would duplicate them.
+        calls = {"n": 0}
+
+        def late(url, payload, **kwargs):
+            calls["n"] += 1
+            yield {"type": "response.output_text.delta", "delta": "half"}
+            yield self._error_event()
+
+        self._run(late)
+        self.assertEqual(1, calls["n"])
 
 
 class SteeringReachesTheModelMidTurn(TemporaryProject):

@@ -7,4 +7,22 @@ set -eu
 # HAI_HOME is honoured for pre-rename installs that still export it.
 HAIKODE_HOME="${HAIKODE_HOME:-${HAI_HOME:-/boot/home/haikode}}"
 export PYTHONPATH="$HAIKODE_HOME${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m haikode "$@"
+
+# Haiku nightlies ship `python3.10` with no unversioned `python3` command, so
+# resolve rather than assume. Plain name first: a system that has it behaves
+# exactly as before.
+find_python() {
+	for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+		if command -v "$candidate" >/dev/null 2>&1; then
+			echo "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+PYTHON=$(find_python) || {
+	echo "haikode: no Python 3 interpreter found (looked for python3, python3.13, python3.12, python3.11, python3.10)" >&2
+	exit 127
+}
+exec "$PYTHON" -m haikode "$@"

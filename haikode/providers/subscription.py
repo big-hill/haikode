@@ -1,5 +1,6 @@
 """Local ChatGPT and SuperGrok subscription providers."""
 import json
+import time
 import uuid
 from typing import Iterator, List, Optional
 
@@ -11,6 +12,12 @@ from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import (Provider, classify_error, error_chunk, error_from_exception,
                    reasoning_from_delta)
 from .openai_compat import OpenAICompatProvider
+
+# The backend answers `server_error` intermittently on requests that succeed
+# when repeated. Three attempts with a short, growing pause: enough to ride
+# out a blip, few enough that a genuine outage still fails promptly.
+RETRYABLE_STREAM_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 1.5
 
 
 class ChatGPTSubscriptionProvider(Provider):
@@ -149,6 +156,39 @@ class ChatGPTSubscriptionProvider(Provider):
 
     def stream(self, messages: List[Msg], tools: List[ToolSpec], model: str,
                max_tokens: int) -> Iterator[CompletionChunk]:
+        """Stream one turn, retrying a transient backend failure.
+
+        The backend intermittently answers `server_error` — a generic 500
+        with a request id and nothing else — on requests that succeed when
+        repeated. Measured while chasing it: a 308k-token history that had
+        failed earlier went through unchanged, an over-long prompt returns a
+        clean `context_overflow` instead, and a tool chain with no reasoning
+        items is accepted. So it is not size, not shape, and not ours.
+
+        net.py already retries transport failures, but an error delivered as
+        an SSE event never reached that path: `classify_error` marked it
+        retryable and the agent raised on it anyway. The rule here is the same
+        one net.py uses — retry only while nothing has been handed to the
+        caller, because re-sending a turn whose tokens or tool calls are
+        already out would duplicate them.
+        """
+        attempts = max(1, RETRYABLE_STREAM_ATTEMPTS)
+        for attempt in range(attempts):
+            delivered = False
+            for chunk in self._stream_once(messages, tools, model, max_tokens):
+                failure = (chunk.usage or {}).get("error") if chunk.usage else None
+                if (failure and not delivered and attempt < attempts - 1
+                        and failure.get("retryable")):
+                    time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    break                       # same request, new attempt
+                if chunk.text or chunk.tool_call_delta or chunk.reasoning:
+                    delivered = True
+                yield chunk
+            else:
+                return                          # ran to completion
+
+    def _stream_once(self, messages: List[Msg], tools: List[ToolSpec],
+                     model: str, max_tokens: int) -> Iterator[CompletionChunk]:
         instructions, items = self._request_messages(messages)
         payload = {
             "model": model,

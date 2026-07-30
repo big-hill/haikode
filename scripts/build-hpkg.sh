@@ -43,10 +43,22 @@ APP_SIGNATURE=application/x-vnd.haikode
 PACKAGER=${HAIKODE_PACKAGER:-"haikode maintainers <haikode@localhost>"}
 VENDOR=${HAIKODE_VENDOR:-"haikode"}
 
+# Haiku nightlies ship `python3.10` with no unversioned `python3` command
+# (hrev59917 provides only `cmd:python3.10`), so resolve the interpreter
+# instead of requiring a name that may not exist. Plain name first.
+PYTHON=
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+	if command -v "$candidate" >/dev/null 2>&1; then
+		PYTHON=$candidate
+		break
+	fi
+done
+
 missing=
-for tool in package rc xres mimeset make python3 findpaths; do
+for tool in package rc xres mimeset make findpaths; do
 	command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
+[ -n "$PYTHON" ] || missing="$missing python3"
 if [ -n "$missing" ]; then
 	echo "Missing required Haiku tools:$missing" >&2
 	echo "Install them with: pkgman install haiku_devel" >&2
@@ -59,7 +71,7 @@ fi
 # hpkg versions are <major>.<minor>.<micro>-<revision>; the package revision is
 # not part of the Python version, so the suffix after the first dash becomes
 # the pre-release label instead of leaking into the revision field.
-FULL_VERSION=$(python3 - "$PROJECT_DIR" <<'PY'
+FULL_VERSION=$("$PYTHON" - "$PROJECT_DIR" <<'PY'
 import re, sys, pathlib
 text = (pathlib.Path(sys.argv[1]) / "haikode" / "__init__.py").read_text()
 match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
@@ -130,7 +142,13 @@ DEV_TREE="${HAIKODE_HOME:-${HAI_HOME:-}}"
 if [ -n "$DEV_TREE" ]; then
 	export PYTHONPATH="$DEV_TREE${PYTHONPATH:+:$PYTHONPATH}"
 fi
-exec python3 -m haikode "$@"
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+	if command -v "$candidate" >/dev/null 2>&1; then
+		exec "$candidate" -m haikode "$@"
+	fi
+done
+echo "haikode: no Python 3 interpreter found" >&2
+exit 127
 LAUNCHER
 chmod 755 "$STAGE/bin/haikode"
 
@@ -202,7 +220,6 @@ provides {
 requires {
 	haiku >= r1~beta5
 	python3.10 >= 3.10
-	cmd:python3 >= 3.10
 }
 INFO
 

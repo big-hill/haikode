@@ -50,8 +50,16 @@ BIN_DIR=/boot/home/config/non-packaged/bin
 APP_DIR=/boot/home/config/non-packaged/apps/haikode
 mkdir -p "$BIN_DIR" "$APP_DIR"
 
-if ! command -v python3 >/dev/null 2>&1; then
-	echo "python3 is required. Install it with: pkgman install python3" >&2
+# Haiku nightlies ship `python3.10` with no unversioned `python3` command.
+PYTHON=
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+	if command -v "$candidate" >/dev/null 2>&1; then
+		PYTHON=$candidate
+		break
+	fi
+done
+if [ -z "$PYTHON" ]; then
+	echo "Python 3 is required. Install it with: pkgman install python3.10" >&2
 	exit 1
 fi
 
@@ -91,7 +99,7 @@ fi
 echo "Running CLI and worker smoke checks ..."
 "$BIN_DIR/haikode" doctor
 printf '%s' smoke | HAI_DESKTOP_TEST_REPLY=worker-ok \
-	PYTHONPATH="$PROJECT_DIR" python3 -m haikode.desktop_worker \
+	PYTHONPATH="$PROJECT_DIR" "$PYTHON" -m haikode.desktop_worker \
 	| grep '"event":"completed"' >/dev/null
 
 echo
