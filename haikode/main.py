@@ -142,10 +142,19 @@ def provider_command(argv, config=None):
 
     try:
         if args.command == "add":
-            config.add_provider(args.name, args.dialect, args.base_url, args.model,
-                                requires_key=not args.no_key)
-            print(f"Provider '{args.name}' saved. "
-                  f"Run `haikode login {args.name}` if it needs an API key.")
+            from . import models as models_mod
+            # --no-key forces keyless; without it the endpoint decides, so a
+            # local Ollama is not created demanding a login it does not have.
+            ok, message = models_mod.add_provider(
+                config, args.name, args.base_url, args.model, args.dialect,
+                requires_key=False if args.no_key else None, update=True)
+            if not ok:
+                print(f"[error] {message}")
+                return 1
+            profile = config.data["providers"][args.name]
+            print(f"Provider '{args.name}' saved."
+                  + (f" Run `haikode login {args.name}` to set its API key."
+                     if profile.get("requires_key") else " No key required."))
         elif args.command == "remove":
             config.remove_provider(args.name)
             print(f"Provider '{args.name}' removed.")

@@ -15,7 +15,9 @@ which, on a Haiku box over a slow link, is far too expensive to repeat every
 time the dialog opens — so results are cached in memory and on disk.
 """
 
+import ipaddress
 import json
+import urllib.parse
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -490,10 +492,41 @@ class ModelCatalog:
 # --------------------------------------------------------------------------
 
 
+def _is_local_endpoint(base_url: str) -> bool:
+    """True for a host that is this machine or the local network.
+
+    Ollama, LM Studio and llama.cpp all serve without authentication, so a
+    profile pointing at one must not be created demanding a key: the user is
+    then told "no key set — run /login <name>" for a service that has no
+    login, and the provider reports itself unusable. Getting this wrong the
+    other way is harmless by comparison — a keyed service refuses the request
+    and says so plainly.
+    """
+    try:
+        host = urllib.parse.urlparse(base_url).hostname or ""
+    except ValueError:
+        return False
+    if host in ("localhost", "::1") or host.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # Tailscale hands out 100.64/10, which is carrier-grade NAT space and
+    # already covered by is_private on modern Python; keep it explicit.
+    return (address.is_loopback or address.is_private
+            or address in ipaddress.ip_network("100.64.0.0/10"))
+
+
 def add_provider(config, name: str, base_url: str, model: str = "",
-                 dialect: str = "openai", requires_key: bool = True,
+                 dialect: str = "openai", requires_key: Optional[bool] = None,
                  update: bool = False) -> Tuple[bool, str]:
-    """Create a provider profile, or update one when `update` is set."""
+    """Create a provider profile, or update one when `update` is set.
+
+    `requires_key` defaults to None, meaning "decide from the endpoint":
+    local and LAN addresses are treated as keyless. Pass True or False to
+    override.
+    """
     name = (name or "").strip()
     if not name:
         return False, "provider name is required"
@@ -515,6 +548,8 @@ def add_provider(config, name: str, base_url: str, model: str = "",
     base_url = (base_url or "").strip()
     if not (base_url.startswith("http://") or base_url.startswith("https://")):
         return False, "base URL must start with http:// or https://"
+    if requires_key is None:
+        requires_key = not _is_local_endpoint(base_url)
     try:
         config.add_provider(name, dialect, base_url, (model or "").strip(),
                             requires_key=bool(requires_key))

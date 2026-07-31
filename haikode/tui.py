@@ -1380,7 +1380,8 @@ class Dialog:
 
 
 class FormField:
-    """One row of a FormDialog: text, a yes/no toggle, or a masked secret."""
+    """One row of a FormDialog: text, a yes/no toggle, a masked secret, or a
+    three-way toggle whose "auto" leaves the decision to the caller."""
 
     __slots__ = ("name", "label", "value", "kind", "hint")
 
@@ -1421,8 +1422,14 @@ class FormDialog:
     def values(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for field in self.fields:
-            out[field.name] = (field.value == "yes") if field.kind == "bool" \
-                else field.value
+            if field.kind == "bool":
+                out[field.name] = field.value == "yes"
+            elif field.kind == "tribool":
+                # "auto" is None so the caller applies its own default.
+                out[field.name] = (None if field.value == "auto"
+                                   else field.value == "yes")
+            else:
+                out[field.name] = field.value
         return out
 
     def move(self, delta: int):
@@ -1447,9 +1454,16 @@ class FormDialog:
             return DIALOG_CONSUMED
         if field is None:
             return DIALOG_IGNORED
-        if field.kind == "bool":
+        if field.kind in ("bool", "tribool"):
             if key in ("space", "left", "right"):
-                field.value = "no" if field.value == "yes" else "yes"
+                cycle = (("auto", "yes", "no") if field.kind == "tribool"
+                         else ("yes", "no"))
+                step = -1 if key == "left" else 1
+                try:
+                    index = cycle.index(field.value)
+                except ValueError:
+                    index = 0
+                field.value = cycle[(index + step) % len(cycle)]
                 return DIALOG_CONSUMED
             return DIALOG_IGNORED
         if key == "backspace" and not (ctrl or alt):
@@ -1788,7 +1802,9 @@ def form_view(form: FormDialog, width: int, height: int,
     for index, field in enumerate(form.fields):
         active = index == form.index
         label = ("%-*s" % (label_width, field.label + ":"))[:label_width]
-        if field.kind == "bool":
+        if field.kind == "tribool" and field.value == "auto":
+            value = "[-] auto"
+        elif field.kind in ("bool", "tribool"):
             value = "[x] yes" if field.value == "yes" else "[ ] no"
         elif field.kind == "secret":
             # An API key must never reach the screen: /login in a curses front
@@ -1800,7 +1816,7 @@ def form_view(form: FormDialog, width: int, height: int,
                      max(1, width - label_width - 2))
         rows.append([(label, "dialog_action" if active else "hint"),
                      (value, "assistant" if active else "hint")])
-        if active and field.kind != "bool":
+        if active and field.kind not in ("bool", "tribool"):
             cursor = (len(rows) - 1, min(width - 1, label_width + len(value)))
         if field.hint and active:
             rows.append([(" " * label_width, "hint"),
@@ -4212,7 +4228,8 @@ class TUI:
              FormField("base_url", "Base URL", "https://"),
              FormField("model", "Model"),
              FormField("dialect", "Dialect", "openai", hint="openai or anthropic"),
-             FormField("requires_key", "Needs key", "yes", kind="bool")],
+             FormField("requires_key", "Needs key", "auto", kind="tribool",
+                       hint="auto: no key for a local or LAN address")],
             payload={"submit": self._save_provider}))
 
     def _save_provider(self, form):
@@ -4222,7 +4239,7 @@ class TUI:
             self.config, str(values.get("name", "")),
             str(values.get("base_url", "")), str(values.get("model", "")),
             str(values.get("dialect", "openai")) or "openai",
-            bool(values.get("requires_key", True)))
+            values.get("requires_key"))
         if not ok:
             form.message = message
             self._dirty = True

@@ -338,6 +338,77 @@ class AResumedSessionShowsItsHistory(unittest.TestCase):
         self.assertEqual(before, len(ui.transcript.entries))
 
 
+class AddingALocalProviderNeedsNoKey(TemporaryProject):
+    """`/provider add` demanded a key for endpoints that have no login.
+
+    Found reviewing the "add a provider" flow: pointing at a local Ollama
+    produced a profile with requires_key=True, so /status reported "no key
+    set", the home screen said "run /login <name>", and the provider counted
+    as unusable — for a service with no authentication at all.
+    """
+
+    def _repl(self):
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "public",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        repl = REPL(config, provider="zen", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        return repl
+
+    def test_a_loopback_endpoint_is_usable_immediately(self):
+        repl = self._repl()
+        repl.handle_command(
+            "/provider add home http://127.0.0.1:11434/v1 qwen3 openai")
+
+        profile = repl.config.data["providers"]["home"]
+        self.assertFalse(profile.get("requires_key", True))
+        self.assertEqual("n/a", repl.config.key_source("home"))
+        self.assertIn("no key required", repl.handle_command("/provider home"))
+
+    def test_a_lan_endpoint_is_treated_the_same(self):
+        repl = self._repl()
+        repl.handle_command(
+            "/provider add tower http://192.168.1.50:11434/v1 qwen3 openai")
+        self.assertFalse(
+            repl.config.data["providers"]["tower"].get("requires_key", True))
+
+    def test_a_hosted_endpoint_still_asks_for_one(self):
+        repl = self._repl()
+        repl.handle_command(
+            "/provider add cloud https://api.example.com/v1 gpt openai")
+        self.assertTrue(
+            repl.config.data["providers"]["cloud"].get("requires_key"))
+        self.assertEqual("none", repl.config.key_source("cloud"))
+
+    def test_the_dialogs_needs_key_row_defaults_to_auto(self):
+        """The form had a yes/no toggle defaulting to yes, which overrode the
+        endpoint rule before it could apply. It is now three-way."""
+        field = tui_mod.FormField("requires_key", "Needs key", "auto",
+                                  kind="tribool")
+        form = tui_mod.FormDialog("add_provider", "Add provider", [field])
+        self.assertIsNone(form.values()["requires_key"])
+
+        from haikode.keybind import KeyEvent, Keymap
+        keymap = Keymap()
+        press = lambda key: form.handle(KeyEvent(key=key), keymap)
+        press("space")
+        self.assertIs(True, form.values()["requires_key"])
+        press("space")
+        self.assertIs(False, form.values()["requires_key"])
+        press("space")
+        self.assertIsNone(form.values()["requires_key"])
+
+    def test_the_classification_covers_the_shapes_people_use(self):
+        from haikode.models import _is_local_endpoint
+        for url in ("http://127.0.0.1:11434/v1", "http://localhost:11434/v1",
+                    "http://192.168.1.20:11434/v1", "http://10.0.0.5:11434/v1",
+                    "http://100.64.0.1:11434/v1", "http://tower.local:11434/v1"):
+            self.assertTrue(_is_local_endpoint(url), url)
+        for url in ("https://api.openai.com/v1", "https://opencode.ai/zen/v1",
+                    "https://ollama.com/v1"):
+            self.assertFalse(_is_local_endpoint(url), url)
+
+
 class ATransientBackendErrorIsRetried(unittest.TestCase):
     """The field failure the owner hit repeatedly: `server_error`.
 
