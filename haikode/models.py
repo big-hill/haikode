@@ -132,6 +132,12 @@ class ModelCatalog:
         self._ids: Dict[str, List[str]] = {}
         # provider -> {model id: context window the endpoint declared}
         self._contexts: Dict[str, Dict[str, int]] = {}
+        # provider -> when its line-up was last fetched (or last attempted).
+        # The in-memory listing expires on the same clock as the disk cache:
+        # without this a session left running for days never asked again, so
+        # a model the backend had started offering was unfindable in the
+        # dialog until the process was restarted.
+        self._fetched: Dict[str, float] = {}
         self._cache_path = (Path(cache_path) if cache_path is not None
                             else global_config_dir() / CACHE_FILE)
         self._disk: Optional[Dict[str, Any]] = None
@@ -246,10 +252,12 @@ class ModelCatalog:
         if provider is None:
             self._ids.clear()
             self._contexts.clear()
+            self._fetched.clear()
             self.errors.clear()
             return
         self._ids.pop(provider, None)
         self._contexts.pop(provider, None)
+        self._fetched.pop(provider, None)
         self.errors.pop(provider, None)
 
     def _ids_for(self, name: str, refresh: bool) -> List[str]:
@@ -258,12 +266,18 @@ class ModelCatalog:
 
         if not refresh:
             cached = self._ids.get(name)
+            if cached is not None and not self._stale(name):
+                return cached
             if cached is None:
                 cached = self._read_cache(name, base_url)
                 if cached is not None:
                     self._ids[name] = cached
-            if cached is not None:
-                return cached
+                    entry = self._entries().get(name) or {}
+                    try:
+                        self._fetched[name] = float(entry.get("time") or 0)
+                    except (TypeError, ValueError):
+                        self._fetched[name] = 0.0
+                    return cached
 
         try:
             entries, err = configtool.list_model_entries(self.config, name)
@@ -277,11 +291,17 @@ class ModelCatalog:
             return self._after_failure(name, base_url)
         self.errors.pop(name, None)
         self._ids[name] = ids
+        self._fetched[name] = time.time()
         contexts = {str(entry["id"]): int(entry.get("context") or 0)
                     for entry in entries if entry.get("context")}
         self._contexts[name] = contexts
         self._write_cache(name, base_url, ids, contexts)
         return ids
+
+    def _stale(self, name: str) -> bool:
+        """Whether the in-memory line-up is old enough to ask again."""
+        age = time.time() - self._fetched.get(name, 0.0)
+        return age < 0 or age > CACHE_TTL
 
     def _after_failure(self, name: str, base_url: str) -> List[str]:
         """What a provider still contributes once listing it has failed.
@@ -289,14 +309,15 @@ class ModelCatalog:
         Two things matter offline, which on Haiku is the normal case. The last
         known line-up is served even once it is past the TTL — a day-old list
         for an unchanged endpoint beats an empty dialog, and `.errors` still
-        says the refresh failed. And the outcome is remembered for the rest of
-        the session, so a dead endpoint costs one connection timeout rather
-        than another one every single time the dialog is opened.
+        says the refresh failed. And the attempt is stamped like a success,
+        so a dead endpoint costs one connection timeout per TTL rather than
+        another one every single time the dialog is opened.
         """
         stale = self._ids.get(name)
         if stale is None:
             stale = self._read_cache(name, base_url, ttl=None) or []
         self._ids[name] = stale
+        self._fetched[name] = time.time()
         return stale
 
     # --- on-disk cache ---------------------------------------------------

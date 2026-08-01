@@ -1099,6 +1099,64 @@ class ReasoningAndContextRegressions(TemporaryProject):
                                  "cache_read": 40, "reasoning": 5})
 
 
+class ALongRunningSessionSeesNewModels(TemporaryProject):
+    """Field report: gpt-5.6-luna and -terra "didn't work".
+
+    They worked fine — the backend listed them and answered them. What
+    failed was the model dialog in a session left running for days: the
+    in-memory line-up had no age limit (the 24h TTL applied only to the
+    disk cache), so a model the backend had started offering was
+    unfindable until the process was restarted.
+    """
+
+    def catalogue(self):
+        config = self.config(default_provider="zen", providers={
+            "zen": {"dialect": "openai", "model": "old-model",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "api_key": "public"}})
+        return models_mod.ModelCatalog(
+            config, cache_path=Path(self.root, "model-cache.json"))
+
+    def test_an_aged_listing_is_asked_again(self):
+        catalog = self.catalogue()
+        lineups = [([{"id": "old-model", "context": 0}], ""),
+                   ([{"id": "old-model", "context": 0},
+                     {"id": "brand-new-model", "context": 0}], "")]
+        calls = []
+
+        def listing(config, name):
+            calls.append(name)
+            return lineups[min(len(calls) - 1, 1)]
+
+        with patch.object(models_mod.configtool, "list_model_entries", listing):
+            first = [ref.model for ref in catalog.models("zen")]
+            same_day = [ref.model for ref in catalog.models("zen")]
+            self.assertEqual(["old-model"], first)
+            self.assertEqual(first, same_day)
+            self.assertEqual(1, len(calls))      # same day: served from memory
+
+            # Two days pass inside one process.
+            catalog._fetched["zen"] -= 2 * 24 * 3600
+            later = [ref.model for ref in catalog.models("zen")]
+            self.assertIn("brand-new-model", later)  # aged: asked again
+            self.assertEqual(2, len(calls))
+
+    def test_a_dead_endpoint_still_costs_one_timeout_per_day_not_per_open(self):
+        catalog = self.catalogue()
+        calls = []
+
+        def dead(config, name):
+            calls.append(name)
+            return [], "unreachable: timed out"
+
+        with patch.object(models_mod.configtool, "list_model_entries", dead):
+            catalog.models("zen")
+            catalog.models("zen")
+            catalog.models("zen")
+        self.assertEqual(1, len(calls))
+        self.assertIn("zen", catalog.errors)
+
+
 class TheContextWindowFollowsTheModel(TemporaryProject):
     """Field report: the meter was wrong on Kimi, Ollama and SuperGrok.
 
