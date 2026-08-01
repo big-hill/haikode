@@ -47,7 +47,11 @@ def _kb(default: Any, description: str) -> Tuple[Any, str]:
 DEFINITIONS: Dict[str, Tuple[Any, str]] = {
     "leader": _kb(LEADER_DEFAULT, "Leader key for keybind combinations"),
 
-    "app_exit": _kb("ctrl+c,ctrl+d,<leader>q", "Exit the application"),
+    # <leader>q is deliberately NOT here. opencode gives the same chord to
+    # app_exit and session_queued_prompts, and since this table is also the
+    # priority order, exit won: a user reaching for the queue lost the
+    # session instead. ctrl+c and ctrl+d still exit.
+    "app_exit": _kb("ctrl+c,ctrl+d", "Exit the application"),
     "app_debug": _kb("none", "Toggle debug panel"),
     "app_toggle_animations": _kb("none", "Toggle animations"),
     "app_toggle_file_context": _kb("none", "Toggle file context"),

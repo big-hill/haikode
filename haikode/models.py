@@ -39,7 +39,7 @@ POPULAR_CATEGORY = "Popular"
 PROVIDERS_CATEGORY = "Providers"
 
 CACHE_FILE = "model-cache.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2      # 2 added the per-model context map
 CACHE_TTL = 24 * 3600      # seconds; model line-ups change on the order of days
 
 DIALECTS = ("openai", "anthropic")
@@ -95,6 +95,13 @@ def parse_model_id(value: str) -> Tuple[str, str]:
     return provider, model
 
 
+def _int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _is_free(model_id: str, provider_conf: Dict[str, Any]) -> bool:
     """opencode flags zero-cost models with a "Free" footer from the price
     feed. We have no price feed, so infer it: providers name free models
@@ -123,6 +130,8 @@ class ModelCatalog:
         self.config = config
         self.errors: Dict[str, str] = {}
         self._ids: Dict[str, List[str]] = {}
+        # provider -> {model id: context window the endpoint declared}
+        self._contexts: Dict[str, Dict[str, int]] = {}
         self._cache_path = (Path(cache_path) if cache_path is not None
                             else global_config_dir() / CACHE_FILE)
         self._disk: Optional[Dict[str, Any]] = None
@@ -175,10 +184,9 @@ class ModelCatalog:
         conf = self._providers().get(provider)
         if conf is None or not model:
             return None
-        try:
-            context = int(conf.get("context") or 0)
-        except (TypeError, ValueError):
-            context = 0
+        # What the endpoint said about this model beats the one number the
+        # provider profile holds for all of them.
+        context = self.context_for(provider, model) or _int(conf.get("context"))
         return ModelRef(provider=provider, model=model, label=model,
                         category=provider, free=_is_free(model, conf),
                         context=context)
@@ -204,6 +212,29 @@ class ModelCatalog:
             out.extend(sort_models([ref for ref in refs if ref is not None]))
         return out
 
+    def context_for(self, provider: str, model: str) -> int:
+        """The window this endpoint declared for one model, or 0 if none.
+
+        Reads the cache only — never the network — because it is called while
+        building an agent, on a machine that is regularly offline. The number
+        appears once the provider has been listed (the model dialog, /models,
+        or a /model switch), and survives restarts in the on-disk cache.
+        """
+        if not provider or not model:
+            return 0
+        cached = self._contexts.get(provider)
+        if cached is None:
+            entry = self._entries().get(provider)
+            raw = entry.get("context") if isinstance(entry, dict) else None
+            conf = self._providers().get(provider) or {}
+            if isinstance(raw, dict) and \
+                    str(entry.get("base_url", "")) == str(conf.get("base_url", "")):
+                cached = {str(key): _int(value) for key, value in raw.items()}
+            else:
+                cached = {}
+            self._contexts[provider] = cached
+        return cached.get(str(model), 0)
+
     def invalidate(self, provider: Optional[str] = None):
         """Forget what has been listed, so the next models() call asks again.
 
@@ -214,9 +245,11 @@ class ModelCatalog:
         """
         if provider is None:
             self._ids.clear()
+            self._contexts.clear()
             self.errors.clear()
             return
         self._ids.pop(provider, None)
+        self._contexts.pop(provider, None)
         self.errors.pop(provider, None)
 
     def _ids_for(self, name: str, refresh: bool) -> List[str]:
@@ -233,17 +266,21 @@ class ModelCatalog:
                 return cached
 
         try:
-            ids, err = configtool.list_models(self.config, name)
+            entries, err = configtool.list_model_entries(self.config, name)
         except Exception as exc:      # a broken provider must not raise into a dialog
-            ids, err = [], (str(exc) or exc.__class__.__name__)
+            entries, err = [], (str(exc) or exc.__class__.__name__)
 
-        ids = [str(model_id) for model_id in (ids or []) if model_id]
+        entries = [entry for entry in (entries or []) if entry.get("id")]
+        ids = [str(entry["id"]) for entry in entries]
         if err or not ids:
             self.errors[name] = err or "no models returned"
             return self._after_failure(name, base_url)
         self.errors.pop(name, None)
         self._ids[name] = ids
-        self._write_cache(name, base_url, ids)
+        contexts = {str(entry["id"]): int(entry.get("context") or 0)
+                    for entry in entries if entry.get("context")}
+        self._contexts[name] = contexts
+        self._write_cache(name, base_url, ids, contexts)
         return ids
 
     def _after_failure(self, name: str, base_url: str) -> List[str]:
@@ -300,13 +337,15 @@ class ModelCatalog:
                 return None
         return [str(model_id) for model_id in ids if model_id]
 
-    def _write_cache(self, name: str, base_url: str, ids: List[str]):
+    def _write_cache(self, name: str, base_url: str, ids: List[str],
+                     contexts: Optional[Dict[str, int]] = None):
         # Re-read before writing: the whole file is rewritten, so a snapshot
         # taken when this catalogue was created would drop whatever another
         # haikode process (or a second catalogue) cached in the meantime.
         entries = self._entries(reload=True)
         entries[name] = {"time": time.time(), "base_url": base_url,
-                         "models": list(ids)}
+                         "models": list(ids),
+                         "context": dict(contexts or {})}
         payload = {"version": CACHE_VERSION, "providers": entries}
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)

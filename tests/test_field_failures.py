@@ -15,8 +15,10 @@ from haikode import main as main_mod
 from haikode import tui as tui_mod
 from haikode import agent as agent_mod
 from haikode import agents as agents_mod
+from haikode import configtool as configtool_mod
 from haikode import context as context_mod
 from haikode import memory as memory_mod
+from haikode import models as models_mod
 from haikode import projectconfig as projectconfig_mod
 from haikode.config import Config
 from haikode.permission import Permissions
@@ -1097,6 +1099,95 @@ class ReasoningAndContextRegressions(TemporaryProject):
                                  "cache_read": 40, "reasoning": 5})
 
 
+class TheContextWindowFollowsTheModel(TemporaryProject):
+    """Field report: the meter was wrong on Kimi, Ollama and SuperGrok.
+
+    A provider profile holds one `context` for all its models. The numbers
+    below were read off the live endpoints on 1 August 2026, not guessed:
+
+        api.kimi.com /models    k3-256k    context_length 262144
+                                k3        context_length 1048576
+        api.x.ai     /models    grok-4.5   context_length 500000
+        a LAN Ollama /api/show  qwen3.6:27b-94k   num_ctx 94208
+                                            (weights say 262144)
+
+    Against the configured 128000 and 131072 the agent compacted early and
+    the meter reported a share of the wrong denominator.
+    """
+
+    def catalogue(self, contexts):
+        cache = Path(self.root, "model-cache.json")
+        cache.write_text(json.dumps({
+            "version": models_mod.CACHE_VERSION,
+            "providers": {"kimi": {"time": time.time(),
+                                   "base_url": "https://api.kimi.com/coding/v1",
+                                   "models": list(contexts),
+                                   "context": contexts}}}))
+        return cache
+
+    def config_with_kimi(self, **extra):
+        profile = {"dialect": "openai", "base_url": "https://api.kimi.com/coding/v1",
+                   "model": "k3-256k", "context": 128000, "api_key": "x"}
+        profile.update(extra)
+        return self.config(default_provider="kimi", providers={"kimi": profile})
+
+    def build(self, config, cache, model=""):
+        with patch.object(models_mod, "global_config_dir",
+                          lambda: cache.parent):
+            agent = build_agent(config, "kimi", cwd=self.root, model=model)
+        self.addCleanup(agent.provider.close if hasattr(agent.provider, "close")
+                        else lambda: None)
+        return agent
+
+    def test_the_endpoints_own_number_beats_the_provider_default(self):
+        cache = self.catalogue({"k3-256k": 262144, "k3": 1048576})
+        agent = self.build(self.config_with_kimi(), cache)
+        self.assertEqual(262144, agent.context_window)
+        self.assertEqual("endpoint metadata", agent.context_source)
+
+    def test_switching_model_switches_the_window(self):
+        cache = self.catalogue({"k3-256k": 262144, "k3": 1048576})
+        agent = self.build(self.config_with_kimi(), cache, model="k3")
+        self.assertEqual(1048576, agent.context_window)
+
+    def test_a_model_the_endpoint_says_nothing_about_keeps_the_profile(self):
+        cache = self.catalogue({"k3": 1048576})
+        agent = self.build(self.config_with_kimi(), cache, model="k3-256k")
+        self.assertEqual(128000, agent.context_window)
+        self.assertEqual("configuration", agent.context_source)
+
+    def test_an_explicit_per_model_setting_wins(self):
+        cache = self.catalogue({"k3-256k": 262144})
+        config = self.config_with_kimi(model_context={"k3-256k": 200000})
+        agent = self.build(config, cache)
+        self.assertEqual(200000, agent.context_window)
+        self.assertEqual("configured for this model", agent.context_source)
+
+    def test_a_provider_that_knows_its_own_backend_is_not_overruled(self):
+        """The ChatGPT profile is measured against that backend, not /models."""
+        provider = ChatGPTSubscriptionProvider.__new__(ChatGPTSubscriptionProvider)
+        self.assertEqual((500000, "ChatGPT backend profile"),
+                         provider.context_limit("gpt-5.6-sol", 128000))
+
+    def test_ollama_reports_what_it_will_serve_not_what_the_weights_allow(self):
+        body = {"parameters": "num_ctx                        94208\ntop_p 0.95",
+                "model_info": {"qwen35.context_length": 262144}}
+        with patch.object(configtool_mod.urllib.request, "urlopen") as opener:
+            opener.return_value.__enter__.return_value.read.return_value = \
+                json.dumps(body).encode()
+            self.assertEqual(94208, configtool_mod.ollama_context(
+                "http://192.168.1.20:11434/v1", "qwen3.6:27b-94k"))
+
+    def test_ollama_falls_back_to_the_weights_when_no_limit_is_set(self):
+        body = {"parameters": "top_p 0.95",
+                "model_info": {"qwen3.context_length": 40960}}
+        with patch.object(configtool_mod.urllib.request, "urlopen") as opener:
+            opener.return_value.__enter__.return_value.read.return_value = \
+                json.dumps(body).encode()
+            self.assertEqual(40960, configtool_mod.ollama_context(
+                "http://192.168.1.20:11434/v1", "qwen3:8b"))
+
+
 class TUIRegressions(unittest.TestCase):
     def ui(self):
         ui = tui_mod.TUI(lambda: None, config=None, cwd=".")
@@ -1151,6 +1242,151 @@ class TUIRegressions(unittest.TestCase):
             ui._draw_transcript(frame)
         self.assertTrue(positions)
         self.assertEqual(set(positions), {frame.box_left + 2})
+
+    def test_a_queued_message_stays_above_the_prompt_until_it_is_sent(self):
+        """Field report: "køede meldinger forsvinner oppover i chaten".
+
+        Typing during a run wrote the text into the transcript, where the
+        next tool call pushed it out of sight. The user was then waiting on
+        something they could no longer see, with no way to tell whether it
+        had been picked up.
+        """
+        ui = self.ui()
+        ui._size = lambda: (30, 100)
+        ui.transcript.add(tui_mod.Entry("user", text="first"))
+
+        class Steerable:
+            def __init__(self):
+                self.pending = []
+
+            def steer(self, text):
+                self.pending.append(text)
+                return True
+
+            def pending_steering(self):
+                return list(self.pending)
+
+        ui.agent = Steerable()
+        before = len(ui.transcript.entries)
+        ui._enqueue("check the tests too")
+
+        # Not in the transcript — in the band, which the layout reserves rows
+        # for above the prompt.
+        self.assertEqual(before, len(ui.transcript.entries))
+        frame = ui._frame()
+        self.assertTrue(frame.queue_rows)
+        self.assertLess(frame.queue_top, frame.box_top)
+        self.assertLessEqual(frame.todo_top, frame.queue_top)
+        text = " ".join(line.text for line
+                        in ui._pinned_queue_lines(frame.content_width))
+        self.assertIn("check the tests too", text)
+        self.assertIn("Queued", text)
+
+        # Delivery empties the band and records the message where it belongs.
+        ui.agent.pending = []
+        ui._on_event("steered", {"text": "check the tests too"})
+        self.assertEqual([], ui._pinned_queue_lines(frame.content_width))
+        self.assertEqual("check the tests too",
+                         ui.transcript.entries[-1].text)
+        self.assertEqual("user", ui.transcript.entries[-1].kind)
+
+    def test_leader_q_reaches_the_queue_it_names(self):
+        """It quit the application instead.
+
+        opencode binds <leader>q to app_exit *and* session_queued_prompts,
+        and the binding table is also the priority order, so exit won: the
+        one chord documented as "manage queued prompts" ended the session.
+        """
+        ui = self.ui()
+        ui.queued = ["one", "two"]
+        from haikode.keybind import KeyEvent
+        ui._keymap_key(KeyEvent(key="x", ctrl=True))
+        ui._keymap_key(KeyEvent(key="q"))
+        self.assertFalse(ui._quit)
+        self.assertIsNotNone(ui.dialog)
+        self.assertEqual(["one", "two"],
+                         [item.title for item in ui.dialog.select.items])
+
+    def test_a_queued_message_can_be_pulled_back_for_editing(self):
+        ui = self.ui()
+        ui.queued = ["fix the parser", "and the tests"]
+        ui._open_queued_prompts()
+        ui._edit_queued(ui.dialog.select.items[0])
+        self.assertEqual("fix the parser", ui.buffer)
+        self.assertEqual(["and the tests"], ui.queued)
+
+    def test_a_queued_message_can_be_dropped(self):
+        ui = self.ui()
+        ui.queued = ["fix the parser", "and the tests"]
+        ui._open_queued_prompts()
+        ui._drop_one_queued(ui.dialog.select.items[1])
+        self.assertEqual(["fix the parser"], ui.queued)
+        self.assertEqual("", ui.buffer)
+
+    def test_the_queue_dialog_acts_on_the_message_not_on_the_row_number(self):
+        """Found by adversarial review of the dialog above.
+
+        The dialog listed steering first and plain queued prompts after it,
+        and acted on the row's index. But the running turn drains steering at
+        its next step — often while the dialog is open — so pressing enter on
+        the first row pulled out and deleted a completely different message.
+        """
+        ui = self.ui()
+
+        class Steerable:
+            def __init__(self):
+                self.pending = ["A: rename it", "B: and the tests"]
+
+            def pending_steering(self):
+                return list(self.pending)
+
+            def drop_steering(self, text):
+                if text in self.pending:
+                    self.pending.remove(text)
+                    return True
+                return False
+
+        ui.agent = Steerable()
+        ui.queued = ["C: deploy afterwards"]
+        ui._open_queued_prompts()
+        row = ui.dialog.select.items[0]              # "A: rename it"
+
+        ui.agent.pending = []                        # the turn takes them
+        ui._edit_queued(row)
+
+        self.assertEqual(["C: deploy afterwards"], ui.queued)
+        self.assertEqual("", ui.buffer)
+        self.assertIn("already sent", ui.status_hint)
+
+    def test_editing_a_queued_message_does_not_eat_the_composer(self):
+        ui = self.ui()
+        ui.queued = ["queued message"]
+        ui.buffer = "half-typed composer text"
+        ui.cursor = len(ui.buffer)
+        ui._open_queued_prompts()
+        ui._edit_queued(ui.dialog.select.items[0])
+
+        self.assertEqual("queued message", ui.buffer)
+        # Not lost: one press of "up" brings it back.
+        self.assertIn("half-typed composer text", ui.history)
+
+    def test_the_band_holds_prompts_queued_for_after_the_turn_too(self):
+        ui = self.ui()
+        ui._size = lambda: (30, 100)
+        ui.queued = ["second thing"]
+        text = " ".join(line.text for line in ui._pinned_queue_lines(60))
+        self.assertIn("second thing", text)
+
+    def test_a_pinned_queue_never_squeezes_the_body_below_the_minimum(self):
+        for rows in range(tui_mod.MIN_ROWS, 40):
+            frame = tui_mod.layout_frame(rows, 100, 1, session=True,
+                                         wanted_todo_rows=6,
+                                         wanted_queue_rows=4)
+            self.assertGreaterEqual(frame.body_height, 1)
+            self.assertLessEqual(frame.todo_top + frame.todo_rows,
+                                 frame.queue_top)
+            self.assertLessEqual(frame.queue_top + frame.queue_rows,
+                                 frame.box_top)
 
     def test_footer_does_not_repeat_the_prompt_context_meter(self):
         ui = self.ui()

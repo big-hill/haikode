@@ -22,6 +22,7 @@ from haikode.providers.base import (ThinkTagSplitter, chunk_error,  # noqa: E402
                                     classify_error, is_context_overflow,
                                     reasoning_from_delta)
 from haikode.providers.gemini import GeminiProvider, sanitize_schema  # noqa: E402
+from haikode.providers import openai_compat  # noqa: E402
 from haikode.providers.openai_compat import OpenAICompatProvider  # noqa: E402
 from haikode.schema import Msg, ToolCall, ToolSpec  # noqa: E402
 
@@ -158,6 +159,143 @@ class TestOpenAIDialect(unittest.TestCase):
                                         api_key="k", retry=NO_RETRY)
         chunks = list(provider.stream([Msg(role="user", content="hi")], [], "m", 16))
         self.assertTrue(any(c.stop_reason == "error" for c in chunks))
+
+    def test_the_request_asks_for_usage(self):
+        """A streaming response need not carry usage unless asked.
+
+        Measured against the real endpoints: an Ollama server (local or
+        cloud) returns no usage whatsoever without the parameter and full
+        counts with it, which is what left the footer at "0 in 0 out".
+        """
+        _, received = self.collect(["[DONE]"])
+        self.assertEqual({"include_usage": True},
+                         received.get("stream_options"))
+
+
+class TestOpenAIUsageOptOut(unittest.TestCase):
+    """An endpoint that rejects stream_options must keep working."""
+
+    def _server(self, message, status=400):
+        rejected = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if "stream_options" in body:
+                    rejected.append(body)
+                    payload = json.dumps({"error": {"message": message}}).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for frame in ({"choices": [{"index": 0, "delta": {"content": "ok"}}]},
+                              "[DONE]"):
+                    text = frame if isinstance(frame, str) else json.dumps(frame)
+                    self.wfile.write(f"data: {text}\n\n".encode())
+                    self.wfile.flush()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address[:2]
+        return f"http://{host}:{port}", rejected
+
+    def test_a_rejected_parameter_is_dropped_and_the_turn_still_runs(self):
+        url, rejected = self._server("unknown parameter: stream_options")
+        provider = OpenAICompatProvider(base_url=url, api_key="k",
+                                        retry=NO_RETRY)
+        chunks = list(provider.stream([Msg(role="user", content="hi")], [], "m", 16))
+        self.assertEqual("ok", "".join(c.text for c in chunks))
+        self.assertEqual(1, len(rejected))     # asked once, then gave up on it
+        self.assertFalse(provider.stream_usage)
+
+        # And it stays dropped for the life of the process, so the cost is one
+        # rejected request rather than one per turn.
+        list(provider.stream([Msg(role="user", content="again")], [], "m", 16))
+        self.assertEqual(1, len(rejected))
+
+    def test_an_endpoint_that_always_fails_yields_an_error_not_an_exception(self):
+        """The retry must not turn a real failure into a crashed turn."""
+        url = self._always_failing_server(
+            "bad request near: {\"stream_options\": {\"include_usage\": true}}")
+        provider = OpenAICompatProvider(base_url=url, api_key="k",
+                                        retry=NO_RETRY)
+        chunks = list(provider.stream([Msg(role="user", content="hi")], [], "m", 16))
+        self.assertTrue(any(c.stop_reason == "error" for c in chunks))
+
+    def test_a_back_off_is_re_tested_instead_of_trusted_forever(self):
+        """One 400 is weak evidence, so it is not believed indefinitely.
+
+        A 400 that quotes the request body back mentions stream_options
+        whatever it is really about. Backing off on that reading is a cheap
+        guess to make; believing it for the life of the process would cost
+        every later turn its token counts on an endpoint that reports usage
+        only when asked.
+        """
+        url, rejected = self._server("unknown parameter: stream_options")
+        provider = OpenAICompatProvider(base_url=url, api_key="k",
+                                        retry=NO_RETRY)
+        turn = lambda: list(provider.stream(
+            [Msg(role="user", content="hi")], [], "m", 16))
+
+        turn()
+        self.assertFalse(provider.stream_usage)
+        self.assertEqual(1, len(rejected))
+
+        # Quiet for a while: the back-off holds, so the endpoint is not asked
+        # again on every single turn.
+        for _ in range(openai_compat.USAGE_REPROBE_AFTER - 1):
+            turn()
+        self.assertEqual(1, len(rejected))
+
+        # Then it is tested once more — and this server still refuses, so the
+        # back-off simply renews rather than sticking on.
+        turn()
+        self.assertEqual(2, len(rejected))
+        self.assertFalse(provider.stream_usage)
+
+    def _always_failing_server(self, message, status=400):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
+                payload = json.dumps({"error": {"message": message}}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def test_a_400_about_something_else_still_reaches_the_user(self):
+        url, _ = self._server("context length exceeded")
+        provider = OpenAICompatProvider(base_url=url, api_key="k",
+                                        retry=NO_RETRY)
+        chunks = list(provider.stream([Msg(role="user", content="hi")], [], "m", 16))
+        self.assertTrue(any(c.stop_reason == "error" for c in chunks))
+        self.assertTrue(provider.stream_usage)
 
 
 class TestAnthropicDialect(unittest.TestCase):

@@ -885,6 +885,23 @@ class Agent:
                 del self._steering[index]
             return True
 
+    def drop_steering(self, text: str) -> bool:
+        """Remove one pending message by its exact text. Atomic.
+
+        Indices are the wrong handle for this. A front end lists the queue,
+        the user reads it, and somewhere in those seconds the running turn
+        reaches a step boundary and drains everything — so by the time a key
+        is pressed, index 0 is a different message, or gone. Matching on the
+        text means the worst case is "it was already sent", which is the
+        truth, rather than dropping something the user never chose.
+        """
+        with self._steer_lock:
+            try:
+                self._steering.remove(text)
+            except ValueError:
+                return False
+            return True
+
     def clear_steering(self) -> int:
         """Drop everything pending. Returns how many were discarded."""
         with self._steer_lock:

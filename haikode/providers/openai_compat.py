@@ -1,10 +1,36 @@
 import json
 from typing import Any, Dict, Iterator, List, Optional
 
-from ..net import (DEFAULT_TIMEOUT, Aborted, RetryPolicy, stream_sse_events)
+from ..net import (DEFAULT_TIMEOUT, Aborted, NetError, RetryPolicy,
+                   stream_sse_events)
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import (Provider, ThinkTagSplitter, classify_error, error_chunk,
                    error_from_exception, reasoning_from_delta)
+
+
+# Requests to make without stream_options before testing the back-off again.
+# Twenty turns is often enough that a wrong inference costs a session its
+# token counts only briefly, and rare enough that an endpoint which really
+# does reject the parameter pays for one refused request in twenty.
+USAGE_REPROBE_AFTER = 20
+
+
+class _UnsupportedStreamOptions(Exception):
+    """Internal signal: this endpoint rejected stream_options. Never escapes
+    stream(), which retries once without the parameter."""
+
+
+def _rejects_stream_options(error: NetError) -> bool:
+    """True when a 4xx blames the stream_options parameter.
+
+    Deliberately narrow. A 400 that says nothing about the parameter is a
+    real error about the request and must reach the user unchanged.
+    """
+    status = getattr(error, "status", None)
+    if status not in (400, 404, 422):
+        return False
+    body = "%s %s" % (getattr(error, "body", "") or "", error)
+    return "stream_options" in body or "include_usage" in body
 
 
 class OpenAICompatProvider(Provider):
@@ -26,6 +52,20 @@ class OpenAICompatProvider(Provider):
         # Set by the caller (agent/TUI) to a threading.Event or a predicate;
         # tripping it tears the connection down within a poll interval.
         self.abort = abort
+        # Whether to ask for token counts. A streaming /chat/completions is
+        # not required to report usage unless the request opts in, and the
+        # endpoints differ: measured on 1 August 2026, an Ollama server —
+        # local and cloud alike — reports nothing at all unasked and full
+        # counts when asked, while an OpenRouter-style gateway reports them
+        # either way. That is why the footer sat at "0 in 0 out" for some
+        # providers and not others, and why the session stored no token
+        # counts for those runs.
+        #
+        # Cleared when an endpoint rejects the parameter — some gateways and
+        # older llama.cpp builds 400 on it — and re-tested periodically; see
+        # _ask_for_usage().
+        self.stream_usage = True
+        self._usage_declined = 0
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json",
@@ -55,6 +95,64 @@ class OpenAICompatProvider(Provider):
 
     def stream(self, messages: List[Msg], tools: List[ToolSpec], model: str,
                max_tokens: int) -> Iterator[CompletionChunk]:
+        """Stream one request, retrying once without stream_options.
+
+        Asking for usage is the only way to get token counts out of a
+        streaming /chat/completions, but it is a newer parameter than the
+        endpoint itself: a strict gateway answers 400 rather than ignoring
+        what it does not know. Retrying without it costs one rejected request
+        per process and keeps such an endpoint working.
+        """
+        ask = self._ask_for_usage()
+        for _ in (0, 1):
+            delivered = False
+            try:
+                for chunk in self._stream_once(messages, tools, model,
+                                               max_tokens, ask):
+                    delivered = True
+                    yield chunk
+                if ask:
+                    # Nothing rejected the parameter this time, so asking is
+                    # safe here — which also ends a back-off entered on a 400
+                    # that turned out to be about something else.
+                    self.stream_usage = True
+                return
+            except _UnsupportedStreamOptions as exc:
+                # A provider never raises at its caller: every failure is a
+                # chunk, or a half-written turn dies where the agent cannot
+                # report it. Anything arriving after the first byte, or on the
+                # attempt that no longer carries the parameter, is a real
+                # error wearing this exception.
+                if delivered or not ask:
+                    yield error_chunk(error_from_exception(
+                        exc.__cause__ or exc, self.name, model))
+                    return
+                self.stream_usage = False
+                self._usage_declined = 0
+                ask = False
+
+    def _ask_for_usage(self) -> bool:
+        """Whether this request carries stream_options, re-testing a back-off.
+
+        The evidence for a back-off is one 4xx that named the parameter, and
+        that is weaker than it looks: an endpoint which quotes the request
+        body back inside an unrelated 400 names it too. Trusting a single
+        such reading for the life of the process would silently cost every
+        later turn its token counts, so the inference is re-tested. The cost
+        of being wrong the other way is one rejected request per
+        USAGE_REPROBE_AFTER turns.
+        """
+        if self.stream_usage:
+            return True
+        self._usage_declined += 1
+        if self._usage_declined < USAGE_REPROBE_AFTER:
+            return False
+        self._usage_declined = 0
+        return True
+
+    def _stream_once(self, messages: List[Msg], tools: List[ToolSpec],
+                     model: str, max_tokens: int,
+                     ask_usage: bool = True) -> Iterator[CompletionChunk]:
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": model,
@@ -62,6 +160,8 @@ class OpenAICompatProvider(Provider):
             "max_tokens": max_tokens,
             "stream": True,
         }
+        if ask_usage:
+            payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = [
                 {"type": "function",
@@ -124,6 +224,12 @@ class OpenAICompatProvider(Provider):
                     yield self._finish(finish, event, model)
         except Aborted:
             return
+        except NetError as e:
+            # Only the request that carried the parameter can be blamed on it.
+            if ask_usage and _rejects_stream_options(e):
+                raise _UnsupportedStreamOptions() from e
+            yield from self._flush(splitter)
+            yield error_chunk(error_from_exception(e, self.name, model))
         except Exception as e:
             yield from self._flush(splitter)
             yield error_chunk(error_from_exception(e, self.name, model))

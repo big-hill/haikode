@@ -448,12 +448,17 @@ class EnterDuringARunQueues(TurnTestCase):
         self.assertEqual(ui.buffer, "")
 
     def test_the_queue_is_visible(self):
+        """In the band above the prompt, not in the transcript.
+
+        It used to be written into the transcript, where the next tool call
+        scrolled it away while the user was still waiting for it.
+        """
         ui = self.make_tui()
         ui.running = True
         ui.buffer = "and also rename the file"
         ui._on_enter()
-        texts = [e.text for e in ui.transcript.entries if e.kind == "info"]
-        self.assertTrue(any("queued" in text for text in texts), texts)
+        pinned = " ".join(line.text for line in ui._pinned_queue_lines(60))
+        self.assertIn("and also rename the file", pinned)
         self.assertIn("queued", ui.status_hint)
 
     def test_it_is_sent_when_the_run_completes(self):

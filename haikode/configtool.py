@@ -117,6 +117,99 @@ def test_provider(config: Config, name: str, key_override: str = ""):
 
 def list_models(config: Config, name: str):
     """Model ids offered by a provider. Returns (ids, error)."""
+    entries, err = list_model_entries(config, name)
+    return [entry["id"] for entry in entries], err
+
+
+# Field names carrying a context window in an OpenAI-style /models entry.
+# xAI and Kimi both answer `context_length`; the others are the spellings
+# used by gateways that proxy for them.
+CONTEXT_FIELDS = ("context_length", "context_window", "max_context_length",
+                  "max_context_window_tokens", "max_input_tokens")
+
+# Per-model /api/show calls against a local Ollama, capped: a machine with a
+# large library must not turn opening the model dialog into a minute of round
+# trips. They are local and fast, so the cap can be generous.
+OLLAMA_SHOW_LIMIT = 32
+OLLAMA_SHOW_TIMEOUT = 4
+
+
+def entry_context(entry) -> int:
+    """The context window an endpoint claims for one model, or 0.
+
+    Nothing is inferred from the model's name — a number is used only where
+    the endpoint stated one, so a wrong window is the endpoint's error and
+    not ours.
+    """
+    if not isinstance(entry, dict):
+        return 0
+    for field in CONTEXT_FIELDS:
+        try:
+            value = int(entry.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    nested = entry.get("limit")
+    if isinstance(nested, dict):
+        return entry_context(nested) or _int_or_zero(nested.get("context"))
+    return 0
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def ollama_context(base_url: str, model: str) -> int:
+    """What a local Ollama will actually serve for one model, or 0.
+
+    Two different numbers are on offer and only one of them is the truth:
+    `model_info.<arch>.context_length` is what the weights support, while a
+    `num_ctx` parameter is what this server was told to allocate. A model
+    published as 262144 with `num_ctx 94208` answers at 94208, so the
+    parameter wins wherever it exists.
+    """
+    root = base_url.rstrip("/")
+    for suffix in ("/v1", "/api"):
+        if root.endswith(suffix):
+            root = root[:-len(suffix)]
+    payload = json.dumps({"model": model}).encode()
+    req = urllib.request.Request(
+        root + "/api/show", data=payload,
+        headers=_with_ua({"Content-Type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=OLLAMA_SHOW_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return 0
+    if not isinstance(body, dict):
+        return 0
+    for line in str(body.get("parameters") or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "num_ctx":
+            found = _int_or_zero(parts[1])
+            if found:
+                return found
+    info = body.get("model_info")
+    if isinstance(info, dict):
+        for key, value in info.items():
+            if str(key).endswith(".context_length"):
+                found = _int_or_zero(value)
+                if found:
+                    return found
+    return 0
+
+
+def list_model_entries(config: Config, name: str):
+    """Models offered by a provider, with any context window they declare.
+
+    Returns ([{"id": str, "context": int}], error). `context` is 0 when the
+    endpoint said nothing — the caller then keeps whatever the configuration
+    holds rather than substituting a guess.
+    """
     prov = config.data["providers"].get(name)
     if not prov:
         return [], f"unknown provider '{name}'"
@@ -160,15 +253,35 @@ def list_models(config: Config, name: str):
     except Exception as e:
         return [], f"unreachable: {e}"
 
-    if dialect == "chatgpt":
-        items = body.get("models", []) if isinstance(body, dict) else []
-        ids = [m.get("slug", "") for m in items
-               if isinstance(m, dict) and m.get("slug")]
-    else:
-        items = body.get("data", []) if isinstance(body, dict) else []
-        ids = [m.get("id", "") for m in items
-               if isinstance(m, dict) and m.get("id")]
-    return ids, "" if ids else "no models returned"
+    key_field = "slug" if dialect == "chatgpt" else "id"
+    container = "models" if dialect == "chatgpt" else "data"
+    items = body.get(container, []) if isinstance(body, dict) else []
+    entries = [{"id": str(m.get(key_field)), "context": entry_context(m)}
+               for m in items
+               if isinstance(m, dict) and m.get(key_field)]
+    if entries and not any(e["context"] for e in entries) \
+            and _is_ollama_endpoint(base):
+        # Ollama's OpenAI-compatible listing carries no window at all, but its
+        # native API does — and for a local server that number is the only
+        # honest one, since it depends on how this machine loaded the model.
+        #
+        # The first call is also the test of whether this is Ollama at all:
+        # llama.cpp and LM Studio serve the same /v1 from the same kind of
+        # address and have no /api/show, and 32 timeouts at four seconds each
+        # would be two minutes of nothing.
+        for entry in entries[:OLLAMA_SHOW_LIMIT]:
+            entry["context"] = ollama_context(base, entry["id"])
+            if not entry["context"]:
+                break
+    return entries, "" if entries else "no models returned"
+
+
+def _is_ollama_endpoint(base_url: str) -> bool:
+    """True for something that answers Ollama's native API alongside /v1."""
+    from .models import _is_local_endpoint
+    lowered = (base_url or "").lower()
+    return ":11434" in lowered or "ollama" in lowered \
+        or _is_local_endpoint(base_url)
 
 
 def format_transcript(messages) -> str:

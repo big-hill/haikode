@@ -336,6 +336,10 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         # model metadata.
         context_window, context_source = configured_context, "configuration"
 
+    context_window, context_source = _model_context(
+        session_config, selected, prov, resolved_model,
+        context_window, context_source)
+
     return Agent(
         provider=client,
         model=resolved_model,
@@ -352,6 +356,41 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         instructions=instructions,
         warnings=warnings,
     )
+
+
+def _model_context(config: Config, provider: str, prov: dict, model: str,
+                   window: int, source: str):
+    """Narrow the window from "this provider" to "this model".
+
+    A provider profile holds one `context` for every model it offers, which
+    is wrong the moment two of them differ: Kimi's k3-256k was metered
+    against 128000 when the endpoint states 262144, and grok-4.5 against
+    131072 when xAI states 500000 — both undercounts, so compaction fired
+    early and the meter lied.
+
+    Three sources, most specific first:
+      `model_context` in the provider profile — the user's own word;
+      what the endpoint said when its models were last listed;
+      whatever the provider or the profile already decided.
+
+    A provider that reports an authoritative window of its own (the ChatGPT
+    backend profile) is left alone: it knows something /models does not.
+    """
+    override = (prov.get("model_context") or {}) if isinstance(prov, dict) else {}
+    if isinstance(override, dict):
+        configured = _int(override.get(model), 0)
+        if configured:
+            return configured, "configured for this model"
+    if source != "configuration":
+        return window, source
+    try:
+        from .models import ModelCatalog
+        declared = ModelCatalog(config).context_for(provider, model)
+    except Exception:
+        return window, source
+    if declared and declared != window:
+        return declared, "endpoint metadata"
+    return window, source
 
 
 def _int(value: Any, fallback: int) -> int:

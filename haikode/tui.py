@@ -93,6 +93,7 @@ BINDING_ACTIONS: Dict[str, str] = {
     "session_list": "_open_sessions",
     "session_rename": "_start_rename",
     "session_compact": "_compact_session",
+    "session_queued_prompts": "_open_queued_prompts",
     "model_list": "_open_models",
     "model_provider_list": "_open_providers",
     "model_cycle_recent": "_cycle_recent_next",
@@ -144,7 +145,6 @@ UNAVAILABLE_BINDINGS: Tuple[str, ...] = (
     "session_unshare",
     "session_toggle_timestamps",
     "session_toggle_generic_tool_output",
-    "session_queued_prompts",
     "session_quick_switch_1",
     "session_quick_switch_2",
     "session_quick_switch_3",
@@ -832,6 +832,10 @@ TODO_STYLES: Dict[str, Tuple[str, str]] = {
 MAX_PINNED_TODO_ROWS = 6
 MIN_BODY_ROWS = 4
 
+# The queue band, between the plan and the prompt. Smaller than the plan
+# band: it holds messages typed seconds ago, not a whole plan.
+MAX_PINNED_QUEUE_ROWS = 4
+
 # A todo list is a plan, not tool spew, so it is folded much later than
 # ordinary output — a 12-step plan cut off at 8 rows is worse than useless.
 TODO_LINES = 16
@@ -902,6 +906,39 @@ def build_pinned_todo_lines(todos: Sequence[Any], width: int,
         text = status.truncate(str(raw.get("content", "")).strip(),
                                max(4, width - len(prefix)))
         out.extend(_styled(sanitize(text, g.unicode_ok), width, style,
+                           prefix, " " * len(prefix)))
+    return out[:limit]
+
+
+def build_pinned_queue_lines(pending: Sequence[str], width: int,
+                             opts: RenderOptions,
+                             limit: int = MAX_PINNED_QUEUE_ROWS) -> List[Line]:
+    """Messages typed during a run, held above the prompt until they are sent.
+
+    They used to be written into the transcript, where the next tool call
+    scrolled them out of sight; the user was then left waiting on something
+    they could no longer see, with no way to tell whether it had been taken.
+    Pinning them makes the wait legible, and the band empties itself the
+    moment the agent folds them in — which is the acknowledgement.
+    """
+    g = opts.glyphs
+    items = [str(text).strip() for text in pending or [] if str(text).strip()]
+    if not items:
+        return []
+    room = max(1, limit - 1)
+    shown = items[:room]
+    label = "Queued (%d)" % len(items) if len(items) > 1 else "Queued"
+    if len(items) > len(shown):
+        label += "  +%d more" % (len(items) - len(shown))
+    out: List[Line] = _styled(sanitize(label, g.unicode_ok), width, "header",
+                              "  ", "  ")
+    for text in shown:
+        prefix = "  %s " % g.arrow
+        first = text.splitlines()[0]
+        if len(text.splitlines()) > 1:
+            first += " …" if g.unicode_ok else " ..."
+        body = status.truncate(first, max(4, width - len(prefix)))
+        out.extend(_styled(sanitize(body, g.unicode_ok), width, "hint",
                            prefix, " " * len(prefix)))
     return out[:limit]
 
@@ -1106,11 +1143,15 @@ def build_status(provider: str, cwd_name: str, tokens_in: int, tokens_out: int,
         segments.append(agent)
     left = " %s " % dot.join(segments)
     tokens = "%s in %s out" % (format_tokens(tokens_in), format_tokens(tokens_out))
-    if hint:
+    if busy:
+        # The spinner outranks the hint. A queued message used to replace it,
+        # so the one moment the user most needs to know whether the agent is
+        # still working — right after typing something it has not taken yet —
+        # was the one moment the footer would not say.
+        working = "%s working %s" % (g.frame(frame), format_duration(elapsed))
+        right = "%s  %s" % (working, hint or "esc to interrupt")
+    elif hint:
         right = hint
-    elif busy:
-        right = "%s working %s  esc to interrupt" % (g.frame(frame),
-                                                     format_duration(elapsed))
     else:
         right = state or "ready"
     if context:
@@ -2014,7 +2055,8 @@ class Frame:
 
     __slots__ = ("rows", "cols", "box_top", "box_left", "box_width",
                  "box_height", "input_rows", "content_width", "hint_row",
-                 "footer_row", "body_height", "todo_rows", "todo_top")
+                 "footer_row", "body_height", "todo_rows", "todo_top",
+                 "queue_rows", "queue_top")
 
     def __repr__(self):  # pragma: no cover - debugging aid
         return ("Frame(rows=%d, cols=%d, body=%d, box_top=%d, box_height=%d, "
@@ -2037,8 +2079,9 @@ def box_width(cols: int, session: bool = False) -> int:
 
 
 def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
-                 session: bool = False, wanted_todo_rows: int = 0) -> Frame:
-    """Split the screen bottom-up: footer, hint, prompt box, todos, then the rest.
+                 session: bool = False, wanted_todo_rows: int = 0,
+                 wanted_queue_rows: int = 0) -> Frame:
+    """Split the screen bottom-up: footer, hint, prompt, queue, plan, the rest.
 
     The footer owns the last row and the box grows upwards from it, so the
     body can be squeezed to nothing but the bands never overlap. The todo band
@@ -2046,6 +2089,11 @@ def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
     of scrolling away with the rest of the transcript; it yields to the body
     first, because a pinned list that leaves no room to read is worse than no
     list at all.
+
+    The queue band sits between them — nearer the prompt than the plan is,
+    because it holds what the user just typed and is waiting on. It is
+    allocated before the plan: a plan can be reread with /todos, whereas a
+    queued message that is not shown is one the user cannot see at all.
     """
     rows = max(MIN_ROWS, int(rows))
     cols = max(MIN_COLS, int(cols))
@@ -2063,9 +2111,13 @@ def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
     frame.hint_row = frame.footer_row - 1
     frame.box_top = frame.hint_row - frame.box_height
     available = max(0, frame.box_top - MIN_BODY_ROWS)
+    frame.queue_rows = max(0, min(int(wanted_queue_rows), MAX_PINNED_QUEUE_ROWS,
+                                  available))
+    frame.queue_top = frame.box_top - frame.queue_rows
+    available -= frame.queue_rows
     frame.todo_rows = max(0, min(int(wanted_todo_rows), MAX_PINNED_TODO_ROWS,
                                  available))
-    frame.todo_top = frame.box_top - frame.todo_rows
+    frame.todo_top = frame.queue_top - frame.todo_rows
     frame.body_height = max(1, frame.todo_top)
     return frame
 
@@ -2803,6 +2855,15 @@ class TUI:
             entry.error = payload.get("error", "error")
             entry.bump()
             self._open_tool = None
+        elif kind == "steered":
+            # The moment the model is handed a message typed mid-run. Nothing
+            # marked this before, so a steered message left the pinned band
+            # with no trace of when — or whether — it had been taken.
+            self.transcript.add(Entry("user", text=str(
+                (payload or {}).get("text", ""))))
+            self._stream_entry = None
+            self._reasoning_entry = None
+            self.status_hint = ""
         elif kind == "limit":
             self.transcript.add(Entry(
                 "info",
@@ -3278,15 +3339,17 @@ class TUI:
         # after the whole turn. Waiting for the turn was the old behaviour and
         # it is wrong once turns are unlimited — by the time a correction
         # arrives, it is about work already finished.
+        # Neither path writes to the transcript. The message is shown in the
+        # pinned band above the prompt until it is delivered, and enters the
+        # transcript at that point — where it belongs chronologically, and
+        # where it cannot scroll out of sight while the user waits for it.
         steer = getattr(self.agent, "steer", None)
         if callable(steer) and steer(text):
-            self.transcript.add(Entry("info", text="steering: %s" % first[:60]))
             self.status_hint = "steering — the model sees this at its next step"
             self._dirty = True
             return
 
         self.queued.append(text)
-        self.transcript.add(Entry("info", text="queued: %s" % first[:60]))
         self.status_hint = ("%d queued" % len(self.queued)
                             if len(self.queued) > 1 else "queued")
         self._dirty = True
@@ -4406,6 +4469,98 @@ class TUI:
             return agents, registry
         return agents, agents.AgentRegistry.load(self.cwd)
 
+    def _open_queued_prompts(self):
+        """The queue, editable: <leader>q.
+
+        Between typing a message mid-run and the model taking it there is a
+        window of minutes, because a step can be a long tool call. Without
+        this the only choices were to let a message the user had changed
+        their mind about through, or to abort the whole turn.
+        """
+        pending = self._pending_messages()
+        if not pending:
+            self.status_hint = "nothing queued"
+            self._dirty = True
+            return
+        # Keyed by the message itself, never by its position: the running
+        # turn drains the queue at its next step, so a row index read when
+        # the dialog opened may point at a different message — or past the
+        # end — by the time a key is pressed.
+        items = [PaletteItem(id=str(index), title=text.splitlines()[0][:200],
+                             description=("steering — taken at the next step"
+                                          if index < self._steering_count()
+                                          else "queued — sent when the turn ends"),
+                             category="Queued", value=text)
+                 for index, text in enumerate(pending)]
+        self._open_dialog(Dialog(
+            "queued", "Queued prompts", items,
+            placeholder="Search queued prompts",
+            actions=[DialogAction("session_queued_prompts", "Drop",
+                                  self._drop_one_queued)],
+            empty="Nothing queued",
+            payload={"submit": self._edit_queued}))
+
+    def _steering_count(self) -> int:
+        reader = getattr(self.agent, "pending_steering", None)
+        if not callable(reader):
+            return 0
+        try:
+            return len(reader())
+        except Exception:
+            return 0
+
+    def _edit_queued(self, item):
+        """Put the message back in the composer, removed from the queue."""
+        text = str(getattr(item, "value", "") or "")
+        self._close_dialog()
+        if not self._forget_queued(text):
+            self.status_hint = "already sent"
+            self._dirty = True
+            return
+        # Whatever was half-typed is pushed onto the prompt history rather
+        # than overwritten, so it is one press of "up" away. Silently
+        # replacing it lost text that existed nowhere else.
+        if self.buffer.strip():
+            self.history.append(self.buffer)
+            self.status_hint = "editing a queued message — the old text is on ↑"
+        else:
+            self.status_hint = "editing a queued message"
+        self.history_index = len(self.history)
+        self.buffer = text
+        self.cursor = len(text)
+        self._dirty = True
+
+    def _drop_one_queued(self, item):
+        text = str(getattr(item, "value", "") or "")
+        self._close_dialog()
+        if not self._forget_queued(text):
+            self.status_hint = "already sent"
+        else:
+            remaining = self._pending_messages()
+            self.status_hint = ("%d still queued" % len(remaining) if remaining
+                                else "queue empty")
+        self._dirty = True
+
+    def _forget_queued(self, text: str) -> bool:
+        """Remove one pending message by its text, wherever it is waiting.
+
+        False means it is no longer waiting — the turn took it while the
+        dialog was open, which is a normal outcome and not an error.
+        """
+        if not text:
+            return False
+        dropper = getattr(self.agent, "drop_steering", None)
+        if callable(dropper):
+            try:
+                if dropper(text):
+                    return True
+            except Exception:
+                pass
+        if text in self.queued:
+            self.queued.remove(text)
+            return True
+        return False
+
     def _open_agents(self):
         module, registry = self._agent_registry()
         defs = registry.primary() or [registry.get(name) for name in registry.names()]
@@ -4730,11 +4885,40 @@ class TUI:
         content = max(4, box_width(cols, session=session) - 4)
         wanted = len(layout_input(self.buffer, self.cursor, content,
                                   prompt=self._prompt()).rows)
-        todo_rows = 0
+        todo_rows = queue_rows = 0
         if session:
             todo_rows = len(self._pinned_todo_lines(content))
+            queue_rows = len(self._pinned_queue_lines(content))
         return layout_frame(rows, cols, wanted, session=session,
-                            wanted_todo_rows=todo_rows)
+                            wanted_todo_rows=todo_rows,
+                            wanted_queue_rows=queue_rows)
+
+    def _pending_messages(self) -> List[str]:
+        """Everything typed but not yet handed to the model, in send order.
+
+        Steering goes first because that is the order it is delivered in: the
+        running turn takes it at its next step, while a queued prompt waits
+        for the turn to end.
+        """
+        pending: List[str] = []
+        reader = getattr(self.agent, "pending_steering", None)
+        if callable(reader):
+            try:
+                pending.extend(reader())
+            except Exception:
+                pass
+        pending.extend(self.queued)
+        return pending
+
+    def _pinned_queue_lines(self, width: int) -> List[Line]:
+        """The queue band's rendered lines, or [] when nothing is pending."""
+        pending = self._pending_messages()
+        if not pending:
+            return []
+        try:
+            return build_pinned_queue_lines(pending, max(1, width), self.opts)
+        except Exception:
+            return []
 
     def _pinned_todo_lines(self, width: int) -> List[Line]:
         """The plan band's rendered lines, or [] when nothing is outstanding."""
@@ -4908,6 +5092,12 @@ class TUI:
                     self._pinned_todo_lines(frame.content_width)[:frame.todo_rows]):
                 if line.text:
                     self._addstr(frame.todo_top + offset, frame.box_left + 2,
+                                 line.text, self._attr(line.style))
+        if frame.queue_rows:
+            for offset, line in enumerate(
+                    self._pinned_queue_lines(frame.content_width)[:frame.queue_rows]):
+                if line.text:
+                    self._addstr(frame.queue_top + offset, frame.box_left + 2,
                                  line.text, self._attr(line.style))
         cursor = self._draw_prompt_box(frame.box_top, frame)
         self._draw_hint_row(frame.hint_row, frame)

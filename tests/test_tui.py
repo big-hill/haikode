@@ -423,11 +423,22 @@ class FormattingTests(unittest.TestCase):
         line = build_status("p", "d", 0, 0, 60, ASCII)
         self.assertIn("ready", line)
 
-    def test_hint_replaces_the_busy_indicator(self):
-        line = build_status("p", "d", 0, 0, 60, ASCII, busy=True,
-                            hint="ctrl-c again to exit")
-        self.assertIn("ctrl-c again to exit", line)
+    def test_a_hint_shares_the_footer_with_the_busy_indicator(self):
+        """A hint takes the interrupt reminder's place, never the spinner's.
+
+        Queueing a message set the hint, which used to blank "working" —
+        leaving the user unable to tell a busy agent from a finished one at
+        exactly the moment they had just typed something and were waiting.
+        """
+        line = build_status("p", "d", 0, 0, 60, ASCII, busy=True, elapsed=5,
+                            hint="1 queued")
+        self.assertIn("1 queued", line)
+        self.assertIn("working", line)
         self.assertNotIn("esc to interrupt", line)
+
+        idle = build_status("p", "d", 0, 0, 60, ASCII, hint="1 queued")
+        self.assertIn("1 queued", idle)
+        self.assertNotIn("working", idle)
 
     def test_narrow_status_drops_segments_instead_of_overflowing(self):
         line = build_status("a-very-long-provider/model-name", "somedir",
@@ -1193,10 +1204,13 @@ class KeymapRoutingTests(unittest.TestCase):
         self.assertFalse(self.ui._keymap_key(KeyEvent(key="home")))
         self.assertFalse(self.ui._keymap_key(KeyEvent(key="end")))
 
-    def test_leader_q_exits(self):
+    def test_leader_q_opens_the_queue_and_does_not_exit(self):
+        """It used to quit: opencode gives the chord to app_exit as well."""
         self.ui._keymap_key(KeyEvent(key="x", ctrl=True))
         self.ui._keymap_key(KeyEvent(key="q"))
-        self.assertTrue(self.ui._quit)
+        self.assertFalse(self.ui._quit)
+        self.assertIn("queued", self.ui.status_hint)      # empty queue says so
+
 
     def test_a_binding_that_raises_becomes_a_transcript_line(self):
         def boom():

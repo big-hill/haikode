@@ -75,7 +75,9 @@ class TestDefinitions(unittest.TestCase):
     def test_opencode_defaults_are_preserved(self):
         expected = {
             "leader": "ctrl+x",
-            "app_exit": "ctrl+c,ctrl+d,<leader>q",
+            # <leader>q intentionally dropped here; see
+            # test_leader_q_belongs_to_the_queue_not_to_exit.
+            "app_exit": "ctrl+c,ctrl+d",
             "command_list": "ctrl+p",
             "model_list": "<leader>m",
             "model_provider_list": "ctrl+a",
@@ -96,6 +98,17 @@ class TestDefinitions(unittest.TestCase):
         }
         for name, default in expected.items():
             self.assertEqual(DEFINITIONS[name][0], default, name)
+
+    def test_leader_q_belongs_to_the_queue_not_to_exit(self):
+        """A deliberate divergence from opencode's defaults.
+
+        opencode binds <leader>q to both app_exit and
+        session_queued_prompts. This table is also the priority order, so
+        exit won and the queue was unreachable: a user reaching for their
+        queued messages quit the session instead.
+        """
+        self.assertEqual(DEFINITIONS["app_exit"][0], "ctrl+c,ctrl+d")
+        self.assertEqual(DEFINITIONS["session_queued_prompts"][0], "<leader>q")
 
     def test_every_definition_has_a_description(self):
         for name, (_default, description) in DEFINITIONS.items():
@@ -328,7 +341,8 @@ class TestLeaderSequence(unittest.TestCase):
     def test_every_leader_binding(self):
         cases = {"m": "model_list", "l": "session_list", "c": "session_compact",
                  "s": "status_view", "u": "messages_undo", "a": "agent_list",
-                 "t": "theme_list", "e": "editor_open", "q": "app_exit",
+                 "t": "theme_list", "e": "editor_open",
+                 "q": "session_queued_prompts",
                  "1": "session_quick_switch_1"}
         for key, command in cases.items():
             self.keymap.lookup(KeyEvent("x", ctrl=True))
@@ -478,8 +492,9 @@ class TestDescribe(unittest.TestCase):
 
     def test_leader_is_expanded(self):
         self.assertEqual(self.keymap.describe("session_new"), "ctrl+x n")
-        self.assertEqual(self.keymap.describe("app_exit"),
-                         "ctrl+c, ctrl+d, ctrl+x q")
+        self.assertEqual(self.keymap.describe("app_exit"), "ctrl+c, ctrl+d")
+        self.assertEqual(self.keymap.describe("session_queued_prompts"),
+                         "ctrl+x q")
 
     def test_leader_can_stay_literal(self):
         self.assertEqual(self.keymap.describe("session_new", expand_leader=False),

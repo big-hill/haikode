@@ -33,6 +33,10 @@ FAKE_MODELS = {
     "openai": (["gpt-5", "gpt-4o-mini"], ""),
 }
 
+# What an endpoint volunteers about a model's window. Only some do; a model
+# missing here stands for the ones that say nothing.
+FAKE_CONTEXTS = {"gpt-5": 400000}
+
 
 class ModelsTestCase(unittest.TestCase):
     def setUp(self):
@@ -57,11 +61,28 @@ class ModelsTestCase(unittest.TestCase):
 
     def fake_list_models(self, config, name):
         self.calls.append(name)
-        return FAKE_MODELS.get(name, ([], f"unknown provider '{name}'"))
+        ids, error = FAKE_MODELS.get(name, ([], f"unknown provider '{name}'"))
+        return [{"id": model_id, "context": FAKE_CONTEXTS.get(model_id, 0)}
+                for model_id in ids], error
 
     def patched(self, fake=None):
-        return patch.object(models_module.configtool, "list_models",
-                            fake or self.fake_list_models)
+        """Stub the listing call the catalogue makes.
+
+        `fake` may still be written against the old (ids, error) contract:
+        it is adapted, because several tests only care that listing raised
+        or failed.
+        """
+        stub = fake or self.fake_list_models
+
+        def entries(config, name):
+            result = stub(config, name)
+            items, error = result
+            if items and isinstance(items[0], str):
+                items = [{"id": model_id, "context": 0} for model_id in items]
+            return items, error
+
+        return patch.object(models_module.configtool, "list_model_entries",
+                            entries)
 
     # --- refs ------------------------------------------------------------
 

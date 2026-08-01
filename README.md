@@ -224,6 +224,14 @@ haikode provider remove studio-ollama
 `--dialect anthropic` switches the wire format. `provider add` is also
 available from the TUI as **Add provider** (`ctrl+p` → *Add provider*).
 
+`--no-key` is only needed to force the issue. Left out, the address decides:
+loopback, a private LAN range, Tailscale's `100.64/10` and `*.local` are
+treated as key-free, because Ollama, LM Studio and llama.cpp all serve without
+authentication and a profile that demands a key for them reports itself
+unusable and tells you to run a `/login` that does not exist. In the **Add
+provider** dialog the *Needs key* row is a three-way toggle whose default,
+*auto*, is the same rule.
+
 ---
 
 ## The command line
@@ -478,11 +486,17 @@ leader is armed.
 | `pageup`, `ctrl+alt+b` | scroll transcript up a page |
 | `pagedown`, `ctrl+alt+f` | scroll transcript down a page |
 | `ctrl+alt+u` / `ctrl+alt+d` | scroll half a page |
-| `ctrl+x q` | quit |
+| `ctrl+x q` | queued prompts — edit or drop what is waiting |
+| `ctrl+c`, `ctrl+d` | quit |
 
 `ctrl+x` followed by an unbound key is swallowed rather than typed into the
 prompt. **`ctrl+a` opens the provider list, not line-start** — that is
 opencode's ranking, and `Home` still moves to the start of the line.
+
+One deliberate divergence: opencode gives `ctrl+x q` to *both* "quit" and
+"queued prompts", and its own priority order hands it to quit — so the chord
+documented as reaching your queue ends the session instead. Here it opens the
+queue, and quitting is `ctrl+c` or `ctrl+d`.
 
 ### Inside a dialog
 
@@ -821,6 +835,17 @@ usage down (system prompt, instructions, memory, tool schemas, history);
 
 When the history no longer fits, it is trimmed at request time; `/compact`
 folds the old part into a summary explicitly.
+
+The window is per model, not per provider. A profile's `context` is the
+fallback; where the endpoint states a window of its own in `/models` — xAI and
+Kimi both do — that number is used instead, and for a local Ollama the window
+is read from `/api/show`, preferring the server's `num_ctx` over what the
+weights allow, since `num_ctx` is what will actually be served. `/context`
+names which of these the current number came from. To pin one yourself:
+
+```json
+{"providers": {"kimi": {"model_context": {"k3-256k": 262144}}}}
+```
 
 ## MCP and LSP
 
