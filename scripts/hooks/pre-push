@@ -1,0 +1,29 @@
+#!/bin/sh
+# Refuse a push that would publish a private address, a machine name, a
+# secret, or a commit authored under a personal identity.
+#
+# Enable it in a clone with:
+#     git config core.hooksPath scripts/hooks
+#
+# Haiku nightlies ship `python3.10` with no unversioned `python3` command,
+# so resolve the interpreter the same way the other scripts do. With no
+# Python at all the hook steps aside rather than blocking work: it is a
+# safety net, not a gate.
+set -eu
+
+HOOK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+PYTHON=
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+	if command -v "$candidate" >/dev/null 2>&1; then
+		PYTHON=$candidate
+		break
+	fi
+done
+
+if [ -z "$PYTHON" ]; then
+	echo "pre-push: no Python 3 found; skipping the privacy scan." >&2
+	exit 0
+fi
+
+exec "$PYTHON" "$HOOK_DIR/prepush_scan.py"

@@ -11,6 +11,26 @@ A patch that adds a dependency will be declined however good it is. If you
 need one, open an issue first and say what it buys; there may be a stdlib
 route, or the feature may be worth living without.
 
+## First, turn the pre-push hook on
+
+    git config core.hooksPath scripts/hooks
+
+It refuses a push that would publish a private LAN or Tailscale address, an
+API key, your machine's name, or a commit authored under a personal email
+rather than the project's. Please also give the clone its own identity:
+
+    git config user.name haikode
+    git config user.email haikode@localhost
+
+This is not hypothetical tidiness. Both of those got into this repository
+and had to be scrubbed out of the history afterwards: a test written with a
+real machine's addresses instead of documentation ones, and — because the
+clone had no identity of its own — commits carrying a laptop's host name.
+Both were caught by a scan run *after* the push. The hook runs it before.
+
+It looks up the machine's own name at run time rather than storing anything,
+so the hook file itself is publishable. `git push --no-verify` skips it.
+
 ## Before a pull request
 
 Run the suite:
