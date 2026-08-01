@@ -399,6 +399,7 @@ class Agent:
         if defn is not None:
             names = AgentRegistry.resolve_tools(defn, names, _permission_keys())
         self.tools = get_tools(names)
+        self._merge_mcp_tools()
         self.specs = tool_specs(self.tools)
 
         self.permissions = self._permissions_for(defn)
@@ -484,6 +485,52 @@ class Agent:
             fresh = [p for p in patterns if p not in existing.get(key, [])]
             if fresh:
                 target.grant_always(key, fresh)
+
+    def attach_mcp(self, manager: Any) -> None:
+        """Adopt an MCPManager: its tools join this agent's set.
+
+        Called by runtime.build_agent(). The set is re-read at every turn
+        (see run()), because servers connect in the background and their
+        tools should appear when they are ready rather than never.
+        """
+        self.ctx.mcp = manager
+        self._merge_mcp_tools()
+        self.specs = tool_specs(self.tools)
+
+    def _merge_mcp_tools(self) -> None:
+        """Fold the MCP manager's current offering into self.tools.
+
+        Names are namespaced (mcp_<server>_<tool>), so a remote tool can
+        never shadow a built-in; on the freak collision the built-in wins,
+        because the model's trust in `read` must not be transferable to
+        somebody else's server.
+        """
+        manager = getattr(self.ctx, "mcp", None)
+        if manager is None:
+            return
+        stale = getattr(self, "_mcp_tool_names", set())
+        for name in stale:
+            self.tools.pop(name, None)
+        fresh = set()
+        try:
+            offered = manager.agent_tools()
+        except Exception:
+            offered = []
+        for tool in offered:
+            if tool.name in self.tools:
+                continue
+            self.tools[tool.name] = tool
+            fresh.add(tool.name)
+        self._mcp_tool_names = fresh
+
+    def _refresh_mcp_tools(self) -> None:
+        """Pick up servers that finished connecting since the last turn."""
+        if getattr(self.ctx, "mcp", None) is None:
+            return
+        before = getattr(self, "_mcp_tool_names", set())
+        self._merge_mcp_tools()
+        if self._mcp_tool_names != before:
+            self.specs = tool_specs(self.tools)
 
     def switch_agent(self, name: str) -> str:
         """Swap prompt, tools and permissions mid-session.
@@ -978,6 +1025,9 @@ class Agent:
             on_event: Optional[Callable] = None) -> str:
         """Run until the model stops calling tools. Returns the final text."""
         self.usage.start_run()
+        # MCP servers connect in the background; a turn boundary is where
+        # their tools join (or a stand-in is replaced by the real thing).
+        self._refresh_mcp_tools()
         # A turn is the boundary at which credentials are re-checked: within
         # one, the provider may reuse what it read, so a long turn does not
         # re-read the token file once per model request.

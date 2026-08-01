@@ -19,10 +19,13 @@ nothing rather than to "whichever provider happens to be first".
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
+import atexit
+
 from .agent import Agent
 from .agents import AgentRegistry
 from .config import Config
 from .lsp import LSPManager
+from .mcp import MCPManager
 from .permission import Permissions
 from .projectconfig import PRIVILEGED_PROVIDER_FIELDS, ProjectConfig
 from .providers.anthropic import AnthropicProvider
@@ -367,6 +370,19 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
     # with no servers installed this costs a memoised PATH miss and nothing
     # else. `lsp: false` in the config opts out entirely.
     agent.ctx.lsp = LSPManager.from_config(session_config, cwd)
+
+    # MCP is the one extensibility path on an OS with no pip: a configured
+    # server's tools join the agent's set, behind the "mcp" permission key.
+    # start_all() is budgeted and never raises — a broken third-party server
+    # degrades to a status stand-in, not a broken agent. With no `mcp` block
+    # the cost is a dict lookup.
+    if (session_config.data or {}).get("mcp"):
+        manager = MCPManager(session_config, cwd)
+        manager.start_all()
+        agent.attach_mcp(manager)
+        agent.warnings = list(agent.warnings) + list(manager.warnings)
+        # Servers this process started die with it, like the LSP ones.
+        atexit.register(manager.shutdown_all)
     return agent
 
 

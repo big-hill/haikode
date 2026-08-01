@@ -36,13 +36,13 @@ haikode doctor                # what is configured and what is broken
 
 ---
 
-## The test suite fails 10 tests on purpose
+## The test suite fails 6 tests on purpose
 
 Before you conclude the project is broken: `python3 -m unittest discover -s
-tests -t .` reports **10 failures, all in `tests/test_wiring_audit.py`**, and
+tests -t .` reports **6 failures, all in `tests/test_wiring_audit.py`**, and
 that is the expected result. Any other failure is a real one.
 
-Those 10 are executable bug reports. Each names a subsystem that exists, is
+Those 6 are executable bug reports. Each names a subsystem that exists, is
 tested in isolation and is reachable from nothing — MCP, LSP, the skill
 catalogue, automatic compaction and a few dead config keys. They are kept
 failing rather than deleted so the gap is visible in every run instead of

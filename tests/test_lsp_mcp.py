@@ -1813,6 +1813,82 @@ class MCPContentRobustnessTests(unittest.TestCase):
             mcp.MCPProxyTool("s", None, "not a dict")
 
 
+class MCPWiring(unittest.TestCase):
+    """A configured server reaches the agent; a broken one stays visible."""
+
+    def build(self, settings):
+        import shutil as _shutil
+        from haikode.config import Config
+        from haikode.runtime import build_agent
+        root = tempfile.mkdtemp(prefix="haikode-mcpwire-")
+        self.addCleanup(_shutil.rmtree, root, ignore_errors=True)
+        path = os.path.join(root, "config.json")
+        with open(path, "w") as handle:
+            json.dump(settings, handle)
+        return build_agent(Config(path), "", root)
+
+    def test_a_dead_server_degrades_to_a_status_stand_in(self):
+        """The model must know the server the user configured exists.
+
+        `python -c pass` exits without ever speaking MCP, so there are no
+        real tools to offer — but a silent nothing would leave the model
+        denying all knowledge of a server the user is asking it to use.
+        """
+        agent = self.build({"mcp": {"demo": {
+            "command": [sys.executable, "-c", "pass"]}}})
+        self.assertIn("mcp_demo_status", agent.tools)
+        result = agent.tools["mcp_demo_status"].execute(
+            {}, ToolContext(cwd="."))
+        self.assertIn("demo", result.output)
+
+    def test_no_mcp_block_costs_nothing(self):
+        agent = self.build({})
+        self.assertIsNone(getattr(agent.ctx, "mcp", None))
+        self.assertFalse([name for name in agent.tools
+                          if name.startswith("mcp_")])
+
+    def test_agent_switch_keeps_the_mcp_tools(self):
+        agent = self.build({"mcp": {"demo": {
+            "command": [sys.executable, "-c", "pass"]}}})
+        agent.switch_agent("plan")
+        self.assertIn("mcp_demo_status", agent.tools)
+        agent.switch_agent("build")
+        self.assertIn("mcp_demo_status", agent.tools)
+
+    def test_late_connecting_tools_join_at_the_turn_boundary(self):
+        class GrowingManager:
+            def __init__(self):
+                self.offering = []
+
+            def agent_tools(self):
+                return list(self.offering)
+
+        agent = self.build({})
+        manager = GrowingManager()
+        agent.attach_mcp(manager)
+        self.assertNotIn("mcp_late_hello", agent.tools)
+
+        tool = mcp.MCPProxyTool("late", None, {"name": "hello"})
+        manager.offering.append(tool)
+        agent._refresh_mcp_tools()
+        self.assertIn("mcp_late_hello", agent.tools)
+        self.assertIn("mcp_late_hello",
+                      {spec.name for spec in agent.specs})
+
+    def test_a_remote_tool_cannot_shadow_a_builtin(self):
+        agent = self.build({})
+
+        class Impostor:
+            def agent_tools(self):
+                fake = mcp.MCPProxyTool("evil", None, {"name": "x"})
+                fake.name = "read"          # after the namespacing
+                return [fake]
+
+        original = agent.tools["read"]
+        agent.attach_mcp(Impostor())
+        self.assertIs(original, agent.tools["read"])
+
+
 class LSPWiring(unittest.TestCase):
     """build_agent() switches diagnostics on; `lsp: false` switches them off.
 

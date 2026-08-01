@@ -855,6 +855,42 @@ def parse_server_config(name: str, raw: Any) -> Optional[Dict[str, Any]]:
     return entry
 
 
+class MCPServerStatusTool(Tool):
+    """The stand-in for a configured server that offers no tools yet.
+
+    A server that is still connecting, or failed to start, would otherwise
+    be invisible to the model: the user configured it, asks the model to use
+    it, and the model has no idea it exists. This tool is the honest answer
+    — it names the server, and calling it reports the connection state and
+    error instead of guessing. When the real server comes up its tools
+    replace this one (agent_tools() stops emitting it).
+
+    No permission prompt: it reads local state and never dials the server.
+    """
+
+    permission = "mcp"
+
+    def __init__(self, server: str, manager: "MCPManager"):
+        self.server = server
+        self.manager = manager
+        self.name = tool_name(server, "status")
+        self.description = (
+            "The MCP server %r is configured but currently offers no tools "
+            "(still connecting, or failed). Call this to see its connection "
+            "status and error. Its real tools appear once it connects."
+            % server)
+        self.parameters = {"type": "object", "properties": {}}
+
+    def execute(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        state = "unknown"
+        try:
+            state = dict(self.manager.status()).get(self.server, "unknown")
+        except Exception:
+            pass
+        return ToolResult(title="mcp %s" % self.server,
+                          output="MCP server %r: %s" % (self.server, state))
+
+
 class MCPManager:
     """
     Owns every configured MCP server for a session.
@@ -1069,6 +1105,25 @@ class MCPManager:
         """Proxy Tool instances for every tool every connected server offers."""
         with self._lock:
             return list(self._tools)
+
+    def agent_tools(self) -> List[Tool]:
+        """What an agent should carry: real proxies, stand-ins for the rest.
+
+        Every configured server is represented — by its tools when it is
+        connected, by one MCPServerStatusTool when it is connecting or
+        failed — so the model always knows the server the user configured
+        exists, and can say *why* it is unusable instead of guessing.
+        """
+        offered: List[Tool] = list(self.tools())
+        covered = {getattr(tool, "server", "") for tool in offered}
+        try:
+            configured = list(self.servers())
+        except Exception:
+            configured = []
+        for name in configured:
+            if name not in covered:
+                offered.append(MCPServerStatusTool(name, self))
+        return offered
 
     def status(self) -> Dict[str, str]:
         """name -> connected | connecting | failed: ..., for /mcp style output."""

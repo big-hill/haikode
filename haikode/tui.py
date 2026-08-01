@@ -118,6 +118,7 @@ BINDING_ACTIONS: Dict[str, str] = {
 # dispatch table when a user assigns a chord, without making the default-table
 # invariant claim that an empty binding has a key.
 OPTIONAL_BINDING_ACTIONS: Dict[str, str] = {
+    "mcp_list": "_open_mcp",
     "tool_details": "_toggle_expand",
     "display_thinking": "_toggle_reasoning",
     "prompt_submit": "_on_enter",
@@ -156,7 +157,6 @@ UNAVAILABLE_BINDINGS: Tuple[str, ...] = (
     "session_quick_switch_9",
     "model_cycle_favorite",
     "model_cycle_favorite_reverse",
-    "mcp_list",
     "provider_connect",
     "variant_list",
     "messages_next",
@@ -4673,6 +4673,9 @@ class TUI:
 
     def _export_session(self):
         self._dispatch_command("/export")
+
+    def _open_mcp(self):
+        self._dispatch_command("/mcp")
 
     def _undo_message(self):
         self._dispatch_command("/undo")

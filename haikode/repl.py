@@ -501,6 +501,7 @@ class REPL:
             ("logout", self._cmd_logout, "remove stored credentials"),
             ("keys", self._cmd_keys, "show credential status"),
             ("tools", self._cmd_tools, "list available tools"),
+            ("mcp", self._cmd_mcp, "list MCP servers and their tools"),
             ("permissions", self._cmd_permissions, "show permission rules"),
             ("reasoning", self._cmd_reasoning, "toggle reasoning display"),
             ("effort", self._cmd_effort, "show or set model reasoning effort"),
@@ -751,6 +752,15 @@ class REPL:
     def _cmd_tools(self, arg):
         return "\n".join(f"  {name:<12} {tool.description.splitlines()[0][:60]}"
                          for name, tool in sorted(self.agent.tools.items()))
+
+    def _cmd_mcp(self, arg):
+        """Configured MCP servers: connection state, tools, warnings."""
+        from .skills import mcp_report, mcp_warnings
+        manager = getattr(self.agent.ctx, "mcp", None)
+        lines = [mcp_report(manager)]
+        for warning in mcp_warnings(manager):
+            lines.append(_c("  warning: %s" % warning, YELLOW))
+        return "\n".join(lines)
 
     def _cmd_permissions(self, arg):
         """The rules in force, in the order they are evaluated.
