@@ -73,20 +73,27 @@ def run(*args):
     return result.stdout if result.returncode == 0 else ""
 
 
+# Names that identify nobody. This matters most on the platform the project
+# targets: Haiku puts every account under /boot/home, calls the default one
+# "user", and answers to "shredder" until someone renames it — so on Haiku
+# all three candidates are generic, and flagging every file containing the
+# word "home" would make the hook useless exactly where it is needed.
+GENERIC_NAMES = frozenset((
+    "home", "user", "users", "root", "admin", "boot", "shredder",
+    "localhost", "runner", "build", "ubuntu", "debian",
+))
+
+
 def local_identifiers():
     """Strings that name *this* machine or user, derived, never stored."""
     found = set()
-    home = os.path.basename(os.path.expanduser("~"))
-    if len(home) > 3:
-        found.add(home)
     try:
         host = socket.gethostname().split(".")[0]
     except OSError:
         host = ""
-    # "shredder" is the host name every fresh Haiku install answers to, so
-    # it identifies nobody and is expected in this project's own notes.
-    if len(host) > 3 and host.lower() != "shredder":
-        found.add(host)
+    for candidate in (os.path.basename(os.path.expanduser("~")), host):
+        if len(candidate) > 3 and candidate.lower() not in GENERIC_NAMES:
+            found.add(candidate)
     return found
 
 

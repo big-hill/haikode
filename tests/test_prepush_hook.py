@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent.parent / "scripts" / "hooks"
@@ -75,8 +76,28 @@ class AddressesThatMayNotBePublished(unittest.TestCase):
         """The identifiers come from the environment, so the hook itself
         stays publishable."""
         source = SCANNER.read_text(encoding="utf-8")
-        self.assertNotIn(os.path.basename(os.path.expanduser("~")), source)
+        for identifier in scan.local_identifiers():
+            self.assertNotIn(identifier, source)
         self.assertIn("expanduser", source)
+
+    def test_a_generic_account_name_identifies_nobody(self):
+        """Haiku puts every account under /boot/home and calls the default
+        one "user". Treating those as identifying would flag every file that
+        contains the word "home" — on the platform this project targets."""
+        for generic in ("home", "user", "root", "shredder", "localhost"):
+            self.assertIn(generic, scan.GENERIC_NAMES)
+        with unittest.mock.patch.object(
+                scan.os.path, "expanduser", lambda _: "/boot/home"), \
+                unittest.mock.patch.object(
+                    scan.socket, "gethostname", lambda: "shredder"):
+            self.assertEqual(set(), scan.local_identifiers())
+
+    def test_a_real_machine_name_is_still_caught(self):
+        with unittest.mock.patch.object(
+                scan.os.path, "expanduser", lambda _: "/Users/someone"), \
+                unittest.mock.patch.object(
+                    scan.socket, "gethostname", lambda: "a-laptop.local"):
+            self.assertEqual({"someone", "a-laptop"}, scan.local_identifiers())
 
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
