@@ -1416,6 +1416,43 @@ class TUIRegressions(unittest.TestCase):
         self.assertEqual("", ui.buffer)
         self.assertIn("already sent", ui.status_hint)
 
+    def test_interrupt_discards_steering_not_just_the_queue(self):
+        """Found by a session running haikode on itself, from the inside.
+
+        Esc during a run dropped `self.queued` but left the agent's steering
+        list alone, so a message typed mid-run — and abandoned with the run —
+        was folded into the next turn anyway: an instruction delivered after
+        the user said stop.
+        """
+        ui = self.ui()
+        ui.running = True
+
+        class Steerable:
+            def __init__(self):
+                self.pending = ["do the abandoned thing"]
+
+            def abort(self):
+                pass
+
+            def pending_steering(self):
+                return list(self.pending)
+
+            def clear_steering(self):
+                count = len(self.pending)
+                self.pending = []
+                return count
+
+        ui.agent = Steerable()
+        ui.queued = ["a queued one too"]
+        ui._interrupt()
+
+        self.assertEqual([], ui.agent.pending)
+        self.assertEqual([], ui.queued)
+        self.assertEqual([], ui._pending_messages())
+        notices = [e.text for e in ui.transcript.entries if e.kind == "info"]
+        self.assertTrue(any("2 pending prompts discarded" in t
+                            for t in notices), notices)
+
     def test_editing_a_queued_message_does_not_eat_the_composer(self):
         ui = self.ui()
         ui.queued = ["queued message"]

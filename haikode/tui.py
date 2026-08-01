@@ -3396,12 +3396,25 @@ class TUI:
         self._dirty = True
 
     def _drop_queued(self):
-        """Stopping means stopping: queued prompts must not fire afterwards."""
-        if not self.queued:
-            return
+        """Stopping means stopping: nothing typed mid-run may fire afterwards.
+
+        Both halves of the pending queue, not just one. A steered message
+        lives on the agent, and dropping only `self.queued` let it survive
+        the interrupt and fold itself into the *next* turn — an instruction
+        the user had abandoned, delivered after they had said stop. Found by
+        a session running haikode on itself.
+        """
         count = len(self.queued)
         self.queued = []
-        self.transcript.add(Entry("info", text="%d queued prompt%s discarded"
+        clear = getattr(self.agent, "clear_steering", None)
+        if callable(clear):
+            try:
+                count += clear()
+            except Exception:
+                pass
+        if not count:
+            return
+        self.transcript.add(Entry("info", text="%d pending prompt%s discarded"
                                   % (count, "" if count == 1 else "s")))
         self._dirty = True
 
