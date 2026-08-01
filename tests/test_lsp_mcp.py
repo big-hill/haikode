@@ -1813,5 +1813,39 @@ class MCPContentRobustnessTests(unittest.TestCase):
             mcp.MCPProxyTool("s", None, "not a dict")
 
 
+class LSPWiring(unittest.TestCase):
+    """build_agent() switches diagnostics on; `lsp: false` switches them off.
+
+    The manager is lazy — nothing spawns until a file of a known language is
+    touched — so carrying one costs a memoised PATH miss on a machine with
+    no servers installed, which is the normal Haiku case.
+    """
+
+    def build(self, settings):
+        import shutil as _shutil
+        from haikode.config import Config
+        from haikode.runtime import build_agent
+        root = tempfile.mkdtemp(prefix="haikode-lspwire-")
+        self.addCleanup(_shutil.rmtree, root, ignore_errors=True)
+        path = os.path.join(root, "config.json")
+        with open(path, "w") as handle:
+            json.dump(settings, handle)
+        return build_agent(Config(path), "", root), root
+
+    def test_the_agent_carries_a_rooted_manager_by_default(self):
+        agent, root = self.build({})
+        manager = agent.ctx.lsp
+        self.assertIsInstance(manager, lsp.LSPManager)
+        self.assertTrue(manager.enabled)
+        self.assertEqual(str(os.path.realpath(root)), manager.root)
+
+    def test_lsp_false_opts_out_without_removing_the_seam(self):
+        agent, _ = self.build({"lsp": False})
+        manager = agent.ctx.lsp
+        self.assertIsInstance(manager, lsp.LSPManager)
+        self.assertFalse(manager.enabled)
+        self.assertFalse(manager.has_server("x.py"))
+
+
 if __name__ == "__main__":
     unittest.main()

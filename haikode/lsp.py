@@ -16,6 +16,7 @@ The entry point tools should call is `diagnostics_block(ctx, path)`: it returns
 nothing to say, and it never raises and never blocks past its deadline.
 """
 
+import atexit
 import functools
 import json
 import os
@@ -937,12 +938,20 @@ class LSPManager:
 
     @classmethod
     def from_config(cls, config: Any, root: str = ".") -> "LSPManager":
-        """Honour `lsp: false` in the config file; anything else enables LSP."""
+        """Honour `lsp: false` in the config file; anything else enables LSP.
+
+        This is the production entry point, so it also guarantees the exit
+        contract: every language server this manager spawns dies with the
+        process. Registered here and not in __init__ so unit tests that
+        build managers by hand do not accumulate atexit hooks.
+        """
         enabled = True
         data = getattr(config, "data", None)
         if isinstance(data, dict):
             enabled = data.get("lsp", True) is not False
-        return cls(root=root, enabled=enabled)
+        manager = cls(root=root, enabled=enabled)
+        atexit.register(manager.shutdown_all)
+        return manager
 
     def has_server(self, path: Any) -> bool:
         """

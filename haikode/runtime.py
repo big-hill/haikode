@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .agent import Agent
 from .agents import AgentRegistry
 from .config import Config
+from .lsp import LSPManager
 from .permission import Permissions
 from .projectconfig import PRIVILEGED_PROVIDER_FIELDS, ProjectConfig
 from .providers.anthropic import AnthropicProvider
@@ -340,7 +341,7 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         session_config, selected, prov, resolved_model,
         context_window, context_source)
 
-    return Agent(
+    agent = Agent(
         provider=client,
         model=resolved_model,
         permissions=permissions,
@@ -359,6 +360,14 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         instructions=instructions,
         warnings=warnings,
     )
+    # Diagnostics after edit/write are switched on by this one assignment:
+    # the tools already read ctx.lsp (tool/diagnostics.py) and did so for as
+    # long as nothing ever set it. Lazy by design — no server process exists
+    # until a file of a known language is actually touched, so on a machine
+    # with no servers installed this costs a memoised PATH miss and nothing
+    # else. `lsp: false` in the config opts out entirely.
+    agent.ctx.lsp = LSPManager.from_config(session_config, cwd)
+    return agent
 
 
 def _model_context(config: Config, provider: str, prov: dict, model: str,
