@@ -425,6 +425,16 @@ class Provider(ABC):
         """Effective context window and its source for this provider/model."""
         return configured, "configuration"
 
+    def input_limit(self, model: str, window: int) -> tuple:
+        """What a single prompt may be, and where that number came from.
+
+        Distinct from the context window: `context` is input plus output,
+        and the binding constraint on a request is the input share. A
+        provider that publishes the split overrides this; everyone else
+        keeps the window, which is what the old behaviour assumed.
+        """
+        return window, "context window"
+
     def reasoning_efforts(self, model: str) -> tuple:
         """Effort values this transport can send; empty means no control."""
         return ()

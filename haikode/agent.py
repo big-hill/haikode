@@ -25,12 +25,12 @@ Everything above is pure local work: prompt assembly never touches the network.
 import json
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .agents import (BUILTIN, DEFAULT_AGENT, AgentDef, AgentPermissions,
                      AgentRegistry, enter_plan_text, exit_plan_text,
                      is_readonly)
-from .context import ContextManager, compact_history
+from .context import ContextManager, compact_history, message_tokens
 from .memory import MemoryStore
 from .permission import DENY, Permissions
 from .prompt import build_system_prompt, select_variant
@@ -288,6 +288,7 @@ class Agent:
                  context_window: int = 128000,
                  context_source: str = "configuration",
                  context_default: int = 0,
+                 input_override: int = 0,
                  system_prompt: Optional[str] = None,
                  tool_names: Optional[List[str]] = None,
                  agent_name: str = "",
@@ -305,6 +306,16 @@ class Agent:
         # What the configuration alone would give: context_limit's fallback
         # when a later set_model lands on a model without a known profile.
         self._context_default = context_default or context_window
+        # What one prompt may be. `context` is input plus output; requests
+        # are refused on the input share, so compaction budgets against this
+        # and not the window (issue #5). An `input` figure in the provider
+        # profile is the user's own word and outranks the provider's.
+        self._input_override = max(0, int(input_override or 0))
+        self.input_window, self.input_source = self._derive_input_limit()
+        # Local estimate vs what the provider last reported for this
+        # conversation: >1 means the estimator runs low here. Applied to the
+        # compaction trigger so it fires on the model's arithmetic, not ours.
+        self.token_scale = 1.0
         self.messages: List[Msg] = []
         self.steps_used = 0
         self.cost = 0.0
@@ -549,8 +560,48 @@ class Agent:
                 notes.append("context window %sk (%s)"
                              % (window // 1000, source))
             self.context_window, self.context_source = window, source
+        # The input share follows the model just as the window does; a new
+        # conversation mix also means the old estimator correction is stale.
+        self.input_window, self.input_source = self._derive_input_limit()
+        self.token_scale = 1.0
         self.usage.invalidate_latest()
         return "; ".join(notes)
+
+    def _derive_input_limit(self) -> Tuple[int, str]:
+        """What one prompt may be: profile override, provider, or window."""
+        if self._input_override:
+            return (min(self._input_override, self.context_window),
+                    "configured input limit")
+        limit = getattr(self.provider, "input_limit", None)
+        if callable(limit):
+            try:
+                value, source = limit(self.model, self.context_window)
+                value = int(value or 0)
+                if 0 < value <= self.context_window:
+                    return value, str(source)
+            except Exception:
+                pass
+        return self.context_window, "context window"
+
+    def _observe_reported_usage(self, usage: Dict[str, Any],
+                                estimated: int) -> None:
+        """Recalibrate the estimator against what the model just counted.
+
+        The estimator is tuned for the average session (context.py); this
+        conversation's mix of code, prose and tool output can still run it
+        low or high — measured 79–88% on one real session. The provider's
+        own count for the prompt we just sent is ground truth, so the ratio
+        replaces guesswork. Clamped: a single absurd reading (a truncated
+        payload, a provider bug) must not swing the trigger by more than the
+        plausible range of estimator error.
+        """
+        try:
+            reported = int(usage.get("input", 0)) + int(usage.get("cache_read", 0))
+        except (TypeError, ValueError):
+            return
+        if reported <= 0 or estimated <= 0:
+            return
+        self.token_scale = min(2.0, max(0.5, reported / estimated))
 
     # --- prompt assembly ----------------------------------------------
 
@@ -659,8 +710,9 @@ class Agent:
         # writes a summary instead; if that call fails it still falls back to
         # dropping, so a summariser outage degrades rather than breaks.
         history = compact_history(pair_tool_messages(self.messages),
-                                  self.context_window,
-                                  provider=self.provider, model=self.model)
+                                  self.input_window,
+                                  provider=self.provider, model=self.model,
+                                  scale=self.token_scale)
         messages = [self._system_message()] + history
         if reminder:
             messages.append(Msg(role="assistant", content=reminder))
@@ -698,6 +750,9 @@ class Agent:
         self._bind_abort()
         messages = self._messages_for_llm(
             MAX_STEPS_PROMPT if final_step else None)
+        # What we think this prompt weighs; the response's usage says what it
+        # actually weighed, and the ratio recalibrates the estimator.
+        estimated_prompt = sum(message_tokens(m) for m in messages)
         specs = [] if final_step else self.specs
         stream = self.provider.stream(messages, specs,
                                       self.model, self.max_tokens)
@@ -728,6 +783,7 @@ class Agent:
                     delta = self.usage.record(chunk.usage)
                     self.tokens["input"] += delta.input_tokens
                     self.tokens["output"] += delta.output_tokens
+                    self._observe_reported_usage(chunk.usage, estimated_prompt)
                 if chunk.stop_reason:
                     stop_reason = chunk.stop_reason
         finally:

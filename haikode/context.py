@@ -62,9 +62,24 @@ IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
 PathLike = Union[str, Path]
 
 
+# Characters per token. The old value, 4.0, was measured against the API on
+# a real code- and tool-output-heavy session and undercounted every time:
+#
+#     messages   estimated   reported   estimated/reported
+#     60         40 739      46 033     88%
+#     150        81 995     103 200     79%
+#     300       119 179     146 773     81%
+#
+# 3.3 puts the same measurements at 96–107%. Still an estimate — the live
+# correction is Agent.token_scale, which reweighs it against what the
+# provider actually reports; this constant only has to be right enough for
+# the requests made before the first response.
+CHARS_PER_TOKEN = 3.3
+
+
 def estimate_tokens(text: str) -> int:
-    """Rough but stable: ~4 chars per token."""
-    return max(1, len(text) // 4)
+    """Rough but stable, calibrated against reported counts (see above)."""
+    return max(1, int(len(text) / CHARS_PER_TOKEN))
 
 
 def message_tokens(message: Msg) -> int:
@@ -841,32 +856,43 @@ def keep_token_budget(budget: int) -> int:
 
 
 def needs_compaction(messages: Sequence[Msg], window: int,
-                     reserve: float = DEFAULT_RESERVE) -> bool:
+                     reserve: float = DEFAULT_RESERVE,
+                     scale: float = 1.0) -> bool:
     """True when the history no longer fits its share of `window`.
 
-    `reserve` is the fraction of the window the history may occupy — the same
-    meaning it has always had here. Only the default moved, from 0.4 to
-    DEFAULT_RESERVE: folding the conversation away at 40% discarded 280k
-    tokens of a 500k window that the model could have used, and a summary is
-    always lossier than the turns it replaces. opencode compacts when the
-    count reaches the window minus roughly one maximum output
-    (session/overflow.ts `usable`), which is what this now approximates.
+    `window` must be the limit a *prompt* is measured against — the model's
+    input limit where the provider states one, not the combined
+    input-plus-output figure. Budgeting a 500k-context ChatGPT model against
+    500 000 let the prompt grow 128k past what the backend accepts, and the
+    failure came back as a generic server_error rather than anything that
+    looked like size (issue #5).
+
+    `reserve` is the fraction of that window the history may occupy. The
+    default moved from 0.4 to DEFAULT_RESERVE: folding the conversation away
+    at 40% discarded 280k tokens the model could have used, and a summary is
+    always lossier than the turns it replaces.
+
+    `scale` reweighs the local estimate by what the provider has actually
+    reported for this conversation (Agent.token_scale). The estimator is
+    calibrated for the average session; the correction is for this one.
     """
     total = max(0, int(window or 0))
     budget = min(int(total * reserve), max(0, total - MIN_REPLY_RESERVE)) \
         if total > MIN_REPLY_RESERVE else int(total * reserve)
     if budget <= 0 or len(messages) <= 4:
         return False
-    return sum(message_tokens(m) for m in messages) > budget
+    estimated = sum(message_tokens(m) for m in messages)
+    return estimated * max(0.1, scale) > budget
 
 
 def compact_messages(messages: Sequence[Msg], window: int, *,
-                     reserve: float = 0.4, provider: Any = None,
+                     reserve: float = DEFAULT_RESERVE, provider: Any = None,
                      model: str = "", keep_last: int = 0,
                      tail_turns: int = DEFAULT_TAIL_TURNS,
                      previous_summary: str = "", trigger: str = "auto",
                      force: bool = False, cache: bool = True,
-                     max_tokens: int = SUMMARY_MAX_TOKENS) -> CompactionResult:
+                     max_tokens: int = SUMMARY_MAX_TOKENS,
+                     scale: float = 1.0) -> CompactionResult:
     """
     Fold the old turns into one model-written summary.
 
@@ -887,11 +913,14 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
     almost the same messages.
     """
     history = list(messages)
-    if not force and not needs_compaction(history, window, reserve):
+    if not force and not needs_compaction(history, window, reserve, scale):
         return CompactionResult(messages=history, kept=len(history),
                                 trigger=trigger)
 
-    budget = int(max(0, int(window or 0)) * reserve)
+    # The keep-budget is compared against local estimates inside the plan,
+    # so it is expressed in estimator units: a scale saying "the estimator
+    # runs low here" must shrink what is kept, not enlarge it.
+    budget = int(max(0, int(window or 0)) * reserve / max(0.1, scale))
     plan = plan_compaction(history, keep_last=keep_last, tail_turns=tail_turns,
                            keep_tokens=keep_token_budget(budget))
     if not plan.folded:
@@ -927,15 +956,19 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
         summarized=True, trigger=trigger, cached=reused)
 
 
-def compact_history(messages: List[Msg], window: int, reserve: float = 0.4, *,
-                    provider: Any = None, model: str = "") -> List[Msg]:
+def compact_history(messages: List[Msg], window: int,
+                    reserve: float = DEFAULT_RESERVE, *,
+                    provider: Any = None, model: str = "",
+                    scale: float = 1.0) -> List[Msg]:
     """
     Compaction for callers that only want the new history back.
 
-    This is the request-assembly path. Passing `provider` is what makes the
-    automatic trigger summarise rather than drop; leaving it out keeps the
-    mechanical fallback, unchanged, for callers that have no provider to spend
-    (an in-memory /compact with no session behind it).
+    This is the request-assembly path: `window` is the input limit, and
+    `scale` is the caller's live estimator correction. Passing `provider` is
+    what makes the automatic trigger summarise rather than drop; leaving it
+    out keeps the mechanical fallback, unchanged, for callers that have no
+    provider to spend (an in-memory /compact with no session behind it).
     """
     return compact_messages(messages, window, reserve=reserve,
-                            provider=provider, model=model).messages
+                            provider=provider, model=model,
+                            scale=scale).messages

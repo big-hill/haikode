@@ -1157,6 +1157,100 @@ class ALongRunningSessionSeesNewModels(TemporaryProject):
         self.assertIn("zen", catalog.errors)
 
 
+class CompactionBudgetsAgainstWhatARequestMayBe(TemporaryProject):
+    """Issue #5, both halves — every number below was measured.
+
+    The compaction budget was `context` × reserve, but `context` is input
+    plus output and requests are refused on the input share: the ChatGPT
+    backend enforces 372k input of gpt-5.6's 500k, 272k of gpt-5.5's 400k
+    (opencode codex.ts records the same split). And the estimator saw only
+    79–88% of the API's own count on a real session, so the trigger fired
+    150k–210k tokens after the request had stopped being legal — surfacing
+    as a generic server_error, nothing that looked like size.
+    """
+
+    def test_the_chatgpt_backend_input_share_is_published(self):
+        provider = ChatGPTSubscriptionProvider.__new__(ChatGPTSubscriptionProvider)
+        self.assertEqual((372000, "ChatGPT backend profile"),
+                         provider.input_limit("gpt-5.6-sol", 500000))
+        self.assertEqual((372000, "ChatGPT backend profile"),
+                         provider.input_limit("gpt-5.6-luna", 500000))
+        self.assertEqual((272000, "ChatGPT backend profile"),
+                         provider.input_limit("gpt-5.5", 400000))
+        self.assertEqual((128000, "context window"),
+                         provider.input_limit("gpt-4o", 128000))
+
+    def test_the_agent_budgets_against_the_input_share(self):
+        config = self.config(
+            default_provider="chatgpt",
+            providers={"chatgpt": {"model": "gpt-5.6-sol"}})
+        agent = build_agent(config, "chatgpt", cwd=self.root)
+        self.assertEqual(500000, agent.context_window)
+        self.assertEqual(372000, agent.input_window)
+        self.assertEqual("ChatGPT backend profile", agent.input_source)
+
+    def test_a_profile_can_pin_the_input_limit(self):
+        config = self.config(
+            default_provider="kimi",
+            providers={"kimi": {"model": "k3", "api_key": "x",
+                                "base_url": "https://api.example.com/v1",
+                                "context": 1048576, "input": 900000}})
+        agent = build_agent(config, "kimi", cwd=self.root)
+        self.assertEqual(900000, agent.input_window)
+        self.assertEqual("configured input limit", agent.input_source)
+
+    def test_a_provider_with_no_split_keeps_the_window(self):
+        config = self.config(
+            default_provider="zen",
+            providers={"zen": {"model": "m", "api_key": "x",
+                               "base_url": "https://opencode.ai/zen/v1",
+                               "context": 190000}})
+        agent = build_agent(config, "zen", cwd=self.root)
+        self.assertEqual(agent.context_window, agent.input_window)
+
+    def test_switching_model_moves_the_input_share_too(self):
+        config = self.config(
+            default_provider="chatgpt",
+            providers={"chatgpt": {"model": "gpt-5.6-sol"}})
+        agent = build_agent(config, "chatgpt", cwd=self.root)
+        agent.set_model("gpt-5.5")
+        self.assertEqual(400000, agent.context_window)
+        self.assertEqual(272000, agent.input_window)
+
+    def test_the_estimator_is_calibrated_against_the_measurements(self):
+        """The session measured 79–88% at 4 chars/token; 3.3 lands 96–107%."""
+        from haikode.context import estimate_tokens
+        for chars, reported in ((162956, 46033), (327980, 103200),
+                                (476716, 146773)):
+            estimated = estimate_tokens("x" * chars)
+            self.assertGreater(estimated / reported, 0.90)
+            self.assertLess(estimated / reported, 1.15)
+
+    def test_the_reported_count_recalibrates_the_trigger(self):
+        """One real exchange teaches the trigger the model's arithmetic."""
+        provider = ScriptedProvider([
+            [CompletionChunk(text="ok", stop_reason="stop",
+                             usage={"input": 12000, "output": 5})],
+        ])
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        agent.run("hello")
+        # The provider counted 12000 for a prompt we estimated far smaller,
+        # so the scale rises — clamped to the plausible range.
+        self.assertGreater(agent.token_scale, 1.0)
+        self.assertLessEqual(agent.token_scale, 2.0)
+
+    def test_the_scale_moves_the_compaction_point(self):
+        from haikode.context import needs_compaction
+        history = [Msg(role="user" if i % 2 == 0 else "assistant",
+                       content="x" * 660) for i in range(30)]
+        # ~6000 estimated tokens against a 20000-token window: fits at face
+        # value, does not fit once the model is known to count double.
+        self.assertFalse(needs_compaction(history, 20000, reserve=0.4))
+        self.assertTrue(needs_compaction(history, 20000, reserve=0.4,
+                                         scale=2.0))
+
+
 class TheContextWindowFollowsTheModel(TemporaryProject):
     """Field report: the meter was wrong on Kimi, Ollama and SuperGrok.
 

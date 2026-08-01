@@ -141,15 +141,17 @@ class ContextStateTest(unittest.TestCase):
 
 class MeasureContextTest(unittest.TestCase):
     def test_components_of_a_stub_agent(self):
-        state = measure_context(_StubAgent())
-        # system: 40 chars // 4 + 4 message overhead
-        self.assertEqual(state.system, 14)
-        # tools: "read" + 16 chars of description + '{"type": "object"}' = 38 // 4
-        self.assertEqual(state.tools, 9)
-        # history: (20//4 + 4) + (8//4 + "read" + "{}" + 4)
-        self.assertEqual(state.history, 17)
+        # Expectations are computed with the shared estimator, not written as
+        # literals: the chars-per-token constant is calibrated against real
+        # sessions and may move again (it moved from 4 to 3.3 — issue #5).
+        agent = _StubAgent()
+        state = measure_context(agent)
+        self.assertEqual(state.system, message_tokens(agent._system_message()))
+        self.assertEqual(state.tools, estimate_tokens(
+            'read' + 'D' * 16 + '{"type": "object"}'))
+        self.assertEqual(state.history,
+                         sum(message_tokens(m) for m in agent.messages))
         self.assertEqual(state.messages, 2)
-        self.assertEqual(state.used, 40)
         self.assertEqual(state.window, 1000)
         self.assertEqual(state.used, state.system + state.tools + state.history)
 
@@ -181,8 +183,9 @@ class MeasureContextTest(unittest.TestCase):
                 raise OSError("no AGENTS.md here")
 
         state = measure_context(Broken())
-        self.assertEqual(state.system, 20)  # 80 // 4, no message overhead
-        self.assertEqual(state.used, 20)
+        # The raw prompt is estimated without message overhead.
+        self.assertEqual(state.system, estimate_tokens("P" * 80))
+        self.assertEqual(state.used, state.system)
         self.assertEqual(state.window, 500)
 
     def test_unusable_attributes_do_not_raise(self):
@@ -205,9 +208,10 @@ class MeasureContextTest(unittest.TestCase):
 
         state = measure_context(Loose())
         self.assertEqual(state.messages, 2)
-        # 400//4 + 4 and 800//4 + 4: the text is counted, not reduced to a
-        # single token by an unread .content attribute.
-        self.assertEqual(state.history, 104 + 204)
+        # The text is counted, not reduced to a single token by an unread
+        # .content attribute; each entry carries the 4-token overhead.
+        self.assertEqual(state.history, (estimate_tokens("P" * 400) + 4)
+                         + (estimate_tokens("Q" * 800) + 4))
 
     def test_attributes_that_raise_do_not_take_the_frame_down(self):
         class Exploding:
@@ -233,12 +237,12 @@ class MeasureContextTest(unittest.TestCase):
         spec = agent.specs[0]
         del agent.specs
         agent.tools = {"read": spec}
-        self.assertEqual(measure_context(agent).tools, 9)
+        self.assertEqual(measure_context(agent).tools, estimate_tokens('read' + 'D' * 16 + '{"type": "object"}'))
 
     def test_specs_mapping_prices_the_schemas_not_their_names(self):
         agent = _StubAgent()
         agent.specs = {"read": agent.specs[0]}
-        self.assertEqual(measure_context(agent).tools, 9)
+        self.assertEqual(measure_context(agent).tools, estimate_tokens('read' + 'D' * 16 + '{"type": "object"}'))
 
 
 class UsageTrackerTest(unittest.TestCase):

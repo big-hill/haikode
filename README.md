@@ -36,13 +36,13 @@ haikode doctor                # what is configured and what is broken
 
 ---
 
-## The test suite fails 13 tests on purpose
+## The test suite fails 12 tests on purpose
 
 Before you conclude the project is broken: `python3 -m unittest discover -s
-tests -t .` reports **13 failures, all in `tests/test_wiring_audit.py`**, and
+tests -t .` reports **12 failures, all in `tests/test_wiring_audit.py`**, and
 that is the expected result. Any other failure is a real one.
 
-Those 13 are executable bug reports. Each names a subsystem that exists, is
+Those 12 are executable bug reports. Each names a subsystem that exists, is
 tested in isolation and is reachable from nothing — MCP, LSP, the skill
 catalogue, automatic compaction and a few dead config keys. They are kept
 failing rather than deleted so the gap is visible in every run instead of
@@ -846,6 +846,15 @@ names which of these the current number came from. To pin one yourself:
 ```json
 {"providers": {"kimi": {"model_context": {"k3-256k": 262144}}}}
 ```
+
+Compaction budgets against the **input** share of the window, not the whole
+of it: `context` is input plus output, and a request is refused on the input
+half. The ChatGPT backend enforces 372k of gpt-5.6's 500k and 272k of
+gpt-5.5's 400k; other providers default to the window. An `"input"` figure
+in the profile pins it by hand. The token estimate behind the trigger is
+calibrated against measured API counts and then corrected live, each turn,
+by the ratio between what we estimated and what the provider reported —
+so the trigger follows the model's arithmetic, not ours.
 
 ## MCP and LSP
 

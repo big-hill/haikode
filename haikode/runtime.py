@@ -349,6 +349,9 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         context_window=context_window,
         context_source=context_source,
         context_default=configured_context,
+        # `input` in a profile pins what one prompt may be — the input share
+        # of the window, which is what requests are actually refused on.
+        input_override=_int(prov.get("input"), 0),
         tool_names=enabled,
         agent_name=resolved_agent,
         registry=registry,

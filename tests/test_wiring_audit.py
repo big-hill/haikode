@@ -181,6 +181,13 @@ class SandboxCase(unittest.TestCase):
         ]
         for entry in self._patches:
             entry.start()
+        # The summary cache is process state keyed by content. Two audit
+        # classes build the same synthetic history, and unittest runs them
+        # alphabetically: the summariser test filled the cache and the
+        # drop-notice test then took the summary path, failing on a notice
+        # that was legitimately absent. The wiring it audits was never
+        # broken — the sandbox was.
+        context_mod.clear_summary_cache()
         self.config = Config(path=str(Path(self.home, "config.json")))
 
     def tearDown(self):

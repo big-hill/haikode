@@ -48,7 +48,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .context import (DEFAULT_TAIL_TURNS, MAX_KEEP_TOKENS, SUMMARY_MAX_TOKENS,
                       CompactionResult, global_config_dir, message_tokens,
-                      needs_compaction, plan_compaction, summarize_with_reason)
+                      DEFAULT_RESERVE, needs_compaction, plan_compaction,
+                      summarize_with_reason)
 from .palette import fuzzy_score
 from .schema import Msg, ToolCall
 from .tool.base import Tool, ToolResult
@@ -1102,7 +1103,8 @@ class Session:
 
     # --- compaction ------------------------------------------------------
 
-    def needs_compaction(self, window: int, reserve: float = 0.4) -> bool:
+    def needs_compaction(self, window: int,
+                         reserve: float = DEFAULT_RESERVE) -> bool:
         """
         True when the stored history no longer fits its share of `window`.
 

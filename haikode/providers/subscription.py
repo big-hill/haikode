@@ -54,6 +54,22 @@ class ChatGPTSubscriptionProvider(Provider):
             return 400000, "ChatGPT backend profile"
         return configured, "configuration"
 
+    def input_limit(self, model: str, window: int) -> tuple:
+        """The backend's input share of the window.
+
+        opencode records the split this backend enforces (codex.ts):
+        gpt-5.6 is 500k context = 372k input + 128k output, gpt-5.5 is
+        400k = 272k + 128k. Budgeting a prompt against the full window let
+        it grow 128k past what a request may be, and the refusal came back
+        as a generic server_error — nothing that looked like size.
+        """
+        normalized = (model or "").lower()
+        if "gpt-5.6" in normalized:
+            return 372000, "ChatGPT backend profile"
+        if "gpt-5.5" in normalized:
+            return 272000, "ChatGPT backend profile"
+        return window, "context window"
+
     def reasoning_efforts(self, model: str) -> tuple:
         if "gpt-5.6" in (model or "").lower():
             return self.GPT56_EFFORTS
