@@ -68,14 +68,22 @@ fi
 # re-trigger the "Application keyring access" dialog on the machine's physical
 # screen and orphan every key the approved binary already stored.
 echo "Building BKeyStore helper (binary name stays hai-keystore) ..."
-make -C "$PROJECT_DIR/tools/hai-keystore" clean
-make -C "$PROJECT_DIR/tools/hai-keystore"
+# The modern compiler on the 32-bit gcc2 hybrid lives behind `setarch x86`;
+# gcc2 itself cannot build this C++.
+MAKE=make
+if command -v getarch >/dev/null 2>&1 \
+		&& [ "$(getarch)" = "x86_gcc2" ] \
+		&& command -v setarch >/dev/null 2>&1; then
+	MAKE="setarch x86 make"
+fi
+$MAKE -C "$PROJECT_DIR/tools/hai-keystore" clean
+$MAKE -C "$PROJECT_DIR/tools/hai-keystore"
 cp "$PROJECT_DIR/tools/hai-keystore/hai-keystore" "$BIN_DIR/hai-keystore"
 chmod 755 "$BIN_DIR/hai-keystore"
 
 echo "Building native desktop app ..."
-make -C "$PROJECT_DIR/desktop" clean
-make -C "$PROJECT_DIR/desktop"
+$MAKE -C "$PROJECT_DIR/desktop" clean
+$MAKE -C "$PROJECT_DIR/desktop"
 DESKTOP_BIN=$(find "$PROJECT_DIR/desktop" -type f -name haikode -perm -100 \
 	| grep '/objects' | head -n 1)
 if [ -z "$DESKTOP_BIN" ]; then

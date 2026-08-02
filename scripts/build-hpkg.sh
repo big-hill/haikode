@@ -37,7 +37,25 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 OUT_DIR=${1:-$PROJECT_DIR/build}
 
-ARCH=$(uname -m)
+# Package architecture. Not `uname -m`: on 32-bit Haiku that answers "BePC"
+# (a BeOS inheritance), which is not a valid hpkg architecture. `getarch`
+# answers the real one — and on the 32-bit gcc2 hybrid the answer we want is
+# the *secondary* arch `x86`, because that is what the modern compiler (and
+# therefore our C++ binaries below) targets; gcc2 itself cannot build them.
+if command -v getarch >/dev/null 2>&1; then
+	ARCH=$(getarch)
+else
+	ARCH=$(uname -m)
+fi
+MAKE=make
+case "$ARCH" in
+	BePC|x86_gcc2)
+		ARCH=x86
+		if command -v setarch >/dev/null 2>&1; then
+			MAKE="setarch x86 make"
+		fi
+		;;
+esac
 PYTHON_LIB_DIR=lib/python3.10/vendor-packages
 APP_SIGNATURE=application/x-vnd.haikode
 PACKAGER=${HAIKODE_PACKAGER:-"haikode maintainers <haikode@localhost>"}
@@ -89,14 +107,14 @@ echo "haikode $FULL_VERSION -> package version $PKG_VERSION ($ARCH)"
 # native parts
 # ---------------------------------------------------------------------------
 echo "Building BKeyStore helper ..."
-make -C "$PROJECT_DIR/tools/hai-keystore" clean >/dev/null
-make -C "$PROJECT_DIR/tools/hai-keystore"
+$MAKE -C "$PROJECT_DIR/tools/hai-keystore" clean >/dev/null
+$MAKE -C "$PROJECT_DIR/tools/hai-keystore"
 KEYSTORE_BIN="$PROJECT_DIR/tools/hai-keystore/hai-keystore"
 [ -x "$KEYSTORE_BIN" ] || { echo "hai-keystore was not produced." >&2; exit 1; }
 
 echo "Building native desktop app ..."
-make -C "$PROJECT_DIR/desktop" clean >/dev/null
-make -C "$PROJECT_DIR/desktop"
+$MAKE -C "$PROJECT_DIR/desktop" clean >/dev/null
+$MAKE -C "$PROJECT_DIR/desktop"
 DESKTOP_BIN=$(find "$PROJECT_DIR/desktop" -type f -name haikode -perm -100 \
 	| grep '/objects' | head -n 1)
 [ -n "$DESKTOP_BIN" ] || { echo "Desktop app binary was not produced." >&2; exit 1; }
@@ -219,7 +237,9 @@ provides {
 }
 requires {
 	haiku >= r1~beta5
-	python3.10 >= 3.10
+	# The command, not the package name: on the 32-bit hybrid the package is
+	# called python3.10_x86, but both spellings provide cmd:python3.10.
+	cmd:python3.10 >= 3.10
 }
 INFO
 
