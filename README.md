@@ -444,6 +444,7 @@ transcript.
 | `/context` | context-window usage breakdown |
 | `/usage`, `/cost` | token usage for this session |
 | `/tools` | tools available to the agent |
+| `/mcp` | MCP servers: connection state, tools, warnings |
 | `/permissions` | what tools may do without asking |
 | `/reasoning` | show or hide model reasoning blocks |
 | `/help` | this list, plus custom commands |
@@ -683,25 +684,35 @@ over global ones, and an `agents` block in `haikode.json` merges on top of both.
 
 ## Agents and plan mode
 
-Three built-ins:
+Four built-ins:
 
 | Agent | Mode | What it is |
 |---|---|---|
 | `build` | primary, default | full tool set |
 | `plan` | primary | **read-only** |
 | `general` | subagent | search and research, reached via the `task` tool |
+| `explore` | subagent | read-only locator: finds files and symbols, never runs or edits |
 
 Switch with `/agent <name>`, `ctrl+x a`, or `-a` on the command line. Switching
 swaps the prompt, the tool list, the permissions, the step budget and the
-agent's own model — and never touches the conversation.
+agent's own model — and never touches the conversation. The `task` tool takes
+a `subagent_type`, so the model picks the right subagent for the job.
 
 Plan mode is read-only in **both** dimensions at once, because hiding a tool
 only discourages a model while a permission deny actually stops it: `plan` sees
-only `read`, `grep`, `glob`, `list`, `task` and `todowrite` (`apply_patch` goes
-too — its permission key is `edit`), and every write key is denied underneath.
-Session-scoped "always" grants are filtered on the way in, so a `bash` grant you
-made in build mode cannot walk around plan's deny. Entering and leaving plan
-mode injects the same synthetic reminder opencode uses.
+only `read`, `grep`, `glob`, `list`, `task`, `todowrite`, `question` and
+`plan_exit` (`apply_patch` goes too — its permission key is `edit`), and every
+write key is denied underneath. Session-scoped "always" grants are filtered on
+the way in, so a `bash` grant you made in build mode cannot walk around plan's
+deny. Entering and leaving plan mode injects the same synthetic reminder
+opencode uses.
+
+A planning turn ends one of two ways: the model asks you something with the
+`question` tool (both front ends render the options and feed the answer back),
+or it presents the finished plan and calls `plan_exit` — approve, and it is
+switched to `build` and starts implementing; decline, and it stays in plan
+mode and refines. `plan_exit` is offered only to agents whose tool list names
+it, so `build` is never handed a plan to approve.
 
 ## Permissions
 
@@ -833,8 +844,10 @@ a local estimate. `/context` names the source of the model's window and breaks
 usage down (system prompt, instructions, memory, tool schemas, history);
 `/usage` and `/cost` report what the session has spent.
 
-When the history no longer fits, it is trimmed at request time; `/compact`
-folds the old part into a summary explicitly.
+When the history no longer fits its budget, the old turns are folded into a
+model-written summary automatically at request time (falling back to dropping
+with a notice if the summariser fails); `/compact` does the same thing on
+demand.
 
 The window is per model, not per provider. A profile's `context` is the
 fallback; where the endpoint states a window of its own in `/models` — xAI and
@@ -858,16 +871,27 @@ so the trigger follows the model's arithmetic, not ours.
 
 ## MCP and LSP
 
-Both clients exist and are tested — a stdlib MCP client (stdio and HTTP
-JSON-RPC transports, schema hardening, every proxy tool behind the `mcp`
-permission key) and a stdlib LSP client (one server per language per workspace,
-`didOpen`/`didChange`, diagnostics appended to `edit`/`write` output).
+Both are live. MCP is the one extensibility path on an OS with no pip: put a
+block in your config and the server's tools join the agent's set, each behind
+the `mcp` permission key (approving one grants the tool, "always" covers the
+whole server):
 
-**Neither is connected to a running agent yet.** No front-end constructs an
-`MCPManager`, and nothing assigns `ctx.lsp`, so the `mcp` block in your config
-is parsed and ignored, and diagnostics always come back empty. This is the
-largest single gap against opencode; do not configure around it expecting it to
-work. See [docs/PARITY.md](docs/PARITY.md).
+```json
+{"mcp": {"docs": {"command": ["python3", "/path/to/server.py"]}}}
+```
+
+Remote servers use `{"url": "https://…"}`. Startup is budgeted and a broken
+server cannot stall the agent: while a server is connecting — or if it never
+manages to — the model is offered a `mcp_<name>_status` stand-in that reports
+the connection state, and the real tools replace it at the next turn once the
+server is up. A remote tool can never shadow a built-in. `/mcp` lists every
+server, its state and its tools.
+
+LSP needs no configuration at all: when a language server for the file you are
+editing exists on `$PATH`, its diagnostics are appended to `edit`/`write`
+output, so the agent learns immediately that a change broke the build. No
+server process exists until a file of a known language is touched, and every
+server dies with haikode. `lsp: false` in the config opts out.
 
 ## Desktop app
 
@@ -899,7 +923,7 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
-1549 tests, stdlib `unittest`, no network. `HAI_DISABLE_KEYSTORE=1` skips the
+2270 tests, stdlib `unittest`, no network. `HAI_DISABLE_KEYSTORE=1` skips the
 native helper so the suite never blocks on Haiku's keyring approval dialog.
 
 To **look** at the TUI rather than guess at it, `tests/render_tui.py` is a pty +

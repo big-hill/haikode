@@ -1,8 +1,9 @@
 # haikode vs opencode — verified parity
 
-**Last verified: 2026-07-27**, against haikode `0.1.0-m0m1` (1549 tests passing)
-and the opencode checkout at
-`scratchpad/opencode-src` (`packages/opencode`, `packages/tui`).
+**Last verified: 2026-08-02**, against haikode `0.1.0-m0m1` (2270 tests: 2 skips
+and **exactly 5 deliberate failures**, all in `tests/test_wiring_audit.py`,
+which pin the remaining dead code — see the inventory below) and the opencode
+checkout at `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`).
 
 This document exists to stop us fooling ourselves. The failure mode it guards
 against is real and has already happened here once: a module can be complete,
@@ -42,24 +43,24 @@ Every row was checked three ways:
 | Streaming text | yes | **Yes** | `providers/base.py` SSE; TUI streams per chunk |
 | Streaming reasoning / thinking | yes | **Yes** | Anthropic `thinking_delta`; six key spellings for OpenAI-compat (`providers/base.py:REASONING_KEYS`) |
 | Step limit / agentic cap | yes | **Yes** | unlimited by default; an explicit `max_steps` reserves a tool-free final handoff, emits a continuable `limit` event, and resets on the next user message |
-| Abort mid-run | yes | **Yes** | `Agent.abort()`, `esc` / `ctrl+c` in the TUI, `KeyboardInterrupt` in the REPL |
+| Abort mid-run | yes | **Yes** | `Agent.abort()`, `esc` / `ctrl+c` in the TUI, `KeyboardInterrupt` in the REPL; an interrupt also discards queued prompts *and* pending steering (`tui._drop_queued`) |
 | Retry / backoff on provider errors | `session/retry.ts` | **Partial** | `net.py` retries transport errors; no per-model retry policy, no `dialog-retry-action` equivalent |
-| Context-overflow handling | `session/overflow.ts` | **Partial** | `compact_history()` trims at request time; no summarising overflow recovery |
-| Automatic compaction | `session/compaction.ts` | **No** | `Session.needs_compaction()` exists and **has no callers**. Compaction is manual (`/compact`) only |
-| Prompt queueing while a run is in flight | yes (`session_queued_prompts`) | **No** | keybind name exists, defaults to `<leader>q`, no handler |
-| Sub-agents (`task` tool) | yes | **Yes** | `tool/task.py` → nested `Agent`; `general` subagent |
-| Cost accounting in currency | yes | **No** | `usage.py` counts tokens; `format_cost` exists but there is no price table |
+| Context-overflow handling | `session/overflow.ts` | **Partial** | `compact_history()` now folds old turns into a model-written anchored summary at request time (`context.py`), degrading to drop-with-a-notice when the summariser fails; a provider-reported `context_overflow` error is still surfaced, not auto-recovered |
+| Automatic compaction | `session/compaction.ts` | **Yes** | every request goes through `agent._messages_for_llm()` → `compact_history()` (agent.py:773–788), budgeted against a per-model **input** window (`agent.input_window`; ChatGPT backend 372k/272k, `providers/subscription.py:61`); the 3.3 chars/token estimator (`context.py:77`) is recalibrated every turn against reported usage (`agent.token_scale`, agent.py:658). `/compact` remains for manual use |
+| Prompt queueing while a run is in flight | yes (`session_queued_prompts`) | **Yes** | prompts typed mid-run land in a pinned band above the prompt (`build_pinned_queue_lines`); `ctrl+x q` (`<leader>q`) opens an edit/drop dialog; a steered message (`/steer`, `agent.steer`/`pending_steering`) reaches the model at its next step and is cleared on interrupt |
+| Sub-agents (`task` tool) | yes | **Yes** | `tool/task.py` → nested `Agent`, with a `subagent_type` argument; `general` and `explore` built-ins plus custom subagents |
+| Cost accounting in currency | yes | **No** | `/cost` prints token totals (`usage.summary_line`); `usage.estimate_cost()` still has **no caller** and there is still no price table |
 
 ## 2. Providers and auth
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| OpenAI-compatible dialect | yes | **Yes** | `providers/openai_compat.py` |
+| OpenAI-compatible dialect | yes | **Yes** | `providers/openai_compat.py`; asks for `stream_options: {"include_usage": true}` and backs off per endpoint when it is rejected (openai_compat.py:164, 229) |
 | Anthropic dialect | yes | **Yes** | `providers/anthropic.py` |
-| Google Gemini dialect | yes | **Dead** | `providers/gemini.py` is complete and tested, but `runtime.build_provider()` only constructs Anthropic / OpenAI-compat / subscription providers, and no `gemini` profile exists in `config.DEFAULT_CONFIG` |
+| Google Gemini dialect | yes | **Yes** | `runtime.build_provider()` dispatches `dialect: "gemini"` (runtime.py:249) to `providers/gemini.py`; reachable via `haikode provider add` (there is still no built-in Gemini profile in `config.DEFAULT_CONFIG`) |
 | ChatGPT subscription (device OAuth) | plugin | **Yes** | `providers/subscription.py`, `oauth.py` |
 | SuperGrok subscription (RFC 8628) | plugin | **Yes** | same |
-| Models.dev catalogue | yes | **No** | `models.py` lists what the endpoint's `/models` returns, with an on-disk cache; no curated metadata, no pricing, no capability flags |
+| Models.dev catalogue | yes | **Partial** | still no pricing or capability flags, but per-model **context windows** now come from endpoint metadata (`ModelCatalog.context_for`, models.py:221; Ollama `/api/show` `num_ctx`, configtool.py:130–206) and feed the compaction budget (runtime.py:426) |
 | Custom provider profiles | yes | **Yes** | `haikode provider add`, TUI *Add provider* form |
 | Key storage in an OS keyring | no | **Yes (haikode only)** | native `hai-keystore` (BKeyStore); opencode uses `auth.json` |
 | `opencode auth login` device flows for many providers | yes | **Partial** | only ChatGPT and SuperGrok |
@@ -74,7 +75,7 @@ code-mode, external-directory`.
 | Tool | opencode | haikode | Evidence |
 |---|---|---|---|
 | `read` | yes | **Yes** | offset/limit, line numbers, read-before-write guard |
-| `write` | yes | **Yes** | |
+| `write` | yes | **Yes** | atomic replace preserves ownership, timestamps and BFS attributes (`haiku.copy_attributes`, tool/files.py:184) |
 | `edit` | yes | **Yes** | exact string replacement |
 | `apply_patch` | yes | **Yes** | `tool/apply_patch.py`, registered in `tool/__init__.py` |
 | `glob` / `grep` / `list` | yes | **Yes** | pure Python; no ripgrep dependency |
@@ -82,11 +83,11 @@ code-mode, external-directory`.
 | `webfetch` | yes | **Yes** | text/markdown extraction |
 | `todowrite` | yes | **Yes** | rendered as a live checklist; conditional system guidance tells the model to use it for multi-step work, not simple tasks |
 | `task` (subagent) | yes | **Yes** | |
-| `question` | yes | **Partial** | registered, but **no front-end fills `metadata["answers"]`** — the TUI, REPL and desktop asker all just approve or reject, so every question returns "Unanswered". Degrades instead of hanging, by design (`tool/question.py`), but it is not the feature opencode has |
+| `question` | yes | **Yes** | both main front-ends now fill `metadata["answers"]`: a numbered prompt in the REPL (`repl.py:terminal_asker`) and a choice modal in the TUI (tui.py:5340). The desktop asker still only approves/rejects, so a question there returns "Unanswered" |
+| `skill` | yes | **Yes** | `tool/skill.py`, registered; the catalogue is advertised in the system prompt so the model knows what to load (§9) |
 | `memory_write` / `memory_read` | — | **Yes (haikode only)** | selective durable-memory guidance is present even for an empty store; later sessions load the index; `/memory` exposes editable files |
-| `lsp` / diagnostics tool | yes | **Dead** | see §9 |
+| `lsp` / diagnostics tool | yes | **Partial** | no standalone `lsp` tool, but diagnostics are appended to every edit/write/patch result via `ctx.lsp` (tool/diagnostics.py) — see §9 |
 | `websearch` | yes | **No** | |
-| `skill` | yes | **No** | |
 | `code-mode` | yes | **No** | |
 | `external-directory` | yes | **No** | |
 | Output truncation | `truncate.ts` | **Yes** | per-tool caps |
@@ -95,7 +96,7 @@ code-mode, external-directory`.
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| `allow` / `ask` / `deny` per key | yes | **Yes** | `permission.py` |
+| `allow` / `ask` / `deny` per key | yes | **Yes** | `permission.py`; MCP proxy tools sit behind the `mcp` key |
 | Glob patterns, most-specific-first | yes | **Yes** | `fnmatch`, sorted by specificity |
 | "Always" grants, session-scoped | yes | **Yes** | `grant_always()` |
 | Persist a grant to config | yes | **Yes** | `persist()`; via `SessionConfig.save()` only the session's own additions reach the user's config, never the project file's rules |
@@ -109,15 +110,15 @@ code-mode, external-directory`.
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
 | Built-in `build` / `plan` agents | yes | **Yes** | `agents.py` `BUILTIN` |
-| `general` search subagent | yes | **Yes** | |
+| `general` search subagent | yes | **Yes** | plus `explore`, a read-only locator (agents.py:210), named by the plan prompt and reachable through `task`'s `subagent_type` |
 | Markdown agents with frontmatter | `config/agent.ts` | **Yes** | `.haikode/agent/*.md`, project + global, `agents/` accepted |
 | `agents` block in project config | yes | **Yes** | merged on top of files |
 | Agent restricts tool list | yes | **Yes** | `resolve_tools()` with a tool→permission-key map |
 | Agent restricts permissions | yes | **Yes** | |
 | Plan mode read-only in both dimensions | yes | **Yes** | tools filtered *and* write keys denied; `apply_patch` correctly dropped via its `edit` key |
-| Plan enter/exit reminder injection | yes | **Yes** | `enter_plan_text()` / `exit_plan_text()` |
+| Plan enter/exit reminder injection | yes | **Yes** | `enter_plan_text()` / `exit_plan_text()`; the plan agent's tool list also carries `plan_exit` (agents.py:57, tool/plan.py) — the model ends plan mode by asking approval, and approval switches to build |
 | Built-ins resist being loosened by a repo file | yes | **Yes** | `AgentDef.locked` / `_reassert_locks` |
-| Per-model prompt variants | `session/system.ts` | **Yes** | 12 of opencode's 14 prompt texts ported; missing `copilot-gpt-5.txt` and `plan-reminder-anthropic.txt` |
+| Per-model prompt variants | `session/system.ts` | **Yes** | `haikode/prompts/` carries per-model texts (anthropic, beast, codex, gemini, gpt, kimi, meta, trinity, …); still no `copilot-gpt-5.txt` or `plan-reminder-anthropic.txt` |
 | `# Haiku OS` briefing in every prompt | — | **Yes (haikode only)** | `prompts/haiku.md`, asserted by marker |
 | `AGENTS.md` / `CLAUDE.md` chain | `session/instruction.ts` | **Yes** | plus `HAIKODE.md`, global `AGENTS.md`, `~/.claude/CLAUDE.md` |
 | `instructions` globs from project config | yes | **Yes** | bounded scan, must resolve inside the project |
@@ -137,23 +138,23 @@ code-mode, external-directory`.
 | Broken config never blocks startup | yes | **Yes** | reason collected in `.errors`, shown by `/status` and `doctor` |
 | `$schema` / JSON-schema publishing | yes | **No** | |
 | Variable interpolation (`{env:…}`, `{file:…}`) | `config/variable.ts` | **No** | |
-| `mcp` block honoured | yes | **No** | key is accepted and validated, then nothing reads it (§9) |
-| `theme`, `username` honoured | yes | **No** | accepted and validated, never read |
+| `mcp` block honoured | yes | **Yes** | read by `runtime.build_agent()` (runtime.py:388–395), which builds the `MCPManager` from it (§9) |
+| `theme`, `username` honoured | yes | **No** | accepted and validated, never read; `shell` likewise. `theme` and `shell` are pinned as two of the audit's deliberate failures (`ProjectConfigKeysThatGoNowhere`) |
 | Managed / enterprise config | yes | **n/a** | |
 
 ## 7. Commands
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| Built-in slash commands | yes | **Yes** | 34 builtins in `repl.py:_builtins()` |
+| Built-in slash commands | yes | **Yes** | 40 builtins in `repl.py:_builtins()`, now including `/mcp`, `/steer`, `/cost`, `/fork` |
 | Custom markdown commands | `command/index.ts` | **Yes** | `.haikode/command/*.md`, project + global |
 | `$ARGUMENTS`, `$1`…`$9` | yes | **Yes** | |
 | Inline `` !`shell` `` | yes | **Yes** | 10 s timeout |
 | `@file` mentions | yes | **Yes** | `expand_mentions()` |
-| Custom command `agent:` / `model:` frontmatter | yes | **No** | parsed into `CustomCommand.agent` / `.model` and then **never read** — `CommandRegistry.dispatch()` returns only the rendered prompt |
-| Command palette (`ctrl+p`) | `command-palette.tsx` | **Partial** | opens and works, but see §8 — the REPL's 34 builtins and every custom command are **missing from it** |
+| Custom command `agent:` / `model:` frontmatter | yes | **No** | still parsed into `CustomCommand.agent` / `.model` and then **never read** — `CommandRegistry.dispatch()` (commands.py:424) returns only the rendered prompt |
+| Command palette (`ctrl+p`) | `command-palette.tsx` | **Yes** | `CommandBridge` (main.py:600) exposes the registry to the TUI, which registers every builtin (minus 12 shadowed duplicates) and every custom command (`tui._register_slash_commands`). The old `__self__` probe that left the palette empty is gone |
 | Tab completion of command names | yes | **Yes** | |
-| `/init` scaffolding | yes | **Yes** | writes `haikode.json`, then has the model write `AGENTS.md` |
+| `/init` scaffolding | yes | **Yes** | `turn.prepare_init()` writes `haikode.json`, then has the model write `AGENTS.md`; shared by REPL and TUI |
 
 ## 8. TUI
 
@@ -168,73 +169,74 @@ Verified by rendering the real program with `tests/render_tui.py`.
 | Status line (model, cwd, agent, tokens) | yes | **Yes** | context remains beside the prompt instead of being duplicated |
 | Leader key (`ctrl+x`) with pending indicator | yes | **Yes** | |
 | Keybinds configurable from config | `config/keybind.ts` | **Yes** | `keybinds` block; unknown names warn |
-| Command palette | yes | **Partial** | 14 entries. `TUI._command_registry()` finds the REPL by `getattr(self.on_command, "__self__")`, but `main.py:_start_tui()` passes a **closure**, not a bound method — so the lookup returns `None` and no `/`-command is ever registered. Verified: `ctrl+p` renders "1/14" |
+| Command palette | yes | **Yes** | 14 UI actions plus every slash and custom command (see §7). The curated `palette.DEFAULT_COMMANDS` table is still unused, so 9 of its ids (`session.undo`, `session.export`, `session.rename`, `auth.login`, `auth.logout`, `permission.list`, `provider.default`, `todo.list`, `tool.list`) exist only as `/`-commands, not as named palette actions — pinned as two deliberate audit failures |
+| Queued-prompt band + dialog | yes | **Yes** | pinned band between plan and prompt; `ctrl+x q` edits/drops; steered items labelled "taken at the next step" |
 | Model dialog, favourites, recents | `dialog-model.tsx` | **Yes** | `ctrl+x m`; `ctrl+f` favourite, `ctrl+a` to providers |
 | Provider dialog + add-provider form | `dialog-provider.tsx` | **Yes** | |
-| Session dialog with full-text search | `dialog-session-list.tsx` | **Partial** | search, rename, delete and resume all work. Two gaps: it lists **all** directories (opencode filters to the project, with a toggle), and the "current session" marker is dead for the same `__self__` reason as the palette |
+| Session dialog with full-text search | `dialog-session-list.tsx` | **Partial** | search, rename, delete and resume all work, and the "current session" marker is now real (`_current_session_id()` reads the shared TurnController). It still lists **all** directories; `app_toggle_session_directory_filter` remains unavailable |
 | Agent dialog | `dialog-agent.tsx` | **Yes** | `ctrl+x a` |
 | Status dialog | `dialog-status.tsx` | **Yes** | `ctrl+x s` |
 | Help / keybinding dialog | via palette | **Yes** | every definition has a focused dispatch path; unavailable curses-port features are labelled instead of silently swallowing a configured chord |
-| MCP dialog | `dialog-mcp.tsx` | **No** | |
+| MCP dialog | `dialog-mcp.tsx` | **Partial** | the `mcp_list` binding and the palette both dispatch `/mcp` (tui.py:4681) — a textual server/tool report (`skills.mcp_report`), not opencode's interactive dialog |
 | Theme dialog / themes | `dialog-theme-list.tsx` | **No** | 3 semantic colours only |
-| Skill dialog | `dialog-skill.tsx` | **No** | |
+| Skill dialog | `dialog-skill.tsx` | **No** | `prompt_skills` is in `UNAVAILABLE_BINDINGS` |
 | Variant dialog | `dialog-variant.tsx` | **Partial** | effort cycles with `ctrl+t` and is set with `/effort`; no list dialog |
 | Workspace / worktree / stash dialogs | several | **n/a / No** | |
-| Session timeline, fork, tag, move | several | **No** | keybind names default to `"none"` |
-| External editor (`ctrl+x e`) | yes | **No** | binding listed, no handler |
+| Session timeline, fork, tag, move | several | **Partial** | forking exists as `/fork`, `--fork` and `haikode sessions fork` (whole session, §10), just not from a TUI dialog; timeline, tag and move are absent |
+| External editor (`ctrl+x e`) | yes | **No** | `editor_open` is in `UNAVAILABLE_BINDINGS`: consumed and reported, not implemented |
 | Sidebar / file context toggles | yes | **No** | |
 | Mouse support | yes | **Yes** | scroll wheel in the transcript |
 | ASCII fallback for non-UTF-8 terminals | no | **Yes (haikode only)** | `Glyphs.detect()`, for serial and `TERM=vt100` |
-| Session persistence from the TUI | yes | **No** | see §10 — this is the most serious gap in the table |
+| Session persistence from the TUI | yes | **Yes** | every turn runs through the shared `TurnController.run_turn()` (tui.py:2270, 2712); the wiring audit asserts a TUI turn writes a session row (`TUIUsesTheTurnController`) — see §10 |
 
 ## 9. Integrations
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| **MCP client** | `src/mcp` | **Dead** | `haikode/mcp.py` is 1126 lines, complete (stdio + HTTP JSON-RPC, bounded startup, schema hardening, `mcp` permission key) and well tested. **Nothing in `haikode/` imports it.** No `MCPManager` is ever constructed, so the `mcp` config block is inert |
-| **LSP client** | `src/lsp` | **Dead** | `haikode/lsp.py` is 1115 lines and complete. `tool/files.py` and `tool/apply_patch.py` *do* call `append_diagnostics(ctx, …)`, but that helper reads `getattr(ctx, "lsp", None)` and **`ToolContext.lsp` is never assigned anywhere** (`agent.py:155` constructs `ToolContext(cwd=…, permissions=…)`). Diagnostics are therefore always empty |
+| **MCP client** | `src/mcp` | **Yes** | `runtime.build_agent()` constructs `MCPManager` when the config has an `mcp` block (runtime.py:390) and merges its proxy tools into the agent behind the `mcp` permission key (`agent.attach_mcp`, agent.py:497). A connecting or dead server degrades to an honest `mcp_<name>_status` stand-in tool (mcp.py:858) instead of vanishing; servers die with the process (atexit). `/mcp` lists servers in the REPL and TUI |
+| **LSP client** | `src/lsp` | **Yes** | `runtime.build_agent()` assigns `agent.ctx.lsp = LSPManager.from_config()` (runtime.py:382); edit/write/patch append diagnostics through `tool/diagnostics.py`; servers spawn lazily per language and shut down atexit (lsp.py:953); `lsp: false` opts out |
 | Plugins | `src/plugin` | **No** | |
-| Skills | `src/skill` | **No** | |
+| Skills | `src/skill` | **Yes** | `haikode/skills.py` scans `{skill,skills}/**/SKILL.md`, project + global, as opencode does; the catalogue reaches the system prompt (`agent._skills_block`, agent.py:718), the `skill` tool loads one on demand, and SKILL.md warnings surface (wiring audit `SkillsAreWired`) |
 | Share links / hosted sessions | `src/share` | **n/a** | serverless by design |
 | Formatters | `src/format` | **No** | |
 | Git snapshots | `src/snapshot` | **n/a** | replaced by per-file snapshots in SQLite, because a Haiku install cannot assume git |
 | IDE / ACP / editor extensions | `src/ide`, `src/acp` | **No** | |
 | GitHub integration, PR/issue commands | `cli/cmd/github.ts` | **No** | |
 | HTTP server + SDK + web UI | `src/server`, `packages/web` | **n/a** | the whole point is that there is no server |
-| Desktop application | Electron/Tauri (`packages/desktop`) | **Yes, natively** | pure BeAPI C++ + NDJSON worker; runs the same agent loop |
-| Haiku desktop integration (notifications, BFS attributes, Tracker, alerts) | — | **Dead** | `haikode/haiku.py` is 426 lines, complete and tested. **No importers.** No notification is ever raised, no exported transcript gets BFS attributes |
+| Desktop application | Electron/Tauri (`packages/desktop`) | **Yes, natively** | pure BeAPI C++ + NDJSON worker; runs the same agent loop through the same TurnController |
+| Haiku desktop integration (notifications, BFS attributes, Tracker, alerts) | — | **Partial** | `haiku.copy_attributes()` now preserves BFS attributes across every atomic file replace (tool/files.py:184). The rest of `haikode/haiku.py` (494 lines) — notifications, Tracker, native alerts, attributes on exported transcripts — is still **never called** |
 
 ## 10. Sessions
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| Persistent session store | yes | **Yes** | SQLite, `session.py` (1167 lines) |
+| Persistent session store | yes | **Yes** | SQLite, `session.py` (1649 lines) |
 | Auto title from the first message | yes | **Yes** | |
 | List / resume / rename / delete | yes | **Yes** | |
-| Archive | yes | **Partial** | `/archive` works; `unarchive()` has no caller and no UI |
-| Full-text search over message bodies | yes | **Yes** | `SessionStore.search()` |
-| Revert / undo file changes | `session/revert.ts` + git snapshots | **Yes** | checkpoint + per-file original text (`NULL` = did not exist); `/undo` restores and deletes created files |
-| Redo | yes (`messages_redo`) | **No** | binding exists, no handler |
+| Archive | yes | **Partial** | `/archive` works; `unarchive()` still has no caller and no UI |
+| Full-text search over message bodies | yes | **Yes** | `SessionStore.search()`; the `session_history` tool (session.py:1545, registered) also lets the *model* list and read past sessions |
+| Revert / undo file changes | `session/revert.ts` + git snapshots | **Yes** | checkpoint + per-file original text (`NULL` = did not exist); `/undo` restores and deletes created files, and fails closed while persistence is broken (`turn.undo_available`) |
+| Redo | yes (`messages_redo`) | **No** | binding is reported unavailable; no handler |
 | Manual compaction | yes | **Yes** | `/compact` |
-| Undo a compaction | yes | **Dead** | `Session.restore_compaction()` / `compactions()` have no callers |
-| Per-session token totals and stats | yes | **Dead** | `token_totals()` and `stats()` have no callers; the UI counters come from the live `UsageTracker` instead |
-| Export transcript | `cli/cmd/export.ts` | **Yes** | `/export` → markdown / text / json |
-| Fork a session from a message | yes | **No** | |
-| **Sessions from the TUI** | yes | **No** | `haikode/tui.py` calls `agent.run()` on a worker thread and contains **no** `capture_modified`, `session.append` or `checkpoint` call. Only `repl.send()` (REPL, one-shot) and `desktop_worker._persist()` write to the database. So in the TUI: a resumed session is read and then never extended, new conversations are never saved, and `/undo` reports "No session to undo" |
+| Undo a compaction | yes | **Dead** | `Session.restore_compaction()` still has no caller |
+| Per-session token totals and stats | yes | **Yes** | `Session.stats()` (which folds `token_totals()`, `files_touched()` and `compactions()`) feeds `haikode sessions show` (main.py:358) and every JSON export; the live UI counters still come from `UsageTracker` |
+| Export transcript | `cli/cmd/export.ts` | **Yes** | `/export` and `haikode sessions export` → markdown / text / json |
+| Fork a session from a message | yes | **Partial** | `/fork`, `--fork` and `haikode sessions fork` copy the whole session so it can be branched; opencode's fork-from-a-*message* does not exist |
+| **Sessions from every front-end** | yes | **Yes** | `turn.py:TurnController` owns open-session → checkpoint → run → persist for all three front-ends (repl.py:451, tui.py:2712, desktop_worker.py:441). The wiring audit forbids any front-end calling `agent.run()` directly (`OnlyTurnOwnsTheLifecycle`) and asserts a TUI turn writes a session row |
 
 ## 11. CLI
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
 | Interactive TUI by default | yes | **Yes** | |
-| One-shot `run` | `cli/cmd/run.ts` | **Yes** | `haikode "prompt"` |
+| One-shot `run` | `cli/cmd/run.ts` | **Yes** | `haikode "prompt"`, `haikode run …` when the words would collide with a sub-command |
 | `--continue` / `--session` | yes | **Yes** | |
 | `--agent`, `--model`, `--provider` | yes | **Yes** | |
 | Auto-approve flag | yes | **Yes** | `--yes` |
 | `doctor` / environment report | partial | **Yes (better)** | SSL, curses, sqlite3, config path, keystore, tools, every provider's auth, project config, instruction files, prompt variant, agents, memory, and all collected warnings |
-| `models` / `providers` sub-commands | yes | **Partial** | `haikode provider …`; models are listed via `/models` in a session, not from the shell |
-| `serve`, `web`, `attach`, `acp`, `stats`, `upgrade`, `import` | yes | **n/a / No** | |
-| `agent create` generator | `cli/cmd/agent.ts` | **No** | |
+| `models` / `providers` sub-commands | yes | **Yes** | `haikode provider …`, `haikode models [PROVIDER] [--json --refresh]` (main.py:448), `haikode agent [NAME]`, `haikode sessions list/show/export/import/delete/rename/fork` |
+| `serve`, `web`, `attach`, `acp`, `stats`, `upgrade`, `import` | yes | **Partial / n/a** | `import` now exists (`haikode import`, `haikode sessions import`) and per-session stats come from `sessions show`; `serve`/`web`/`attach`/`acp` stay n/a, `upgrade` is No |
+| `agent create` generator | `cli/cmd/agent.ts` | **No** | `haikode agent` lists and describes agents (main.py:482); there is still no generator |
 
 ## 12. Platform
 
@@ -250,108 +252,99 @@ Verified by rendering the real program with `tests/render_tui.py`.
 
 ## Dead code inventory
 
-Modules with **zero call sites** outside their own file and their tests. Each
-one is a working, tested library and a feature that does not exist:
+The four fully dead modules of the last audit — `mcp.py`, `lsp.py`,
+`providers/gemini.py`, `haiku.py` — are gone from this table as modules:
+the first three are wired (§9, §2) and `haiku.py` has its first production
+caller. What remains dead, verified by grep and pinned by the audit's five
+deliberate failures:
 
-| File | Lines | What is lost |
+| File | Lines | What is still lost |
 |---|---|---|
-| `haikode/mcp.py` | 1126 | all MCP servers |
-| `haikode/lsp.py` | 1115 | all diagnostics after an edit |
-| `haikode/haiku.py` | 426 | notifications, BFS attributes, Tracker, native alerts |
-| `haikode/providers/gemini.py` | 275 | Google Gemini as a provider |
+| `haikode/haiku.py` | 494 | everything except `copy_attributes()`: notifications after a long run, Tracker integration, native alerts, BFS attributes on exported transcripts |
 
 Plus these individually dead entry points inside otherwise-live modules:
 
 | Symbol | Consequence |
 |---|---|
-| `palette.build_default_palette` / `DEFAULT_COMMANDS` / `resolve_handler` | the TUI builds its own 14-item palette; this curated 20-command table (with `session.undo`, `session.export`, `session.rename`, `auth.login`, `auth.logout`, `permission.list`, `tool.list`, `todo.list`) is never shown |
+| `palette.build_default_palette` / `DEFAULT_COMMANDS` / `resolve_handler` | the TUI's own palette now carries every slash command, but this curated table is still never consulted, and 9 of its ids have no named palette action (pinned: `PaletteDefaultCommandSetIsUsed`, 2 failures) |
+| `palette.move_to` / `page_count` / `selected_positions` / `unregister` / `select_list` | dead widget helpers |
 | `models.probe` | no "test this endpoint" action |
-| `ModelCatalog.cycle_favourite` | `model_cycle_favorite` can never be bound usefully |
-| `Session.needs_compaction` | no automatic compaction |
-| `Session.restore_compaction` / `compactions` | a compaction cannot be undone |
-| `Session.token_totals` / `stats` / `files_touched` | no per-session cost or footprint report |
+| `ModelCatalog.cycle_favourite` | `model_cycle_favorite` remains in `UNAVAILABLE_BINDINGS` |
+| `usage.estimate_cost` | no cost in currency; no price table anywhere |
+| `keybind.bindings_for` / `help_rows` | the help dialog builds its own rows |
+| `Session.restore_compaction` | a compaction cannot be undone |
 | `Session.unarchive` | archiving is one-way |
+| `Session.set_tokens` | dead setter |
+| `Session.needs_compaction` | vestigial wrapper — the live decision is `context.needs_compaction()`, taken on every request |
 | `CustomCommand.agent` / `.model` | command frontmatter silently ignored |
+| project-config `theme`, `shell`, `username` | validated, printed by `/status`, read by nothing (`theme` and `shell` pinned: `ProjectConfigKeysThatGoNowhere`, 2 failures) |
 
-`VERIFICATION.md` at the repository root is **stale** — dated 2026-07-14, it
-describes a 20-test suite and says "HPKG packaging is not yet provided". Both
-statements are now wrong (1549 tests; the package builds and installs). Treat
-this file as the current record.
+The five deliberate failures in `tests/test_wiring_audit.py` are exactly this
+inventory's guard: `NoDeadPublicFunctions` (the symbol list above),
+`PaletteDefaultCommandSetIsUsed` ×2, and `ProjectConfigKeysThatGoNowhere`
+(`theme`, `shell`) ×2. When one of them starts passing, delete its row here.
+
+`VERIFICATION.md` at the repository root is **still stale** — dated 2026-07-14,
+it describes a far smaller suite and says "HPKG packaging is not yet provided".
+Both statements remain wrong (2270 tests; the package builds and installs).
+Treat this file as the current record.
 
 ---
 
 ## Ranked: what is still missing
 
-Ordered by *user-visible harm per unit of work*, not by size.
+Ordered by *user-visible harm per unit of work*, not by size. The former top
+four — TUI session persistence, the empty command palette, unconnected MCP and
+unconnected LSP — are fixed and verified above.
 
-1. **Sessions do not persist from the TUI.** The default front-end silently
-   discards every conversation and leaves `/undo` inert — which is exactly the
-   safety net that justifies letting an agent edit files on a machine without
-   git. The engine, the store and the snapshot logic all exist and are used by
-   the REPL; the TUI's `_submit`/`_run_agent` path just never calls them. This
-   is the single highest-value fix in the project.
+1. **No price table.** Context windows now come from the endpoints, but cost
+   reporting is token-only: `usage.estimate_cost()` is written and dead, and
+   there is no models.dev-equivalent pricing data to feed it.
 
-2. **The command palette is empty of commands.** `ctrl+p` is opencode's main
-   discovery surface. Ours lists 14 UI actions and none of the 34 slash
-   commands or any custom command, because `TUI._command_registry()` probes
-   `on_command.__self__` and `main.py` hands it a closure. It is close to a
-   one-line fix (pass `repl.handle_command` bound, or expose the registry
-   explicitly) and it changes how discoverable the whole tool is.
+2. **Shell mode and attachments.** opencode's prompt accepts a `!` prefix for
+   a shell command and image/file attachments; haikode's prompt has neither
+   (no front-end handles a leading `!`, nothing builds an image content part).
 
-3. **MCP is not connected.** 1126 tested lines, zero users. MCP is how a coding
-   agent reaches anything the built-in tools do not cover, and the config key is
-   already parsed and validated. Needs an `MCPManager` built in
-   `runtime.build_agent()` and its proxy tools merged into the registry.
+3. **Themes.** `theme` is accepted in config and never read; there is no theme
+   dialog and only 3 semantic colours. Pinned as a deliberate audit failure so
+   it cannot be quietly forgotten. `shell` and `username` sit in the same
+   validated-but-unread state.
 
-4. **LSP diagnostics are not connected.** 1115 tested lines, and the call sites
-   in `edit`/`write` already exist — the only missing link is assigning
-   `ctx.lsp`. Without it the model never learns that the edit it just made does
-   not compile.
+4. **Missing TUI features with existing keybind names:** external editor
+   (`ctrl+x e`), message copy (`<leader>y`) and redo (`<leader>r`). They are
+   reported as unavailable rather than silently ignored, but they do not work.
 
-5. **Some configured keybinding targets remain unavailable.** The help dialog
-   now marks them and the dispatcher reports them, but external editor, themes,
-   sidebar, message copy/redo and several hosted opencode features still have
-   no curses implementation.
+5. **Session list is not scoped to the project.** It shows every directory's
+   sessions, where opencode defaults to the current one with a toggle
+   (`app_toggle_session_directory_filter`, currently unavailable).
 
-6. **No automatic compaction.** Long sessions hit the context wall and the user
-   has to know to type `/compact`. `needs_compaction()` is written and tested;
-   it needs a caller in the run path.
+6. **Custom command `agent:` / `model:` frontmatter is ignored.** Documented in
+   the file format, parsed, dropped by `dispatch()`.
 
-7. **The `question` tool never gets an answer.** Registered and advertised to
-   the model, but no asker fills `metadata["answers"]`, so every question costs
-   a turn and returns "Unanswered". Needs a small choice modal in the TUI and a
-   numbered prompt in the REPL.
+7. **A compaction cannot be undone and archiving is one-way.**
+   `restore_compaction()` and `unarchive()` still have no callers.
 
-8. **Gemini is unreachable.** A finished provider that `build_provider()` does
-   not construct and that has no default profile. Two small additions.
+8. **The desktop asker cannot answer the `question` tool.** REPL and TUI now
+   fill `metadata["answers"]`; the desktop NDJSON protocol still only
+   approves or rejects, so a question there degrades to "Unanswered".
 
-9. **The Haiku integration module is unused.** Notifications after a long run,
-   BFS attributes on exported transcripts, Tracker integration — the things
-   that make this feel like a Haiku application rather than a port — are all
-   written and never called.
+9. **The curated palette table has diverged.** The TUI palette is full now,
+   but `palette.DEFAULT_COMMANDS` — the opencode-shaped command map — is
+   still unused, and 9 declared ids have no named palette action. Hygiene,
+   pinned by two audit failures.
 
-10. **Custom command `agent:` / `model:` frontmatter is ignored.** Documented in
-    the file format, parsed, dropped by `dispatch()`.
+10. **The Haiku integration module is mostly unused.** BFS attributes now
+    survive file edits, but notifications after a long run, attributes on
+    exported transcripts, Tracker and native alerts — the things that make
+    this feel like a Haiku application rather than a port — are written and
+    never called.
 
-11. **Session list is not scoped to the project.** It shows every directory's
-    sessions, where opencode defaults to the current one with a toggle
-    (`app_toggle_session_directory_filter`).
+11. **Fork-from-a-message and the session timeline.** `/fork` copies a whole
+    session; opencode can branch from any message and show a timeline.
 
-12. **Missing TUI features with existing keybind names:** external editor
-    (`ctrl+x e`), message copy (`<leader>y`) and redo (`<leader>r`). They are
-    now reported as unavailable rather than silently ignored.
-
-13. **Themes and a variant-list dialog.** `theme` is accepted in config and
-    never read. Reasoning effort now has CLI, slash-command and cycle controls,
-    but no opencode-style variant picker. Neither blocks work.
-
-14. **Model catalogue metadata.** No models.dev equivalent: no pricing, no
-    context-length or capability data, so cost reporting stays token-only and
-    the model list is whatever the endpoint returns.
-
-15. **Skills, plugins, websearch, code-mode, formatters, session fork/timeline,
-    prompt queueing, redo.** Genuinely absent; none of them is load-bearing for
-    "replace opencode on Haiku".
+12. **Websearch, code-mode, external-directory, formatters, plugins.**
+    Genuinely absent; none of them is load-bearing for "replace opencode on
+    Haiku".
 
 Deliberately **not** on this list, because they are out of scope for a
 serverless, Haiku-native tool: the HTTP server and SDK, the web UI, hosted

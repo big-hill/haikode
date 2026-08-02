@@ -5,8 +5,9 @@ Ports opencode's agent system (packages/opencode/src/agent/agent.ts) plus the
 markdown-with-frontmatter convention shared by opencode's config/agent.ts and
 Claude Code's `.claude/agents/*.md`:
 
-- three built-ins: `build` (the default), `plan` (read-only) and `general`
-  (a search subagent), each with its own permission ruleset
+- four built-ins: `build` (the default), `plan` (read-only), `general` (a
+  search subagent) and `explore` (a read-only locator subagent), each with its
+  own permission ruleset
 - custom agents from `.haikode/agent/*.md` (project) and the global config dir,
   project winning on a name collision
 - an `agents` block in the project config, merged on top of both
