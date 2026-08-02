@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -208,9 +209,11 @@ class TestStreamRetries(unittest.TestCase):
     def test_wall_clock_budget_stops_retrying_before_the_attempt_count(self):
         # Ten attempts are allowed, but the half-second budget only pays for
         # one 0.3 s backoff — the clock, not the counter, ends the run.
+        # Measures wall time, so it uses the real sleep (tests/__init__.py).
         policy = RetryPolicy(max_attempts=10, initial_delay=0.3, factor=1.0,
                              jitter=0.0, max_elapsed=0.5)
-        with ScriptedServer(status(500)) as server:
+        with patch.object(net, "_sleep", net.REAL_SLEEP), \
+                ScriptedServer(status(500)) as server:
             started = time.monotonic()
             with self.assertRaises(NetError):
                 self.collect(server, retry=policy)
@@ -221,11 +224,14 @@ class TestStreamRetries(unittest.TestCase):
     def test_retry_after_header_is_honoured(self):
         policy = RetryPolicy(max_attempts=2, initial_delay=0.0, jitter=0.0,
                              max_delay=5.0, max_elapsed=5.0)
-        with ScriptedServer(status(429, "{}", {"Retry-After": "1"}),
-                            sse({"ok": 1}, "[DONE]")) as server:
-            started = time.monotonic()
-            events = self.collect(server, retry=policy)
-            elapsed = time.monotonic() - started
+        # This test MEASURES the backoff, so it needs the real sleep the
+        # test bootstrap caps for everybody else (tests/__init__.py).
+        with patch.object(net, "_sleep", net.REAL_SLEEP):
+            with ScriptedServer(status(429, "{}", {"Retry-After": "1"}),
+                                sse({"ok": 1}, "[DONE]")) as server:
+                started = time.monotonic()
+                events = self.collect(server, retry=policy)
+                elapsed = time.monotonic() - started
         self.assertEqual(events, [{"ok": 1}])
         self.assertGreaterEqual(elapsed, 0.9)
 
@@ -383,7 +389,10 @@ class TestCancellation(unittest.TestCase):
         flag = threading.Event()
         policy = RetryPolicy(max_attempts=5, initial_delay=5.0, jitter=0.0,
                              max_elapsed=60.0)
-        with ScriptedServer(status(503)) as server:
+        # The point is that the abort lands INSIDE a long backoff, so the
+        # backoff has to be real (tests/__init__.py caps it otherwise).
+        with patch.object(net, "_sleep", net.REAL_SLEEP), \
+                ScriptedServer(status(503)) as server:
             threading.Timer(0.3, flag.set).start()
             started = time.monotonic()
             with self.assertRaises(Aborted):

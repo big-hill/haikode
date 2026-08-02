@@ -599,8 +599,8 @@ class Config:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name or ""):
             raise ValueError(
                 "provider name must use 1-64 letters, digits, '.', '_' or '-'")
-        if dialect not in ("openai", "anthropic"):
-            raise ValueError("dialect must be openai or anthropic")
+        if dialect not in ("openai", "anthropic", "gemini"):
+            raise ValueError("dialect must be openai, anthropic or gemini")
         if not (base_url.startswith("http://") or base_url.startswith("https://")):
             raise ValueError("base URL must start with http:// or https://")
 

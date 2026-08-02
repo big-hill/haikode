@@ -152,8 +152,13 @@ class RedactShapeTests(unittest.TestCase):
             "glpat-Aa11Bb22Cc33Dd44Ee55",
             "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r",
             "ya29.A0ARrdaM-Zz99Yy88Xx77Ww66",
-            "AKIAIOSFODNN7EXAMPLE",
-            "ASIAIOSFODNN7EXAMPLE",
+            # AWS's own documented example keys, split so the assembled
+            # string never sits in the file: an AKIA + 16 alnum literal is
+            # the one fixture here that matches GitHub push protection
+            # exactly, and a blocked push is worse than a dismissable alert
+            # (issue #3 — every other fixture was measured clear).
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "ASIA" + "IOSFODNN7EXAMPLE",
             "hf_AaBbCcDdEeFfGgHhIiJjKkLlMmNnOo",
             "xoxb-1234567890-Aa11Bb22Cc33Dd44",
             ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."

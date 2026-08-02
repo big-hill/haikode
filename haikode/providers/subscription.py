@@ -5,7 +5,7 @@ import uuid
 from typing import Iterator, List, Optional
 
 from ..net import (DEFAULT_TIMEOUT, Aborted, RetryPolicy, USER_AGENT,
-                   sse_json_events)
+                   _sleep as net_sleep, sse_json_events)
 from ..oauth import (CHATGPT_API_BASE, OAuthStore, _is_expired,
                      access_token)
 from ..schema import CompletionChunk, Msg, ToolSpec
@@ -195,7 +195,9 @@ class ChatGPTSubscriptionProvider(Provider):
                 failure = (chunk.usage or {}).get("error") if chunk.usage else None
                 if (failure and not delivered and attempt < attempts - 1
                         and failure.get("retryable")):
-                    time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    # net's slice-sleeping, not time.sleep: an interrupt must
+                    # land inside the backoff too, not after it.
+                    net_sleep(RETRY_BACKOFF_SECONDS * (attempt + 1), self.abort)
                     break                       # same request, new attempt
                 if chunk.text or chunk.tool_call_delta or chunk.reasoning:
                     delivered = True

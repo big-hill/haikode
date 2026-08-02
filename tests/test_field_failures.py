@@ -1157,6 +1157,34 @@ class ALongRunningSessionSeesNewModels(TemporaryProject):
         self.assertIn("zen", catalog.errors)
 
 
+class AGeminiProfileSpeaksGemini(TemporaryProject):
+    """`dialect: "gemini"` silently fell through to the OpenAI wire format.
+
+    The provider existed (275 tested lines) but the dispatch had no branch
+    for it, so a profile declaring gemini sent OpenAI-shaped requests at
+    Gemini's endpoint — a misconfiguration trap that failed in whatever way
+    the endpoint chose, never mentioning the actual problem.
+    """
+
+    def test_the_dialect_reaches_the_gemini_provider(self):
+        from haikode.providers.gemini import GeminiProvider
+        from haikode.runtime import build_provider
+        config = self.config(default_provider="g", providers={
+            "g": {"dialect": "gemini", "model": "gemini-2.5-pro",
+                  "api_key": "k"}})
+        self.assertIsInstance(build_provider(config, "g"), GeminiProvider)
+
+    def test_provider_add_accepts_the_dialect(self):
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        ok, message = models_mod.add_provider(
+            config, "g", "https://generativelanguage.googleapis.com",
+            "gemini-2.5-pro", "gemini")
+        self.assertTrue(ok, message)
+        self.assertEqual("gemini", config.data["providers"]["g"]["dialect"])
+
+
 class CompactionBudgetsAgainstWhatARequestMayBe(TemporaryProject):
     """Issue #5, both halves — every number below was measured.
 

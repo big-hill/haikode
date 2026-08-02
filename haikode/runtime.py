@@ -246,6 +246,16 @@ def build_provider(config: Any, name: Optional[str] = None) -> Provider:
     if dialect == "anthropic":
         return AnthropicProvider(
             base_url=prov.get("base_url", "https://api.anthropic.com"), api_key=key)
+    if dialect == "gemini":
+        # Without this branch a profile saying "gemini" fell through to the
+        # OpenAI dialect: the OpenAI wire format sent to Gemini's endpoint,
+        # failing in whatever way that endpoint chose to fail — a
+        # misconfiguration trap, not just a missing feature.
+        from .providers.gemini import GeminiProvider
+        kwargs = {"api_key": key, "name": selected}
+        if prov.get("base_url"):
+            kwargs["base_url"] = prov["base_url"]
+        return GeminiProvider(**kwargs)
     return OpenAICompatProvider(
         base_url=prov.get("base_url", ""), api_key=key, name=selected)
 

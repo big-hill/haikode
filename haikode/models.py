@@ -42,7 +42,7 @@ CACHE_FILE = "model-cache.json"
 CACHE_VERSION = 2      # 2 added the per-model context map
 CACHE_TTL = 24 * 3600      # seconds; model line-ups change on the order of days
 
-DIALECTS = ("openai", "anthropic")
+DIALECTS = ("openai", "anthropic", "gemini")
 
 # opencode ranks the providers it ships with above everything else
 # (PROVIDER_PRIORITY in dialog-provider.tsx); this is the Haiku line-up in the
@@ -604,7 +604,7 @@ def add_provider(config, name: str, base_url: str, model: str = "",
         return False, (f"'{name}' signs in with OAuth; its endpoint is not "
                        "editable here")
     if dialect not in DIALECTS:
-        return False, "dialect must be openai or anthropic"
+        return False, "dialect must be openai, anthropic or gemini"
     base_url = (base_url or "").strip()
     if not (base_url.startswith("http://") or base_url.startswith("https://")):
         return False, "base URL must start with http:// or https://"

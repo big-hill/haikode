@@ -117,7 +117,8 @@ def provider_command(argv, config=None):
 
     add = subparsers.add_parser("add", help="add or update a provider")
     add.add_argument("name")
-    add.add_argument("--dialect", choices=("openai", "anthropic"), default="openai")
+    add.add_argument("--dialect", choices=("openai", "anthropic", "gemini"),
+                     default="openai")
     add.add_argument("--base-url", required=True)
     add.add_argument("--model", default="")
     add.add_argument("--no-key", action="store_true",
