@@ -38,10 +38,14 @@ PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 OUT_DIR=${1:-$PROJECT_DIR/build}
 
 # Package architecture. Not `uname -m`: on 32-bit Haiku that answers "BePC"
-# (a BeOS inheritance), which is not a valid hpkg architecture. `getarch`
-# answers the real one — and on the 32-bit gcc2 hybrid the answer we want is
-# the *secondary* arch `x86`, because that is what the modern compiler (and
-# therefore our C++ binaries below) targets; gcc2 itself cannot build them.
+# (a BeOS inheritance), which is not a valid hpkg architecture; `getarch`
+# answers the real one. On the gcc2 hybrid the architecture FIELD stays
+# x86_gcc2 — pkgman refuses anything else — while the C++ inside is still
+# built by the modern compiler via `setarch x86`. That is the same shape
+# HaikuPorts ships secondary-arch packages in (falkon_x86-…-x86_gcc2.hpkg):
+# the secondary arch lives in a package's *name*, never in its architecture.
+# Measured on real hardware: an `architecture x86` package is simply
+# "not installable" there.
 if command -v getarch >/dev/null 2>&1; then
 	ARCH=$(getarch)
 else
@@ -49,13 +53,13 @@ else
 fi
 MAKE=make
 case "$ARCH" in
-	BePC|x86_gcc2)
-		ARCH=x86
-		if command -v setarch >/dev/null 2>&1; then
-			MAKE="setarch x86 make"
-		fi
+	BePC)
+		ARCH=x86_gcc2
 		;;
 esac
+if [ "$ARCH" = "x86_gcc2" ] && command -v setarch >/dev/null 2>&1; then
+	MAKE="setarch x86 make"
+fi
 PYTHON_LIB_DIR=lib/python3.10/vendor-packages
 APP_SIGNATURE=application/x-vnd.haikode
 PACKAGER=${HAIKODE_PACKAGER:-"haikode maintainers <haikode@localhost>"}
