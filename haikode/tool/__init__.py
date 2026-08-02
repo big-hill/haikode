@@ -18,6 +18,7 @@ from .base import Tool, ToolContext, ToolResult
 from .apply_patch import ApplyPatchTool
 from .files import EditTool, ReadTool, WriteTool
 from .misc import TodoWriteTool, WebFetchTool
+from .plan import PlanExitTool
 from .question import QuestionTool
 from .search import GlobTool, GrepTool, ListTool
 from .shell import BashTool
@@ -31,6 +32,7 @@ _ALL_TOOLS: List[Tool] = [
     GlobTool(),
     GrepTool(),
     ListTool(),
+    PlanExitTool(),
     QuestionTool(),
     ReadTool(),
     SkillTool(),

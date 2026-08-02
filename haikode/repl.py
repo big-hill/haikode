@@ -159,11 +159,56 @@ def print_diff(diff: str, limit: int = 40):
         print("  " + _c(f"… +{len(lines) - limit} more diff lines", DIM))
 
 
+def _ask_questions(request) -> str:
+    """The model's multiple-choice questions, on a plain terminal.
+
+    Fills request.metadata["answers"] in place — the contract the question
+    tool documents — and returns "once". Every question was a dead end
+    before this existed: the tool asked, no front end answered, and the
+    model was told "Unanswered" after burning the turn.
+    """
+    metadata = request.metadata or {}
+    answers: List[Any] = []
+    for question in metadata.get("questions") or []:
+        print()
+        print(_c("┌ " + str(question.get("question", "")), BOLD + CYAN))
+        options = question.get("options") or []
+        for index, option in enumerate(options, 1):
+            description = option.get("description", "")
+            print("  %2d. %s%s" % (index, option["label"],
+                                   _c("  — " + description, DIM)
+                                   if description else ""))
+        hint = ("numbers or text, comma-separated"
+                if question.get("multiple") else "a number, or free text")
+        print(_c("└ answer (%s; empty skips): " % hint, DIM), end="")
+        try:
+            raw = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answers.append([])
+            continue
+        chosen: List[str] = []
+        for part in (p.strip() for p in raw.split(",")):
+            if not part:
+                continue
+            if part.isdigit() and 1 <= int(part) <= len(options):
+                chosen.append(options[int(part) - 1]["label"])
+            else:
+                chosen.append(part)
+        if not question.get("multiple"):
+            chosen = chosen[:1]
+        answers.append(chosen)
+    metadata["answers"] = answers
+    return "once"
+
+
 def terminal_asker(request) -> str:
     """Permission prompt for a plain terminal. Returns once|always|reject."""
+    metadata = request.metadata or {}
+    if metadata.get("kind") == "question":
+        return _ask_questions(request)
     print()
     print(_c(f"┌ Permission required: {request.title}", BOLD + YELLOW))
-    metadata = request.metadata or {}
     if metadata.get("diff"):
         print_diff(metadata["diff"], limit=24)
     elif metadata.get("command"):

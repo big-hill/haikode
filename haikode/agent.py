@@ -398,6 +398,13 @@ class Agent:
         names = self.base_tool_names
         if defn is not None:
             names = AgentRegistry.resolve_tools(defn, names, _permission_keys())
+        # plan_exit is opt-in by name: it exists to end plan mode, and an
+        # agent that merely inherits "everything" (build, a bare Agent, a
+        # custom agent with no tools list) must not be offered a plan to
+        # approve. Only an agent whose own tool list names it gets it.
+        if defn is None or not defn.tools or "plan_exit" not in [
+                str(name).lower() for name in defn.tools]:
+            names = [name for name in names if name != "plan_exit"]
         self.tools = get_tools(names)
         self._merge_mcp_tools()
         self.specs = tool_specs(self.tools)
@@ -708,8 +715,27 @@ class Agent:
             environment=self.context.environment_block(),
             agent_prompt=self._agent_prompt(),
             tool_names=tuple(self.tools))
+        skills = self._skills_block()
+        if skills:
+            text = f"{text}\n\n{skills}"
         memory = self._memory_block()
         return f"{text}\n\n{memory}" if memory else text
+
+    def _skills_block(self) -> str:
+        """The skill catalogue, when the skill tool is on offer.
+
+        Without this the model was handed the `skill` tool and never told
+        which skills exist — it could only guess a name. Bounded inside
+        prompt_block(), and suppressed entirely for agents whose tool set
+        excludes `skill`, so a plan agent pays nothing for it.
+        """
+        if "skill" not in self.tools:
+            return ""
+        try:
+            from .skills import prompt_block
+            return prompt_block(self.cwd, permissions=self.permissions)
+        except Exception:
+            return ""
 
     def _system_message(self) -> Msg:
         """The one place the system prompt is assembled.

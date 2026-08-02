@@ -52,7 +52,8 @@ class _Sandbox:
 
 class BuiltinTests(unittest.TestCase):
     def test_the_three_builtins_exist(self):
-        self.assertEqual(sorted(BUILTIN), ["build", "general", "plan"])
+        self.assertEqual(sorted(BUILTIN),
+                         ["build", "explore", "general", "plan"])
         for name, defn in BUILTIN.items():
             self.assertTrue(defn.builtin)
             self.assertEqual(defn.name, name)
@@ -325,7 +326,7 @@ class RegistryTests(unittest.TestCase):
             subs = [a.name for a in registry.subagents()]
 
             self.assertEqual(primary, ["build", "plan", "both"])
-            self.assertEqual(subs, ["general", "both", "sub"])
+            self.assertEqual(subs, ["general", "explore", "both", "sub"])
             self.assertEqual(registry.default().name, "build")
 
     def test_custom_file_overlays_a_builtin_without_losing_its_rules(self):
@@ -394,7 +395,8 @@ class RegistryTests(unittest.TestCase):
         with _Sandbox() as box:
             registry = AgentRegistry.load(str(box.project), {"agents": ["nope"]})
 
-            self.assertEqual(registry.names(), ["build", "plan", "general"])
+            self.assertEqual(registry.names(),
+                         ["build", "plan", "general", "explore"])
             self.assertEqual(len(registry.warnings), 1)
 
     def test_no_project_config_is_fine(self):

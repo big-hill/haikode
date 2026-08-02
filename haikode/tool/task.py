@@ -32,6 +32,14 @@ class TaskTool(Tool):
                             "description": "A short (3-5 word) description of the task"},
             "prompt": {"type": "string",
                        "description": "The task for the agent to perform"},
+            "subagent_type": {
+                "type": "string",
+                "description": "Which named subagent runs the task: "
+                               "'general' (search, may run commands) or "
+                               "'explore' (read-only locator). Custom "
+                               "subagents from .haikode/agent/ work too. "
+                               "Defaults to a generic subagent with the "
+                               "caller's tools."},
         },
         "required": ["description", "prompt"],
     }
@@ -49,6 +57,20 @@ class TaskTool(Tool):
         label = args["description"]
         ctx.on_progress(f"task: {label}")
 
+        # A named subagent brings its own tool list, permissions and prompt
+        # through the same registry machinery an agent switch uses — plan
+        # mode's prompt depends on `explore` existing here (issue #2). An
+        # unknown name degrades to the generic subagent rather than failing
+        # the call: the model is following instructions from a prompt that
+        # may be newer or older than the local registry.
+        type_name = str(args.get("subagent_type", "") or "").strip()
+        registry = getattr(parent, "_registry", None)
+        defn = None
+        if type_name and registry is not None:
+            candidate = registry.get(type_name)
+            if candidate is not None and candidate.mode in ("subagent", "all"):
+                defn = candidate
+
         sub = Agent(
             provider=parent.provider,
             model=parent.model,
@@ -57,6 +79,8 @@ class TaskTool(Tool):
             max_steps=MAX_SUBAGENT_STEPS,
             system_prompt=SUBAGENT_PROMPT,
             tool_names=[n for n in parent.tools if n != "task"],
+            agent_name=defn.name if defn is not None else "",
+            registry=registry if defn is not None else None,
         )
         sub.ctx.read_files = ctx.read_files
         sub.ctx.subagent_depth = depth + 1

@@ -38,7 +38,7 @@ Run the full suite before calling any change done:
 
     python3 -m unittest discover -s tests -t . -p "test_*.py"
 
-Expected baseline: **6 failures, all in `tests/test_wiring_audit.py`** — they
+Expected baseline: **5 failures, all in `tests/test_wiring_audit.py`** — they
 are executable bug reports for subsystems that exist but are not wired up yet
 (MCP, LSP, skills catalogue, automatic compaction). Any other red test is a
 regression you introduced. Fixing an underlying gap may turn an audit test

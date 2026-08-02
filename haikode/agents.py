@@ -53,7 +53,8 @@ MAX_AGENT_FILES = 128
 WRITE_PERMISSIONS = ("edit", "write", "bash")
 
 # The read-only tool set for plan mode, and the search set for subagents.
-PLAN_TOOLS = ["glob", "grep", "list", "read", "task", "todowrite"]
+PLAN_TOOLS = ["glob", "grep", "list", "read", "task", "todowrite",
+              "plan_exit", "question"]
 SEARCH_TOOLS = ["bash", "glob", "grep", "list", "read", "webfetch"]
 
 _TRUE = ("true", "yes", "on", "1", "enable", "enabled")
@@ -94,8 +95,11 @@ enough to write a plan that accomplishes what the user actually wants.
    to verify the result end to end.
 
 The plan should be comprehensive yet concise - detailed enough to execute,
-short enough to scan. When it is ready, say so and stop. The user switches to
-the build agent once they approve it; only then may anything be modified.
+short enough to scan. Use the `question` tool to resolve ambiguity while you
+work. When the plan is ready, present it and call `plan_exit` to ask the user
+for approval - if they approve, you are switched to the build agent
+automatically and may start implementing. End a planning turn only by asking
+a question or by calling plan_exit.
 </system-reminder>"""
 
 # Ported from opencode's session/prompt/build-switch.txt.
@@ -202,6 +206,28 @@ BUILTIN: Dict[str, AgentDef] = {
         mode="subagent",
         builtin=True,
         locked=("task",),
+    ),
+    "explore": AgentDef(
+        name="explore",
+        description=("Read-only search agent: locate files, symbols and "
+                     "patterns, and report where things are. It reads, it "
+                     "never runs or edits — use it to fan out codebase "
+                     "exploration cheaply. Plan mode's prompt depends on it."),
+        prompt=("You are an explore agent: a read-only scout. Find what was "
+                "asked for — files, definitions, call sites, conventions — "
+                "and report locations (path:line) with just enough excerpt "
+                "to prove each finding. Do not propose changes; do not "
+                "speculate about code you did not read. Your reply goes to "
+                "another agent, so keep it dense and structured."),
+        tools=["glob", "grep", "list", "read"],
+        # Locked read-only in both dimensions: plan mode's own prompt sends
+        # work here, and a planning phase must not mutate anything — not
+        # even via bash, which the general subagent is allowed.
+        permission={"edit": DENY, "write": DENY, "bash": DENY,
+                    "task": DENY, "todowrite": DENY, "webfetch": DENY},
+        mode="subagent",
+        builtin=True,
+        locked=("edit", "write", "bash", "task"),
     ),
 }
 

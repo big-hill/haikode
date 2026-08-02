@@ -2886,7 +2886,10 @@ class TUI:
                     pending = self._pending.pop(0)
                     answer = "reject"
                     try:
-                        answer = self._modal_permission(pending[0])
+                        metadata = getattr(pending[0], "metadata", None) or {}
+                        answer = (self._modal_question(pending[0])
+                                  if metadata.get("kind") == "question"
+                                  else self._modal_permission(pending[0]))
                     finally:
                         self._answer(pending, answer)
                     continue
@@ -5330,6 +5333,102 @@ class TUI:
         if patterns:
             return _styled(", ".join(str(p) for p in patterns), width, "result", " ", "   ")
         return []
+
+    def _modal_question(self, request) -> str:
+        """The model's multiple-choice questions, one modal per question.
+
+        Fills request.metadata["answers"] in place — the contract the
+        question tool documents — and answers "once". Esc skips a question
+        (an empty answer), which the tool turns into "pick a sensible
+        default", so dismissing costs nothing but the answer.
+        """
+        metadata = getattr(request, "metadata", None) or {}
+        questions = metadata.get("questions") or []
+        answers: List[Any] = []
+        for question in questions:
+            answers.append(self._one_question(question))
+        metadata["answers"] = answers
+        self._dirty = True
+        return "once"
+
+    def _one_question(self, question) -> List[str]:
+        options = [option.get("label", "") for option
+                   in (question.get("options") or []) if option.get("label")]
+        descriptions = {option.get("label", ""): option.get("description", "")
+                        for option in (question.get("options") or [])}
+        multiple = bool(question.get("multiple"))
+        cursor, picked = 0, set()
+        needs_draw = True
+
+        while True:
+            rows, cols = self._size()
+            if rows < MIN_ROWS or cols < MIN_COLS:
+                return []
+            if needs_draw:
+                width = max(MIN_COLS, min(cols - 4, 96))
+                height = min(rows - 2, len(options) + 6)
+                top = max(0, (rows - height) // 2)
+                left = max(0, (cols - width) // 2)
+                self._draw(refresh=False)
+                self._draw_box(top, left, height, width)
+                self._addstr(top + 1, left + 2,
+                             str(question.get("question", ""))[:width - 4],
+                             self._attr("modal_title"))
+                visible = height - 6
+                start = max(0, min(cursor - visible + 1, len(options) - visible))
+                for row, index in enumerate(range(start,
+                                                  min(len(options),
+                                                      start + visible))):
+                    label = options[index]
+                    mark = ("[x] " if label in picked else "[ ] ") \
+                        if multiple else ("> " if index == cursor else "  ")
+                    text = mark + label
+                    described = descriptions.get(label, "")
+                    if described:
+                        text += "  — " + described
+                    self._addstr(top + 3 + row, left + 2, text[:width - 4],
+                                 self._attr("dialog_action"
+                                            if index == cursor else "result"))
+                hint = ("space toggles, enter answers, esc skips" if multiple
+                        else "enter answers, esc skips")
+                self._addstr(top + height - 2, left + 2, hint[:width - 4],
+                             self._attr("modal_border"))
+                try:
+                    curses.curs_set(0)
+                except curses.error:
+                    pass
+                self._refresh()
+                needs_draw = False
+
+            try:
+                key = self._read_key()
+            except KeyboardInterrupt:
+                return []
+            if key is None:
+                continue
+            needs_draw = True
+            if key == 27:                      # esc: skip this question
+                return []
+            if key in (curses.KEY_UP, ord("k")):
+                cursor = max(0, cursor - 1)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                cursor = min(max(0, len(options) - 1), cursor + 1)
+            elif multiple and key == ord(" "):
+                if options:
+                    label = options[cursor]
+                    picked.symmetric_difference_update({label})
+            elif key in (10, 13, curses.KEY_ENTER):
+                if multiple:
+                    return [label for label in options if label in picked]
+                return [options[cursor]] if options else []
+            elif ord("1") <= key <= ord("9"):
+                index = key - ord("1")
+                if index < len(options):
+                    if multiple:
+                        picked.symmetric_difference_update({options[index]})
+                        cursor = index
+                    else:
+                        return [options[index]]
 
     def _modal_permission(self, request) -> str:
         """Draw the modal and block the MAIN thread until the user answers.

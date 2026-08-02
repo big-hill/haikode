@@ -1157,6 +1157,161 @@ class ALongRunningSessionSeesNewModels(TemporaryProject):
         self.assertIn("zen", catalog.errors)
 
 
+class PlanModeKeepsItsPromises(TemporaryProject):
+    """Issues #1 and #2: the plan prompt promised tools that did not exist.
+
+    It told the model to end every planning turn with `plan_exit` and to
+    delegate exploration to an `explore` subagent — the tool call failed
+    and the subagent type did not resolve, so every planning session ended
+    on a broken promise.
+    """
+
+    def plan_agent(self, answers=None):
+        def asker(request):
+            metadata = request.metadata or {}
+            if metadata.get("kind") == "question" and answers is not None:
+                metadata["answers"] = answers
+            return "once"
+
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root,
+                            agent_name="plan", asker=asker)
+        return agent
+
+    def test_the_plan_agent_carries_the_tools_its_prompt_names(self):
+        agent = self.plan_agent()
+        self.assertIn("plan_exit", agent.tools)
+        self.assertIn("question", agent.tools)
+        self.assertIn("plan_exit", agent._system_message().content)
+
+    def test_build_does_not_offer_a_plan_to_approve(self):
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        self.assertNotIn("plan_exit", agent.tools)
+
+    def test_approval_switches_to_build(self):
+        agent = self.plan_agent(answers=[["Approve — start building"]])
+        result = agent.tools["plan_exit"].execute(
+            {"plan": "1. do the thing"}, agent.ctx)
+        self.assertTrue(result.metadata.get("approved"))
+        self.assertEqual("build", agent.agent_name)
+        self.assertIn("edit", agent.tools)
+
+    def test_rejection_stays_in_plan_mode(self):
+        agent = self.plan_agent(answers=[["Keep planning"]])
+        result = agent.tools["plan_exit"].execute(
+            {"plan": "1. do the thing"}, agent.ctx)
+        self.assertFalse(result.metadata.get("approved"))
+        self.assertEqual("plan", agent.agent_name)
+        self.assertNotIn("edit", agent.tools)
+
+    def test_no_answer_is_rejection_not_a_crash(self):
+        agent = self.plan_agent(answers=[])
+        result = agent.tools["plan_exit"].execute({"plan": "x"}, agent.ctx)
+        self.assertFalse(result.metadata.get("approved"))
+        self.assertEqual("plan", agent.agent_name)
+
+    def test_outside_plan_mode_it_declines_politely(self):
+        from haikode.tool.plan import PlanExitTool
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        result = PlanExitTool().execute({"plan": "x"}, agent.ctx)
+        self.assertIn("Not in plan mode", result.output)
+
+    def test_the_explore_subagent_resolves_and_is_read_only(self):
+        from haikode.agents import BUILTIN, AgentRegistry, is_readonly
+        from haikode.tool import REGISTRY
+        explore = BUILTIN["explore"]
+        self.assertEqual("subagent", explore.mode)
+        self.assertTrue(is_readonly(explore))
+        names = AgentRegistry.resolve_tools(explore, list(REGISTRY))
+        self.assertEqual(["glob", "grep", "list", "read"], sorted(names))
+
+    def test_the_task_tool_accepts_the_subagent_type(self):
+        spec = None
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        for candidate in agent.specs:
+            if candidate.name == "task":
+                spec = candidate
+        self.assertIsNotNone(spec)
+        self.assertIn("subagent_type", spec.parameters["properties"])
+        self.assertIn("explore",
+                      spec.parameters["properties"]["subagent_type"]["description"])
+
+
+class TheModelCanAskAndBeAnswered(TemporaryProject):
+    """The question tool's front-end half: nothing ever filled `answers`.
+
+    Every question burned a turn and came back "Unanswered" — the tool
+    documented the contract and no asker implemented it.
+    """
+
+    def test_the_repl_asker_fills_answers(self):
+        from haikode.repl import terminal_asker
+
+        class Request:
+            metadata = {
+                "kind": "question",
+                "questions": [{
+                    "question": "Which approach?",
+                    "header": "Approach",
+                    "options": [{"label": "MVP first", "description": ""},
+                                {"label": "Risk first", "description": ""}],
+                    "multiple": False,
+                }],
+                "answers": [],
+            }
+            title = "question"
+
+        with patch("builtins.input", return_value="2"):
+            answer = terminal_asker(Request())
+        self.assertEqual("once", answer)
+        self.assertEqual([["Risk first"]], Request.metadata["answers"])
+
+    def test_free_text_and_multi_select_are_accepted(self):
+        from haikode.repl import terminal_asker
+
+        class Request:
+            metadata = {
+                "kind": "question",
+                "questions": [{
+                    "question": "Which features?",
+                    "header": "Features",
+                    "options": [{"label": "A", "description": ""},
+                                {"label": "B", "description": ""}],
+                    "multiple": True,
+                }],
+                "answers": [],
+            }
+            title = "question"
+
+        with patch("builtins.input", return_value="1, something else"):
+            terminal_asker(Request())
+        self.assertEqual([["A", "something else"]],
+                         Request.metadata["answers"])
+
+    def test_a_question_through_the_tool_reaches_the_asker_and_back(self):
+        from haikode.tool.question import QuestionTool
+
+        def asker(request):
+            metadata = request.metadata or {}
+            if metadata.get("kind") == "question":
+                metadata["answers"] = [["MVP first"]]
+            return "once"
+
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root, asker=asker)
+        result = QuestionTool().execute(
+            {"questions": [{"question": "Which approach?",
+                            "header": "Approach",
+                            "options": [{"label": "MVP first",
+                                         "description": "d"}]}]},
+            agent.ctx)
+        self.assertIn("MVP first", result.output)
+        self.assertEqual(1, result.metadata["answered"])
+
+
 class AGeminiProfileSpeaksGemini(TemporaryProject):
     """`dialect: "gemini"` silently fell through to the OpenAI wire format.
 
