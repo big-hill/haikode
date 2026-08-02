@@ -44,6 +44,16 @@ from .paths import assert_external_directory, is_inside, parent_glob
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 600
 MAX_OUTPUT = 30000
+
+# CSI (colour, cursor) and OSC (title) escape sequences. Terminal control
+# has no meaning inside a tool result; see the call site for why TERM=dumb
+# does not prevent them on Haiku.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]"
+                      r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text) if "\x1b" in text else text
 KILL_GRACE = 2.0
 READ_CHUNK = 8192
 POLL_INTERVAL = 0.05
@@ -783,6 +793,11 @@ class BashTool(Tool):
         # second pass is for the ones it read from somewhere else — a .env
         # file, a curl response, a config dump. Both directions leak equally.
         stdout, stderr = redact(out_sink.text()), redact(err_sink.text())
+        # TERM=dumb is not enough on Haiku: its own userland (df, listdev)
+        # colourises unconditionally, so tool results carried raw SGR/CSI
+        # bytes into the model's context — observed live on the 32-bit
+        # machine. Escapes cost tokens and teach the model nothing.
+        stdout, stderr = _strip_ansi(stdout), _strip_ansi(stderr)
         parts = []
         if stdout:
             parts.append(stdout.rstrip())

@@ -1312,6 +1312,32 @@ class TheModelCanAskAndBeAnswered(TemporaryProject):
         self.assertEqual(1, result.metadata["answered"])
 
 
+class ToolOutputCarriesNoTerminalEscapes(TemporaryProject):
+    """Observed live on the 32-bit machine: `df` output stored with SGR codes.
+
+    The shell tool sets TERM=dumb, but Haiku's own userland (df, listdev)
+    colourises unconditionally, so tool results carried raw escape bytes
+    into the model's context — token waste that teaches the model nothing.
+    """
+
+    def test_sgr_and_osc_are_stripped_from_captured_output(self):
+        from haikode.tool.shell import BashTool
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        agent.permissions.auto_approve = True
+        result = BashTool().execute(
+            {"command": "printf '\\033[1mVolume\\033[0m plain \\033]0;title\\007tail'"},
+            agent.ctx)
+        self.assertEqual("Volume plain tail", result.output)
+        self.assertNotIn("\x1b", result.output)
+
+    def test_the_fast_path_leaves_clean_text_untouched(self):
+        from haikode.tool.shell import _strip_ansi
+        self.assertEqual("no escapes here", _strip_ansi("no escapes here"))
+        self.assertEqual("Volume  Type",
+                         _strip_ansi("\x1b[1mVolume\x1b[0m  Type"))
+
+
 class AGeminiProfileSpeaksGemini(TemporaryProject):
     """`dialect: "gemini"` silently fell through to the OpenAI wire format.
 
