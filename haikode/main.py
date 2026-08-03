@@ -570,11 +570,22 @@ def build_repl(config: Config, args, cwd: str,
 
     provider, model = split_model(args.model)
     factory = JSONREPL if getattr(args, "json", False) else REPL
+    # Phase timing, printed with --print-logs. A user with several windows
+    # reported occasionally slow starts; every phase measured fast in
+    # isolation (imports 0.19s, agent 0.03s, store 0.02s on the reference
+    # machine — with other sessions open), so when it happens again, this
+    # line names the phase instead of leaving us to guess. The likely
+    # culprits are the episodic kind: a queued keystore approval, a WiFi
+    # blip mid-lookup.
+    started = time.monotonic()
     repl = factory(config, provider=args.provider or provider, cwd=cwd,
                    auto_approve=args.yes, yolo=getattr(args, "yolo", False),
                    agent_name=args.agent, model=model,
                    print_logs=args.print_logs,
                    reasoning_effort=getattr(args, "effort", ""))
+    if args.print_logs:
+        print("[startup] agent+providers ready in %.2fs"
+              % (time.monotonic() - started), file=sys.stderr)
 
     say = report or print
     resumed = ""
