@@ -45,6 +45,25 @@ _UNREADABLE_KINDS = (
 )
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Make a completed rename durable; best-effort on filesystems without it.
+
+    fsync of the file makes the *data* durable; only fsync of the directory
+    makes the *name* pointing at it durable. Failure is swallowed — some
+    filesystems refuse fsync on directories, and the write itself succeeded.
+    """
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _file_kind(path: Path) -> str:
     """
     "file", "dir", or a human name for something that must not be opened.
@@ -222,9 +241,18 @@ def atomic_write(path: Path, content: str,
         # explicit encoding so the result never depends on the run's locale.
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(content)
+            # Data to disk BEFORE the rename, or the swap is atomic in name
+            # only. Measured in the field: a machine lost power right after
+            # a report was written; BFS journaled the metadata, the data
+            # blocks never flushed, and the file came back the right size
+            # but full of another package's bytes. An acknowledged write
+            # must survive the plug being pulled.
+            f.flush()
+            os.fsync(f.fileno())
         if before is not None:
             _carry_metadata(before, origin, Path(tmp))
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:
         try:
             os.unlink(tmp)

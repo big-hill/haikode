@@ -525,6 +525,15 @@ class SessionStore:
             # Some network/older filesystems reject WAL; the rollback
             # journal is slower but correct.
             pass
+        # Explicit, though it is sqlite's default: every committed turn is
+        # fsynced. A session's last turns before a power cut are exactly the
+        # ones the user comes back for — one machine lost that tail in the
+        # field. If the disk's write cache lies about fsync, nothing here
+        # can save it, but nothing above this layer should make it worse.
+        try:
+            conn.execute("PRAGMA synchronous=FULL")
+        except sqlite3.DatabaseError:
+            pass
         # Order matters: tables, then migrations, then indexes. An index
         # names columns, so it can only be built once every table has the
         # shape this build expects.

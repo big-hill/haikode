@@ -1312,6 +1312,46 @@ class TheModelCanAskAndBeAnswered(TemporaryProject):
         self.assertEqual(1, result.metadata["answered"])
 
 
+class AnAcknowledgedWriteSurvivesThePlugBeingPulled(TemporaryProject):
+    """Field event: a report written at 21:04, machine lost power, and the
+    file came back the right size but full of another package's bytes —
+    BFS journaled the rename, the data blocks never flushed. The write
+    tool must fsync data before the swap and the directory after it.
+    """
+
+    def test_the_write_tool_syncs_data_and_directory(self):
+        from haikode.tool.files import WriteTool
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        agent.permissions.auto_approve = True
+        synced = []
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):
+            synced.append(fd)
+            return real_fsync(fd)
+
+        target = str(Path(self.root, "report.md"))
+        with patch.object(os, "fsync", counting_fsync):
+            WriteTool().execute({"filePath": target, "content": "funn\n"},
+                                agent.ctx)
+        # Once for the data, once for the directory entry.
+        self.assertGreaterEqual(len(synced), 2)
+        self.assertEqual("funn\n", Path(target).read_text())
+
+    def test_the_session_store_commits_synchronously(self):
+        import sqlite3
+        from haikode.session import SessionStore
+        store = SessionStore(str(Path(self.root, "s.db")))
+        self.addCleanup(store.close)
+        conn = store._connect() if hasattr(store, "_connect") else None
+        if conn is None:
+            store.list_sessions() if hasattr(store, "list_sessions") else None
+            conn = store._conn
+        value = conn.execute("PRAGMA synchronous").fetchone()[0]
+        self.assertEqual(2, int(value))     # 2 = FULL
+
+
 class ToolOutputCarriesNoTerminalEscapes(TemporaryProject):
     """Observed live on the 32-bit machine: `df` output stored with SGR codes.
 
