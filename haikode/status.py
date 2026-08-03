@@ -421,6 +421,33 @@ def validated_haiku(text: str):
     return tuple(lines)
 
 
+def validated_title(text: str) -> str:
+    """A plausible 3-5 word display title from model output, or ""."""
+    line = " ".join(str(text or "").split())
+    line = line.strip().strip('"').strip("'").rstrip(".!").strip()
+    words = line.split()
+    if not 2 <= len(words) <= 7 or len(line) > 48:
+        return ""
+    return line
+
+
+def terminal_title(title: str) -> str:
+    """The xterm OSC sequence that names the terminal tab.
+
+    Haiku's Terminal honours it like xterm does. Emitted around curses by
+    writing straight to the tty — the sequence addresses the emulator, not
+    the screen buffer, so curses never notices.
+    """
+    clean = " ".join(str(title or "").split())[:64]
+    return "\x1b]0;%s\x07" % clean.replace("\x1b", "").replace("\x07", "")
+
+
+def startup_haiku():
+    """One poem from the built-in collection, for the home screen."""
+    import random
+    return random.choice(FAREWELL_HAIKU)
+
+
 def farewell(session_id: str = "", poem=None) -> str:
     """The exit message: one haiku, and the way back in.
 

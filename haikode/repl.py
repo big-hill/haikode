@@ -1295,6 +1295,14 @@ class REPL:
     # --- loop -------------------------------------------------------------
 
     def run(self):
+        self.turn.compose_farewell = sys.stdin.isatty()
+        if sys.stdout.isatty():
+            from .status import startup_haiku, terminal_title
+            sys.stdout.write(terminal_title(
+                "haikode — %s" % Path(self.cwd).name))
+            for line in startup_haiku():
+                print(_c("  " + line, DIM))
+            print()
         print(_c("haikode", BOLD) + " — AI coding agent for Haiku OS")
         print(f"Provider: {self.provider_name}  Model: {self.model or '(default)'}  "
               f"Agent: {self.agent.agent_name}  Tools: {len(self.agent.tools)}")

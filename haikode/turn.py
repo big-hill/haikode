@@ -146,6 +146,14 @@ class TurnController:
         # built-in collection answers instead.
         self.farewell_poem = None
         self._farewell_started = False
+        # Model-written 3-5 word display title for the session, for the
+        # terminal tab and the session list. Composed with the poem.
+        self.display_title = ""
+        # Only an interactive front end turns this on (REPL loop, TUI).
+        # A one-shot, a piped run or a test must never spend a provider
+        # call on poetry — and a scripted stub's next response is the next
+        # TURN's answer, not the composer's to eat.
+        self.compose_farewell = False
         # Sticky: set by any failure that means this conversation is not on
         # disk, cleared only by a turn that persisted cleanly.
         self.persistence_error = ""
@@ -330,6 +338,8 @@ class TurnController:
         built-in collection as the fallback, silently; a farewell that can
         break the exit is worse than no farewell at all.
         """
+        if not self.compose_farewell:
+            return
         if self.farewell_poem is not None or self._farewell_started:
             return
         self._farewell_started = True
@@ -338,23 +348,36 @@ class TurnController:
         if session is not None:
             subject = str(getattr(session, "title", "") or "")
 
-        def compose():
+        def ask(prompt, max_tokens):
             from .schema import Msg
-            from .status import validated_haiku
-            prompt = (
-                "Write exactly one haiku: three lines of roughly 5, 7 and 5 "
-                "syllables. Subject: a calm, slightly wry farewell after a "
-                "coding session%s. Technology-flavoured, English, lower case. "
-                "Reply with the three lines only — no title, no quotes, no "
-                "commentary." % (" about: %s" % subject[:80] if subject else ""))
+            parts = []
+            for chunk in agent.provider.stream(
+                    [Msg(role="user", content=prompt)], [],
+                    agent.model, max_tokens):
+                if getattr(chunk, "text", ""):
+                    parts.append(chunk.text)
+            return "".join(parts)
+
+        def compose():
+            from .status import validated_haiku, validated_title
             try:
-                parts = []
-                for chunk in agent.provider.stream(
-                        [Msg(role="user", content=prompt)], [],
-                        agent.model, 96):
-                    if getattr(chunk, "text", ""):
-                        parts.append(chunk.text)
-                poem = validated_haiku("".join(parts))
+                title = validated_title(ask(
+                    "Give this coding session a display title of three to "
+                    "five words, based on: %s. Reply with the title only — "
+                    "no quotes, no punctuation at the end." % subject[:160], 24))
+                if title:
+                    self.display_title = title
+                    self._auto_rename(title)
+            except Exception:
+                pass
+            try:
+                poem = validated_haiku(ask(
+                    "Write exactly one haiku: three lines of roughly 5, 7 and "
+                    "5 syllables. Subject: a calm, slightly wry farewell after "
+                    "a coding session%s. Technology-flavoured, English, lower "
+                    "case. Reply with the three lines only — no title, no "
+                    "quotes, no commentary."
+                    % (" about: %s" % subject[:80] if subject else ""), 96))
                 if poem:
                     self.farewell_poem = poem
             except Exception:
@@ -362,6 +385,24 @@ class TurnController:
 
         threading.Thread(target=compose, daemon=True,
                          name="haikode-farewell").start()
+
+    def _auto_rename(self, title: str) -> None:
+        """Give the stored session the model's title — unless the user did.
+
+        The stored title starts as the raw first prompt. Only that exact
+        value is replaced, so a /rename the user typed always wins, and a
+        second composer run cannot rename twice.
+        """
+        session = self.session
+        if session is None:
+            return
+        try:
+            current = str(getattr(session, "title", "") or "")
+            raw_first = current == (session.messages[0].content or "")[:len(current)]                 if getattr(session, "messages", None) else True
+            if raw_first and current != title:
+                session.rename(title)
+        except Exception:
+            pass
 
     def _persist(self, agent, title_hint: str, result: TurnResult) -> None:
         """Write the turn to the session, opening one only if there is anything

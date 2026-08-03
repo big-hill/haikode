@@ -1429,13 +1429,16 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
     """
 
     def turn_controller_with(self, poem_text):
+        # The composer makes two requests: the display title, then the poem.
         provider = ScriptedProvider([
             text_turn("the real answer"),
+            text_turn("A Fine Session"),
             [CompletionChunk(text=poem_text, stop_reason="stop")],
         ])
         agent = Agent(provider, "m", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
         controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.compose_farewell = True      # testen ER den interaktive
         return controller, agent
 
     def wait_for(self, controller, timeout=5.0):
@@ -1478,6 +1481,38 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         controller._prepare_farewell(agent)
         time.sleep(0.2)
         self.assertEqual(provider_calls, len(agent.provider.messages))
+
+    def test_the_composer_also_names_the_session(self):
+        provider = ScriptedProvider([
+            text_turn("the real answer"),
+            text_turn("Fixing The Parser"),
+            text_turn("a\nb\nc"),
+        ])
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.compose_farewell = True
+        controller.run_turn(agent, "please fix the parser bug in main.py")
+        deadline = time.time() + 5
+        while controller.farewell_poem is None and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual("Fixing The Parser", controller.display_title)
+        self.assertEqual(("a", "b", "c"), controller.farewell_poem)
+
+    def test_titles_and_tab_names_are_validated(self):
+        from haikode.status import terminal_title, validated_title
+        self.assertEqual("Fixing The Parser Bug",
+                         validated_title(' "Fixing The Parser Bug." '))
+        self.assertEqual("", validated_title("word"))
+        self.assertEqual("", validated_title("x" * 60))
+        sequence = terminal_title("haikode — parser\x1b\x07 work")
+        self.assertTrue(sequence.startswith("\x1b]0;"))
+        self.assertTrue(sequence.endswith("\x07"))
+        self.assertNotIn("\x1b", sequence[2:-1])
+
+    def test_the_home_screen_greets_with_a_poem(self):
+        from haikode.status import FAREWELL_HAIKU, startup_haiku
+        self.assertIn(startup_haiku(), FAREWELL_HAIKU)
 
     def test_validated_haiku_is_strict(self):
         from haikode.status import validated_haiku

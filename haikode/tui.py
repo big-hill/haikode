@@ -2338,6 +2338,8 @@ class TUI:
         # used to drop them on the floor (the buffer was cleared before the
         # "still working" check ever ran).
         self.queued: List[str] = []
+        self._home_poem = None
+        self._tab_title = ""
         # Commands running off the UI thread. The serial is the cancel token:
         # a result whose serial no longer matches is dropped.
         self._command_serial = 0
@@ -2354,6 +2356,7 @@ class TUI:
         if stdscr is None:
             return _wrap_curses(self.run)
         self._attach(stdscr)
+        self._set_tab_title(status.short_label(self.cwd, 24))
         try:
             self._loop()
         finally:
@@ -2770,6 +2773,7 @@ class TUI:
                 self.transcript.add(Entry("error", text=payload))
                 self._dirty = True
             elif kind == "turn":
+                self._refresh_tab_title()
                 self._on_turn(payload)
             elif kind == "done":
                 self.running = False
@@ -5137,6 +5141,13 @@ class TUI:
         info = self._setup()
         summary = status.summary_lines(info, width=min(frame.box_width, cols - 4),
                                        unicode_ok=self.glyphs.unicode_ok)
+        # One haiku under the wordmark — the OS this project is named for
+        # deserves the greeting. "muted" so the squeeze logic drops the poem
+        # before it drops a single fact on a small screen.
+        if self._home_poem is None:
+            self._home_poem = status.startup_haiku()
+        summary = ([(line, "muted") for line in self._home_poem]
+                   + [("", "muted")] + summary)
 
         logo = wordmark_rows(self.glyphs.unicode_ok)
         # Four rows of block glyphs plus the summary plus the prompt simply do
@@ -5309,6 +5320,27 @@ class TUI:
             return self.config.data.get("default_provider", "") or ""
         except Exception:
             return ""
+
+    def _set_tab_title(self, title: str) -> None:
+        """Name the terminal tab; a no-op when the title is unchanged.
+
+        Written to the tty file descriptor directly: the OSC sequence
+        addresses the terminal emulator, not the curses screen, so it can
+        bypass curses' buffers without disturbing them.
+        """
+        if not title or title == self._tab_title:
+            return
+        self._tab_title = title
+        try:
+            os.write(1, status.terminal_title("haikode — %s" % title)
+                     .encode("utf-8"))
+        except OSError:
+            pass
+
+    def _refresh_tab_title(self) -> None:
+        generated = str(getattr(self.turn, "display_title", "") or "")
+        if generated:
+            self._set_tab_title(generated)
 
     def _activity_label(self) -> str:
         """"2 agents · 1 shell" while parallel work runs; "" when idle."""
@@ -5690,6 +5722,7 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     """
     tui = TUI(agent_factory, config, cwd, on_command=on_command,
               completer=completer, header=header, agent=agent, turn=turn)
+    tui.turn.compose_farewell = True
     _wrap_curses(tui.run)
     # After endwin(), so the poem lands in the terminal scrollback where the
     # user is actually looking. The resume line matters more than the poem:
