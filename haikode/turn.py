@@ -350,10 +350,26 @@ class TurnController:
         if session is not None:
             subject = str(getattr(session, "title", "") or "")
 
+        # The composer must not ride the live turn's pipe. A shallow copy
+        # shares credentials and endpoint but gets its own backend session
+        # id and no abort handle: two streams multiplexed onto the same
+        # Codex session-id is exactly the kind of thing that wedges, and
+        # the user's next turn must never be able to abort — or be aborted
+        # by — a poem.
+        import copy as copy_mod
+        import uuid as uuid_mod
+        client = copy_mod.copy(agent.provider)
+        try:
+            client.abort = None
+        except Exception:
+            pass
+        if hasattr(client, "session_id"):
+            client.session_id = str(uuid_mod.uuid4())
+
         def ask(prompt, max_tokens):
             from .schema import Msg
             parts = []
-            for chunk in agent.provider.stream(
+            for chunk in client.stream(
                     [Msg(role="user", content=prompt)], [],
                     agent.model, max_tokens):
                 if getattr(chunk, "text", ""):

@@ -1468,6 +1468,68 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         self.assertIn("on", repl.handle_command("/farewell on"))
         self.assertIn("Usage", repl.handle_command("/farewell maybe"))
 
+    def test_the_composer_rides_its_own_pipe(self):
+        """Field incident: two TUI sessions wedged mid-turn on chatgpt.
+
+        The composer streamed on the live turn's provider object — same
+        Codex session-id header, same abort handle. Two streams multiplexed
+        onto one backend session is exactly the kind of thing that wedges,
+        and a poem must never be able to abort (or be aborted by) the
+        user's next turn. The composer now clones the provider: shared
+        credentials, own session id, no abort handle.
+        """
+        seen = []
+
+        class SessionedProvider(ScriptedProvider):
+            session_id = "live-turn-session"
+            abort = "live-abort-handle"
+
+            def stream(self, messages, tools, model, max_tokens):
+                seen.append((self.session_id, self.abort))
+                return super().stream(messages, tools, model, max_tokens)
+
+        provider = SessionedProvider([
+            text_turn("the real answer"),
+            text_turn("Fixing The Parser"),
+            text_turn("a\nb\nc"),
+        ])
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.compose_farewell = True
+        controller.run_turn(agent, "fix it")
+        deadline = time.time() + 5
+        while controller.farewell_poem is None and time.time() < deadline:
+            time.sleep(0.01)
+        turn_call = seen[0]
+        composer_calls = seen[1:]
+        self.assertEqual(2, len(composer_calls))
+        for session_id, abort in composer_calls:
+            self.assertNotEqual("live-turn-session", session_id)
+            self.assertIsNone(abort)
+        # Den levende provideren er urørt.
+        self.assertEqual("live-turn-session", provider.session_id)
+
+    def test_every_provider_gets_a_stall_timeout(self):
+        """The other half of the wedge: no stall budget meant a silently
+        dead connection hung the turn forever."""
+        from haikode.runtime import DEFAULT_STALL_TIMEOUT, build_provider
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x", "dialect": "openai",
+                    "base_url": "https://opencode.ai/zen/v1"},
+            "chatgpt": {"dialect": "chatgpt", "model": "gpt-5.6-sol",
+                        "oauth_provider": "chatgpt", "requires_key": False,
+                        "base_url": "https://chatgpt.com/backend-api/codex"},
+            "slowpoke": {"model": "m", "api_key": "x", "dialect": "openai",
+                         "base_url": "https://api.example.com/v1",
+                         "stall_timeout": 30}})
+        self.assertEqual(DEFAULT_STALL_TIMEOUT,
+                         build_provider(config, "zen").stall_timeout)
+        self.assertEqual(DEFAULT_STALL_TIMEOUT,
+                         build_provider(config, "chatgpt").stall_timeout)
+        self.assertEqual(30.0,
+                         build_provider(config, "slowpoke").stall_timeout)
+
     def test_disabled_or_piped_composers_spend_nothing(self):
         provider = ScriptedProvider([text_turn("the answer")])
         agent = Agent(provider, "m", cwd=self.root,
