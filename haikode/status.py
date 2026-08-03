@@ -391,16 +391,53 @@ def detail_lines(info: SetupInfo) -> List[str]:
 # 5-7-5, tech and AI, in the spirit of the OS this project is named for.
 # One is chosen at random on every exit — a small ritual, not a feature,
 # which is exactly the kind of thing BeOS users kept their machines for.
+#
+# The pools are system-aware: a poem about thirty-two bits only ever
+# appears on a machine that has exactly thirty-two, and the BeOS-flavoured
+# ones stay home on Haiku. haiku_pool() assembles what fits where.
 FAREWELL_HAIKU = (
     ("silent threads wind down", "the deskbar clock keeps ticking", "your code is at rest"),
     ("tokens ebb away", "context folded into sleep", "the model dreams on"),
     ("a green LED fades", "somewhere a server exhales", "sessions saved to disk"),
-    ("old machines still think", "thirty-two bits are enough", "for one good idea"),
     ("the cursor blinks twice", "everything you typed remains", "nothing has been lost"),
     ("packets cross the night", "an answer finds its way home", "the prompt waits for you"),
-    ("compile, test, deploy", "the kernel hums its one song", "be, and be again"),
     ("autumn of the disk", "each block flushed before the dark", "morning finds them whole"),
+    ("one more quiet diff", "reviewed by the evening light", "merged without a sound"),
+    ("the tests all went green", "somewhere a cursor exhales", "ship it in the dawn"),
 )
+
+# Only where the word is literally true.
+FAREWELL_HAIKU_32BIT = (
+    ("old machines still think", "thirty-two bits are enough", "for one good idea"),
+    ("a netbook wakes up", "carrying its whole address space", "lightly, up the hill"),
+    ("small atom, slow clock", "yet the answer still arrives", "patience is a core"),
+)
+
+# BeOS inheritance: these stay home on Haiku itself.
+FAREWELL_HAIKU_HAIKU_OS = (
+    ("compile, test, deploy", "the kernel hums its one song", "be, and be again"),
+    ("yellow tab sunset", "the tracker folds its windows", "media kit sleeps"),
+    ("one team at a time", "the deskbar holds the evening", "replicants at rest"),
+)
+
+# Every poem, for tests and the curious. Selection never draws from here.
+ALL_FAREWELL_HAIKU = (FAREWELL_HAIKU + FAREWELL_HAIKU_32BIT
+                      + FAREWELL_HAIKU_HAIKU_OS)
+
+
+def haiku_pool():
+    """The poems that are true on this machine."""
+    import sys as _sys
+    pool = list(FAREWELL_HAIKU)
+    if _sys.maxsize <= 2 ** 31 - 1:
+        pool.extend(FAREWELL_HAIKU_32BIT)
+    try:
+        from pathlib import Path as _Path
+        if _Path("/boot/home").exists():
+            pool.extend(FAREWELL_HAIKU_HAIKU_OS)
+    except OSError:
+        pass
+    return tuple(pool)
 
 
 def validated_haiku(text: str):
@@ -445,7 +482,7 @@ def terminal_title(title: str) -> str:
 def startup_haiku():
     """One poem from the built-in collection, for the home screen."""
     import random
-    return random.choice(FAREWELL_HAIKU)
+    return random.choice(haiku_pool())
 
 
 def farewell(session_id: str = "", poem=None) -> str:
@@ -462,7 +499,7 @@ def farewell(session_id: str = "", poem=None) -> str:
     import random
     chosen = validated_haiku("\n".join(poem)) if poem else None
     if chosen is None:
-        chosen = random.choice(FAREWELL_HAIKU)
+        chosen = random.choice(haiku_pool())
     lines = ["", "  %s" % chosen[0], "  %s" % chosen[1], "  %s" % chosen[2], ""]
     if session_id:
         lines.append("resume this session:  haikode -s %s" % session_id)

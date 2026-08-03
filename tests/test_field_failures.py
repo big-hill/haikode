@@ -1390,7 +1390,7 @@ class TheExitIsAHaiku(TemporaryProject):
     """
 
     def test_the_farewell_is_a_haiku_with_a_resume_line(self):
-        from haikode.status import FAREWELL_HAIKU, farewell
+        from haikode.status import ALL_FAREWELL_HAIKU as FAREWELL_HAIKU, farewell
         text = farewell("ses_0019fc0123456789abc")
         self.assertIn("haikode -s ses_0019fc0123456789abc", text)
         body = [line.strip() for line in text.splitlines() if line.strip()
@@ -1415,8 +1415,8 @@ class TheExitIsAHaiku(TemporaryProject):
         printed = buffer.getvalue()
         stripped = [line.strip() for line in printed.splitlines()
                     if line.strip() and "resume" not in line]
-        from haikode.status import FAREWELL_HAIKU
-        self.assertIn(tuple(stripped), FAREWELL_HAIKU)
+        from haikode.status import ALL_FAREWELL_HAIKU
+        self.assertIn(tuple(stripped), ALL_FAREWELL_HAIKU)
 
 
 class TheFarewellIsWrittenByTheModel(TemporaryProject):
@@ -1464,7 +1464,7 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         controller.run_turn(agent, "hello")
         time.sleep(0.3)
         self.assertIsNone(controller.farewell_poem)
-        from haikode.status import FAREWELL_HAIKU, farewell
+        from haikode.status import ALL_FAREWELL_HAIKU as FAREWELL_HAIKU, farewell
         text = farewell("ses_x", poem=None)
         body = tuple(line.strip() for line in text.splitlines()
                      if line.strip() and "resume" not in line)
@@ -1510,9 +1510,22 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         self.assertTrue(sequence.endswith("\x07"))
         self.assertNotIn("\x1b", sequence[2:-1])
 
+    def test_the_pool_is_system_aware(self):
+        """A poem about thirty-two bits only where that is literally true."""
+        import sys as sys_mod
+        from haikode.status import (FAREWELL_HAIKU_32BIT,
+                                    FAREWELL_HAIKU_HAIKU_OS, haiku_pool)
+        pool = haiku_pool()
+        is_32bit = sys_mod.maxsize <= 2 ** 31 - 1
+        for poem in FAREWELL_HAIKU_32BIT:
+            self.assertEqual(is_32bit, poem in pool)
+        on_haiku = Path("/boot/home").exists()
+        for poem in FAREWELL_HAIKU_HAIKU_OS:
+            self.assertEqual(on_haiku, poem in pool)
+
     def test_the_home_screen_greets_with_a_poem(self):
-        from haikode.status import FAREWELL_HAIKU, startup_haiku
-        self.assertIn(startup_haiku(), FAREWELL_HAIKU)
+        from haikode.status import ALL_FAREWELL_HAIKU, startup_haiku
+        self.assertIn(startup_haiku(), ALL_FAREWELL_HAIKU)
 
     def test_the_personal_haiku_can_be_switched_off_from_the_palette(self):
         """User request: the model-written farewell must be optional.
