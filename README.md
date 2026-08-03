@@ -401,6 +401,7 @@ transcript.
 | `/compact [keep]` | fold old messages into a summary |
 | `/undo` | revert the file changes made by the last run |
 | `/todos` | show the agent's current task list |
+| `/farewell [on\|off]` | the model-written exit haiku (default on) |
 
 ### Model and provider
 
@@ -799,6 +800,43 @@ and non-obvious reusable gotchas—not secrets, guesses, current-task progress,
 or a note after every turn. `/memory` always prints both editable directories,
 even before the first note exists. Memories ride in the system prompt under a
 fixed budget: descriptions first, oldest dropped when the budget runs out.
+
+## The haiku
+
+The project is named for an operating system that is named for a poem, and
+it behaves accordingly.
+
+**At startup**, one poem from the built-in collection appears under the
+wordmark: thirty-one in all — Matsuo Bashō, Yosa Buson and Kobayashi Issa in
+this project's own renderings (their originals are centuries free; published
+English translations are not, which is why these are ours), alongside
+originals signed *botfred, 2026*. Every poem is attributed on screen. On a
+small terminal the poem is the first thing to yield — it never costs you a
+line of facts.
+
+**At exit** — `/exit`, `ctrl+c`, EOF — the model writes a haiku about the
+session it is leaving, signed with its own name:
+
+```
+  a quiet last diff
+  the parser breathes easily
+  rest now, terminal
+        — gpt-5.6-terra
+
+resume this session:  haikode -s ses_0019fc3c8ebfab7d3e6
+```
+
+It is composed in the background after the first successful turn (never at
+exit — leaving must not block on the network) by the same background pass
+that writes the session's 3-5 word display title for the terminal tab and
+the session list. `/farewell off` turns the model's poetry off, persistently;
+the curated collection still says goodbye, because that part is free. The
+composer only runs in interactive sessions — one-shots, pipes and scripts
+never spend a token on it.
+
+The resume line always prints the full session id: the ids are
+time-prefixed, so every id from the same era shares its first eight
+characters, and a shortened form would only ever be ambiguous.
 
 ## Sessions and undo
 
