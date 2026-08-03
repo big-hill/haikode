@@ -1514,6 +1514,45 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         from haikode.status import FAREWELL_HAIKU, startup_haiku
         self.assertIn(startup_haiku(), FAREWELL_HAIKU)
 
+    def test_the_personal_haiku_can_be_switched_off_from_the_palette(self):
+        """User request: the model-written farewell must be optional.
+
+        Off means no provider call is spent on poetry. The built-in
+        collection still says goodbye — that part is free.
+        """
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        repl = REPL(config, provider="zen", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        repl.turn.compose_farewell = True
+
+        answer = repl.handle_command("/farewell off")
+        self.assertIn("off", answer)
+        self.assertFalse(config.data["farewell_haiku"])
+        self.assertFalse(repl.turn.compose_farewell)
+        # Persisted: a fresh config object reads the same choice.
+        from haikode.config import Config
+        self.assertFalse(Config(str(self.config_path))
+                         .data.get("farewell_haiku", True))
+
+        answer = repl.handle_command("/farewell on")
+        self.assertIn("on", answer)
+        self.assertTrue(config.data["farewell_haiku"])
+        self.assertIn("off", repl.handle_command("/farewell off"))
+        self.assertIn("Usage", repl.handle_command("/farewell maybe"))
+
+    def test_a_disabled_composer_spends_nothing(self):
+        provider = ScriptedProvider([text_turn("the answer")])
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.compose_farewell = False
+        controller.run_turn(agent, "hello")
+        time.sleep(0.2)
+        self.assertIsNone(controller.farewell_poem)
+        self.assertEqual(1, len(provider.messages))    # kun selve turen
+
     def test_validated_haiku_is_strict(self):
         from haikode.status import validated_haiku
         self.assertIsNone(validated_haiku(""))
