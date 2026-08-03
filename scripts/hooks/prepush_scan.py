@@ -80,6 +80,7 @@ def run(*args):
 # word "home" would make the hook useless exactly where it is needed.
 GENERIC_NAMES = frozenset((
     "home", "user", "users", "root", "admin", "boot", "shredder",
+    "shredder32", "shredder64",
     "localhost", "runner", "build", "ubuntu", "debian",
 ))
 
