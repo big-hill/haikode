@@ -3571,7 +3571,7 @@ class TUI:
             self._dirty = True
             return
         if name in ("/exit", "/quit", "/q"):
-            self._quit = True
+            self._begin_quit()
             return
         if name == "/farewell":
             if self.running:
@@ -4721,6 +4721,28 @@ class TUI:
         self._invalidate_view()
 
     def _quit_app(self):
+        self._begin_quit()
+
+    def _begin_quit(self):
+        """Leave — ceremonially when the user opted every exit into it.
+
+        The opt-in (farewell_on_exit, set with /farewell on) makes a plain
+        /exit or ctrl+c compose the session's haiku first. Never during a
+        run: an interrupt-flavoured quit must stay instant.
+        """
+        wants = False
+        try:
+            wants = bool(getattr(self.config, "data", {})
+                         .get("farewell_on_exit"))
+        except Exception:
+            pass
+        if wants and not self.running and self.agent is not None:
+            agent, turn = self.agent, self.turn
+            self._run_async(
+                "composing this session's farewell",
+                lambda: turn.compose_farewell_now(agent),
+                done=lambda _result: setattr(self, "_quit", True))
+            return
         self._quit = True
 
     def _suspend_terminal(self):

@@ -548,7 +548,7 @@ class REPL:
             ("tools", self._cmd_tools, "list available tools"),
             ("mcp", self._cmd_mcp, "list MCP servers and their tools"),
             ("farewell", self._cmd_farewell,
-             "leave with a haiku the model writes about this session"),
+             "exit with a model-written haiku; 'on' makes every exit do it"),
             ("permissions", self._cmd_permissions, "show permission rules"),
             ("reasoning", self._cmd_reasoning, "toggle reasoning display"),
             ("effort", self._cmd_effort, "show or set model reasoning effort"),
@@ -586,6 +586,8 @@ class REPL:
         return text
 
     def _cmd_exit(self, arg):
+        if self._wants_ceremony():
+            self._compose_exit_poem()
         print(self._farewell())
         raise SystemExit(0)
 
@@ -810,18 +812,36 @@ class REPL:
                          for name, tool in sorted(self.agent.tools.items()))
 
     def _cmd_farewell(self, arg):
-        """The ceremonial exit: the model writes this session's haiku.
+        """The ceremonial exit — and the switch for making every exit one.
 
-        Typing the command IS the consent — no toggle, no config key, no
-        hidden background call. It runs from the prompt, so no turn is in
-        flight and the whole conversation is material. /exit and ctrl+c
-        stay instant, with the curated collection saying goodbye for free.
+        Bare `/farewell` composes and leaves; typing it is the consent.
+        `/farewell on` opts in to composing on plain exits too (persisted
+        as farewell_on_exit, default off); `/farewell off` reverts. Either
+        way it runs from the prompt, so no turn is in flight and the whole
+        conversation is material.
         """
+        choice = (arg or "").strip().lower()
+        if choice in ("on", "off"):
+            self.config.data["farewell_on_exit"] = choice == "on"
+            try:
+                self.config.save()
+            except OSError as exc:
+                return f"[error] could not save: {exc}"
+            return ("every exit now composes a farewell haiku" if choice == "on"
+                    else "plain exits are instant again; /farewell still composes")
+        if choice:
+            return "Usage: /farewell [on|off]"
+        self._compose_exit_poem()
+        print(self._farewell())
+        raise SystemExit(0)
+
+    def _compose_exit_poem(self) -> None:
         if getattr(self, "agent", None) is not None:
             print(_c("composing this session's farewell…", DIM))
             self.turn.compose_farewell_now(self.agent)
-        print(self._farewell())
-        raise SystemExit(0)
+
+    def _wants_ceremony(self) -> bool:
+        return bool(self.config.data.get("farewell_on_exit"))             and sys.stdin.isatty()
 
     def _cmd_mcp(self, arg):
         """Configured MCP servers: connection state, tools, warnings."""
@@ -1332,6 +1352,8 @@ class REPL:
                 line = input(_c("> ", BOLD + CYAN)).strip()
             except EOFError:
                 print()
+                if self._wants_ceremony():
+                    self._compose_exit_poem()
                 print(self._farewell())
                 return
             except KeyboardInterrupt:

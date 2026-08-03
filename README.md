@@ -401,7 +401,7 @@ transcript.
 | `/compact [keep]` | fold old messages into a summary |
 | `/undo` | revert the file changes made by the last run |
 | `/todos` | show the agent's current task list |
-| `/farewell` | leave with a haiku the model writes about this session |
+| `/farewell [on\|off]` | exit with a model-written haiku; `on` makes every exit do it |
 
 ### Model and provider
 
@@ -829,12 +829,15 @@ its own name:
 resume this session:  haikode -s ses_0019fc3c8ebfab7d3e6
 ```
 
-Typing `/farewell` is the consent: no toggle, no config key, no hidden
-background call — and because it runs from the prompt, no turn is in flight
-and the stream has the pipe to itself. If composition fails, the collection
-covers the goodbye. The only background call that remains is the session's
-3-5 word display title for the terminal tab and the session list, composed
-once after the first successful turn, in interactive sessions only.
+Typing `/farewell` is the consent — and `/farewell on` extends it: every
+plain exit then composes too (persisted as `farewell_on_exit`, default off;
+`/farewell off` reverts, and `/farewell` alone still works either way). It
+runs from the prompt, so no turn is in flight and the stream has the pipe to
+itself; a quit that doubles as an interrupt stays instant regardless. If
+composition fails, the collection covers the goodbye. The only background
+call is the session's 3-5 word display title for the terminal tab and the
+session list, composed once after the first successful turn, in interactive
+sessions only.
 
 The resume line always prints the full session id: the ids are
 time-prefixed, so every id from the same era shares its first eight

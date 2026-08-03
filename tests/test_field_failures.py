@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import sqlite3
 import tempfile
 import time
@@ -1476,6 +1477,31 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         controller.run_turn(agent, "hello")
         self.assertFalse(controller.compose_farewell_now(agent))
         self.assertIsNone(controller.farewell_poem)
+
+    def test_opting_in_makes_a_plain_exit_ceremonial(self):
+        """/farewell on: every exit composes; off reverts; persisted."""
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        repl = REPL(config, provider="zen", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        self.assertIn("every exit", repl.handle_command("/farewell on"))
+        self.assertTrue(config.data["farewell_on_exit"])
+        from haikode.config import Config
+        self.assertTrue(Config(str(self.config_path))
+                        .data.get("farewell_on_exit"))
+
+        composed = []
+        repl.turn.compose_farewell_now = lambda agent: composed.append(1)
+        with patch.object(sys.stdin, "isatty", return_value=True):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                with self.assertRaises(SystemExit):
+                    repl.handle_command("/exit")
+        self.assertEqual([1], composed)
+
+        self.assertIn("instant", repl.handle_command("/farewell off"))
+        self.assertFalse(config.data["farewell_on_exit"])
 
     def test_plain_exit_never_dials_the_provider(self):
         config = self.config(default_provider="zen", providers={
