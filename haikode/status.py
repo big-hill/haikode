@@ -441,6 +441,25 @@ FAREWELL_HAIKU = HAIKU_MASTERS + (
 ALL_FAREWELL_HAIKU = FAREWELL_HAIKU
 
 
+def validated_haiku(text: str):
+    """Three plausible haiku lines from model output, or None.
+
+    The model was told "three lines only", and models embellish anyway —
+    a preamble, quotes, a fourth line. Anything that does not reduce to
+    exactly three short lines is discarded rather than repaired: the
+    curated collection is always available, and a mangled poem at the
+    very last moment of a session is worse than a familiar one.
+    """
+    lines = [line.strip().strip('"').strip()
+             for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) != 3:
+        return None
+    if any(len(line) > 60 for line in lines):
+        return None
+    return tuple(lines)
+
+
 def validated_title(text: str) -> str:
     """A plausible 3-5 word display title from model output, or ""."""
     line = " ".join(str(text or "").split())
@@ -469,15 +488,25 @@ def startup_haiku():
     return (first, second, third, "— %s" % author)
 
 
-def farewell(session_id: str = "") -> str:
-    """The exit message: one curated haiku, attributed, and the way back in.
+def farewell(session_id: str = "", poem=None, poet: str = "") -> str:
+    """The exit message: one attributed haiku, and the way back in.
+
+    `poem` is this session's model-written haiku when the background
+    composer got one in time (turn.py), attributed to `poet` — the model
+    that wrote it. The curated collection answers otherwise, so quitting
+    never waits on anything.
 
     The resume line prints the full session id on purpose — the ids are
     time-prefixed, so every id from the same era shares its first eight
     characters and a shortened form would only ever be ambiguous.
     """
     import random
-    first, second, third, author = random.choice(FAREWELL_HAIKU)
+    chosen = validated_haiku("\n".join(poem)) if poem else None
+    if chosen is not None:
+        first, second, third = chosen
+        author = poet or "the model"
+    else:
+        first, second, third, author = random.choice(FAREWELL_HAIKU)
     lines = ["", "  %s" % first, "  %s" % second, "  %s" % third,
              "%s— %s" % (" " * 8, author), ""]
     if session_id:

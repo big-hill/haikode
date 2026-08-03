@@ -1421,29 +1421,52 @@ class TheExitIsAHaiku(TemporaryProject):
                       FAREWELL_HAIKU)
 
 
-class TheComposerNamesTheSession(TemporaryProject):
-    """The model writes a 3-5 word display title after the first turn.
-
-    It used to write the exit poem too; the user chose the larger curated
-    collection instead, so the composer's one remaining job is the title
-    for the terminal tab and the session list. Interactive fronts only —
-    a piped run or a test stub must never lose its next scripted answer.
+class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
+    """After the first turn the model writes a display title AND the exit
+    haiku — the settled design: the curated collection greets at startup,
+    the model's own poem (signed with its name) says goodbye, default on,
+    /farewell turns it off. Interactive fronts only — a piped run or a
+    test stub must never lose its next scripted answer.
     """
 
-    def test_a_successful_turn_names_the_session(self):
+    def test_a_successful_turn_names_the_session_and_composes(self):
         provider = ScriptedProvider([
             text_turn("the real answer"),
             text_turn("Fixing The Parser"),
+            text_turn("a quiet last diff\nthe parser breathes easily\nrest now, terminal"),
         ])
-        agent = Agent(provider, "m", cwd=self.root,
+        agent = Agent(provider, "gpt-5.6-terra", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
         controller = TurnController(cwd=self.root, store_factory=lambda: None)
         controller.compose_farewell = True
         controller.run_turn(agent, "please fix the parser bug in main.py")
         deadline = time.time() + 5
-        while not controller.display_title and time.time() < deadline:
+        while controller.farewell_poem is None and time.time() < deadline:
             time.sleep(0.01)
         self.assertEqual("Fixing The Parser", controller.display_title)
+        self.assertEqual(("a quiet last diff", "the parser breathes easily",
+                          "rest now, terminal"), controller.farewell_poem)
+        self.assertEqual("gpt-5.6-terra", controller.farewell_poet)
+        from haikode.status import farewell
+        text = farewell("ses_x", poem=controller.farewell_poem,
+                        poet=controller.farewell_poet)
+        self.assertIn("— gpt-5.6-terra", text)
+
+    def test_the_toggle_persists_and_takes_effect_live(self):
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        repl = REPL(config, provider="zen", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        repl.turn.compose_farewell = True
+        self.assertIn("off", repl.handle_command("/farewell off"))
+        self.assertFalse(config.data["farewell_haiku"])
+        self.assertFalse(repl.turn.compose_farewell)
+        from haikode.config import Config
+        self.assertFalse(Config(str(self.config_path))
+                         .data.get("farewell_haiku", True))
+        self.assertIn("on", repl.handle_command("/farewell on"))
+        self.assertIn("Usage", repl.handle_command("/farewell maybe"))
 
     def test_disabled_or_piped_composers_spend_nothing(self):
         provider = ScriptedProvider([text_turn("the answer")])

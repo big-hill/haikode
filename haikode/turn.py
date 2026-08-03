@@ -142,6 +142,11 @@ class TurnController:
         self.model = model
         self.session = None
         self._farewell_started = False
+        # The model-written exit haiku and who wrote it, composed in the
+        # background after the first successful turn; None/"" means the
+        # curated collection answers instead.
+        self.farewell_poem = None
+        self.farewell_poet = ""
         # Model-written 3-5 word display title for the session, for the
         # terminal tab and the session list. Composed with the poem.
         self.display_title = ""
@@ -325,14 +330,15 @@ class TurnController:
         return result
 
     def _prepare_farewell(self, agent) -> None:
-        """Have the model name this session, in the background.
+        """Have the model name this session and write its exit haiku.
 
-        The 3-5 word display title feeds the terminal tab and the session
-        list. Composed after the first successful turn — the earliest
-        moment the session has a subject and the provider is proven — and
-        never at exit or startup. The exit poem itself comes from the
-        curated collection; the model stopped writing those when the user
-        chose the simpler, larger collection instead.
+        Both composed in the background after the first successful turn —
+        the earliest moment the session has a subject and the provider is
+        proven — and never at exit or startup: leaving must not block on
+        the network. The title feeds the terminal tab and the session
+        list; the poem is signed with the model's own name at exit. The
+        curated collection covers every failure, silently. /farewell
+        turns the whole composer off (config: farewell_haiku).
         """
         if not self.compose_farewell:
             return
@@ -355,7 +361,7 @@ class TurnController:
             return "".join(parts)
 
         def compose():
-            from .status import validated_title
+            from .status import validated_haiku, validated_title
             try:
                 title = validated_title(ask(
                     "Give this coding session a display title of three to "
@@ -366,6 +372,19 @@ class TurnController:
                     self._auto_rename(title)
             except Exception:
                 pass
+            try:
+                poem = validated_haiku(ask(
+                    "Write exactly one haiku: three lines of roughly 5, 7 and "
+                    "5 syllables. Subject: a calm, slightly wry farewell after "
+                    "a coding session%s. Technology-flavoured, English, lower "
+                    "case. Reply with the three lines only — no title, no "
+                    "quotes, no commentary."
+                    % (" about: %s" % subject[:80] if subject else ""), 96))
+                if poem:
+                    self.farewell_poem = poem
+                    self.farewell_poet = str(agent.model or "")
+            except Exception:
+                pass                    # the curated collection covers it
 
         threading.Thread(target=compose, daemon=True,
                          name="haikode-farewell").start()
