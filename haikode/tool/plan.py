@@ -60,6 +60,23 @@ class PlanExitTool(Tool):
                 output="Not in plan mode — there is no plan to approve. "
                        "Continue with the user's request directly.")
 
+        engine = getattr(ctx, "permissions", None)
+        if engine is None or getattr(engine, "asker", None) is None:
+            # One-shot and headless runs have nobody who can approve a plan,
+            # under any flag: --yes and --yolo lift gates, they do not
+            # conjure a user. Approving into build unattended would hand
+            # write tools to sessions that were put in plan mode precisely
+            # to stay read-only (a field QA probe looped to death against
+            # the old "Stay in plan mode" answer here). Say so once,
+            # terminally, instead of inviting a retry.
+            return ToolResult(
+                title="plan approval unavailable",
+                output="This session is non-interactive: nobody can approve "
+                       "the plan, and plan_exit will never succeed here. Do "
+                       "not call it again — deliver the finished plan itself "
+                       "as your final answer.",
+                metadata={"approved": False, "terminal": True})
+
         plan = str(args.get("plan", "")).strip()
         question = "The plan is ready. Approve it and switch to building?"
         if plan:

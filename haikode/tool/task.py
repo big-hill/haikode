@@ -94,6 +94,7 @@ class TaskTool(Tool):
         sub.ctx.aborted = ctx.aborted
         # Same counters as the parent, so the footer sees nested activity.
         sub.ctx.activity = ctx.activity
+        sub.ctx.activity_since = ctx.activity_since
         sub.ctx.activity_lock = ctx.activity_lock
 
         ctx.bump_activity("agents", +1)

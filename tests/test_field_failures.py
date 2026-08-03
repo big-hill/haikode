@@ -1215,6 +1215,19 @@ class PlanModeKeepsItsPromises(TemporaryProject):
         self.assertFalse(result.metadata.get("approved"))
         self.assertEqual("plan", agent.agent_name)
 
+    def test_headless_approval_is_terminal_not_a_retry_invitation(self):
+        # Field failure: an agent spawned `haikode -p` probes in plan mode;
+        # nobody could approve plan_exit, and the old "Stay in plan mode"
+        # answer invited the model to burn its remaining steps retrying.
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root, agent_name="plan")
+        result = agent.tools["plan_exit"].execute({"plan": "x"}, agent.ctx)
+        self.assertTrue(result.metadata.get("terminal"))
+        self.assertFalse(result.metadata.get("approved"))
+        self.assertIn("final answer", result.output)
+        self.assertNotIn("Stay in plan mode", result.output)
+        self.assertEqual("plan", agent.agent_name)
+
     def test_outside_plan_mode_it_declines_politely(self):
         from haikode.tool.plan import PlanExitTool
         config = self.config()
@@ -1381,6 +1394,58 @@ class TheFooterSaysWhatIsActuallyHappening(TemporaryProject):
         BashTool().execute({"command": "true"}, agent.ctx)
         self.assertIn(("shells", 1, {"agents": 0, "shells": 0}), seen)
         self.assertEqual(0, agent.ctx.activity["shells"])
+
+    def test_bump_activity_stamps_and_clears_the_start_time(self):
+        from haikode.tool.base import ToolContext
+        ctx = ToolContext(cwd=self.root)
+        ctx.bump_activity("shells", +1)
+        self.assertIn("shells", ctx.activity_since)
+        ctx.bump_activity("shells", +1)
+        first = ctx.activity_since["shells"]
+        ctx.bump_activity("shells", -1)
+        self.assertEqual(first, ctx.activity_since["shells"])  # still busy
+        ctx.bump_activity("shells", -1)
+        self.assertNotIn("shells", ctx.activity_since)
+
+    def test_tool_work_shows_its_age_instead_of_quiet(self):
+        # Field failure, the two-day "frozen at 10.6k" hunt: a 15-minute
+        # toolchain build holds no provider stream open, so the footer's
+        # "quiet Ns" climbed while the machine worked flat out and the
+        # session read as dead. Tools running -> show their age, not quiet.
+        ui = tui_mod.TUI(lambda: None, config=None, cwd=".")
+        self.addCleanup(ui.turn.close)
+        now = time.monotonic()
+
+        class Ctx:
+            activity = {"agents": 0, "shells": 1}
+            activity_since = {"shells": now - 392}
+
+        class Agent:
+            ctx = Ctx()
+            last_event_at = now - 392
+
+        ui.agent = Agent()
+        ui.running = True
+        label = ui._activity_label()
+        self.assertIn("1 shell", label)
+        self.assertIn("6m32s", label)
+        self.assertNotIn("quiet", label)
+
+    def test_model_silence_without_tools_still_reads_quiet(self):
+        ui = tui_mod.TUI(lambda: None, config=None, cwd=".")
+        self.addCleanup(ui.turn.close)
+
+        class Ctx:
+            activity = {"agents": 0, "shells": 0}
+            activity_since = {}
+
+        class Agent:
+            ctx = Ctx()
+            last_event_at = time.monotonic() - 45
+
+        ui.agent = Agent()
+        ui.running = True
+        self.assertIn("quiet 4", ui._activity_label())
 
 
 class TheExitIsAHaiku(TemporaryProject):

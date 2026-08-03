@@ -19,6 +19,7 @@ import inspect
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,13 +95,23 @@ class ToolContext:
         # shells. Shared by reference into subagent contexts (task.py), so
         # the root context sees the whole tree's activity.
         self.activity: Dict[str, int] = {"agents": 0, "shells": 0}
+        # When each counter last rose from zero, so the footer can say how
+        # long the work has been running — a 15-minute compile with no
+        # provider stream open reads as a dead session without it.
+        self.activity_since: Dict[str, float] = {}
         self.activity_lock = threading.Lock()
 
     def bump_activity(self, key: str, delta: int) -> None:
         """Adjust one live counter; never below zero, never raising."""
         try:
             with self.activity_lock:
-                self.activity[key] = max(0, self.activity.get(key, 0) + delta)
+                before = self.activity.get(key, 0)
+                now = max(0, before + delta)
+                self.activity[key] = now
+                if now > 0 and before <= 0:
+                    self.activity_since[key] = time.monotonic()
+                elif now <= 0:
+                    self.activity_since.pop(key, None)
         except Exception:
             pass
 

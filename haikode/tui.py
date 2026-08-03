@@ -5378,10 +5378,15 @@ class TUI:
     QUIET_AFTER = 30      # seconds of stream silence before the footer says so
 
     def _activity_label(self) -> str:
-        """"2 agents · 1 shell — quiet 45s" while work runs; "" when idle."""
-        counters = getattr(getattr(self.agent, "ctx", None), "activity", None)
+        """"1 shell · 6m32s" while tools work; "quiet 45s" while the model is
+        the thing being waited on; "" when idle."""
+        ctx = getattr(self.agent, "ctx", None)
+        counters = getattr(ctx, "activity", None)
         if not isinstance(counters, dict):
             counters = {}
+        since = getattr(ctx, "activity_since", None)
+        if not isinstance(since, dict):
+            since = {}
         parts = []
         agents = int(counters.get("agents", 0) or 0)
         shells = int(counters.get("shells", 0) or 0)
@@ -5389,14 +5394,24 @@ class TUI:
             parts.append("%d agent%s" % (agents, "" if agents == 1 else "s"))
         if shells:
             parts.append("%d shell%s" % (shells, "" if shells == 1 else "s"))
-        last = float(getattr(self.agent, "last_event_at", 0) or 0)
-        if self.running and last:
-            quiet = time.monotonic() - last
-            if quiet >= self.QUIET_AFTER:
-                # A silent line and a thinking model look identical without
-                # this; with it, a dead link is visibly dead long before the
-                # stall timeout fires.
-                parts.append("quiet %ds" % int(quiet))
+        if parts:
+            # While a tool runs there is no provider stream to be quiet:
+            # counting that silence made a 15-minute compile read as a dead
+            # session. Show how long the work has been going instead.
+            started = min((float(stamp) for key, stamp in since.items()
+                           if int(counters.get(key, 0) or 0) > 0),
+                          default=0.0)
+            if started:
+                parts.append(format_duration(time.monotonic() - started))
+        else:
+            last = float(getattr(self.agent, "last_event_at", 0) or 0)
+            if self.running and last:
+                quiet = time.monotonic() - last
+                if quiet >= self.QUIET_AFTER:
+                    # A silent line and a thinking model look identical
+                    # without this; with it, a dead link is visibly dead long
+                    # before the stall timeout fires.
+                    parts.append("quiet %ds" % int(quiet))
         joiner = " %s " % self.glyphs.bullet if self.glyphs.unicode_ok else " | "
         return joiner.join(parts)
 

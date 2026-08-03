@@ -412,6 +412,29 @@ class YoloMode(unittest.TestCase):
         p.ask(request())
         self.assertEqual(asked, [])
 
+    def test_yolo_still_puts_questions_to_the_user(self):
+        # yolo lifts gates; it cannot answer on the user's behalf. A request
+        # whose metadata says it is a question must still reach the asker,
+        # or the question tool and plan approval die silently in --yolo.
+        asked = []
+        p = perms(yolo=True, asker=lambda r: asked.append(r) or "once")
+        q = PermissionRequest("question", ["*"], "t",
+                              metadata={"kind": "question"})
+        p.ask(q)
+        self.assertEqual(1, len(asked))
+
+    def test_yolo_question_rejection_still_raises(self):
+        p = perms(yolo=True, asker=lambda r: "reject")
+        q = PermissionRequest("question", ["*"], "t",
+                              metadata={"kind": "question"})
+        with self.assertRaises(PermissionDenied):
+            p.ask(q)
+
+    def test_yolo_question_without_an_asker_does_not_raise(self):
+        q = PermissionRequest("question", ["*"], "t",
+                              metadata={"kind": "question"})
+        perms(yolo=True).ask(q)  # headless --yolo: unanswerable, not fatal
+
     def test_yolo_is_off_by_default(self):
         self.assertFalse(perms().yolo)
 

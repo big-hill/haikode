@@ -339,6 +339,17 @@ class Permissions:
     def ask(self, request: PermissionRequest):
         """Raises PermissionDenied unless every pattern in the request is allowed."""
         if self.yolo:
+            if ((request.metadata or {}).get("kind") == "question"
+                    and self.asker is not None):
+                # yolo switches gates off, but it cannot answer on the
+                # user's behalf: a question collects an answer, it does not
+                # grant a permission. Skipping the asker here left the
+                # question tool and plan approval silently unanswerable in
+                # every --yolo session.
+                answer = self.asker(request)
+                if answer in ("once", "always"):
+                    return
+                raise PermissionDenied(f"User rejected: {request.title}")
             return
         key = request.key
         needs_ask = False
