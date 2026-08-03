@@ -5375,11 +5375,13 @@ class TUI:
         if generated:
             self._set_tab_title(generated)
 
+    QUIET_AFTER = 30      # seconds of stream silence before the footer says so
+
     def _activity_label(self) -> str:
-        """"2 agents · 1 shell" while parallel work runs; "" when idle."""
+        """"2 agents · 1 shell — quiet 45s" while work runs; "" when idle."""
         counters = getattr(getattr(self.agent, "ctx", None), "activity", None)
         if not isinstance(counters, dict):
-            return ""
+            counters = {}
         parts = []
         agents = int(counters.get("agents", 0) or 0)
         shells = int(counters.get("shells", 0) or 0)
@@ -5387,6 +5389,14 @@ class TUI:
             parts.append("%d agent%s" % (agents, "" if agents == 1 else "s"))
         if shells:
             parts.append("%d shell%s" % (shells, "" if shells == 1 else "s"))
+        last = float(getattr(self.agent, "last_event_at", 0) or 0)
+        if self.running and last:
+            quiet = time.monotonic() - last
+            if quiet >= self.QUIET_AFTER:
+                # A silent line and a thinking model look identical without
+                # this; with it, a dead link is visibly dead long before the
+                # stall timeout fires.
+                parts.append("quiet %ds" % int(quiet))
         joiner = " %s " % self.glyphs.bullet if self.glyphs.unicode_ok else " | "
         return joiner.join(parts)
 

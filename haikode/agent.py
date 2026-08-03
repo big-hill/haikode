@@ -24,6 +24,7 @@ Everything above is pure local work: prompt assembly never touches the network.
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -320,6 +321,8 @@ class Agent:
         self.steps_used = 0
         self.cost = 0.0
         self.tokens = {"input": 0, "output": 0}
+        # monotonic() of the last streamed event, for stream-health display.
+        self.last_event_at = 0.0
         self.usage = UsageTracker()
         # Prompts typed while a turn is running; folded in at the next step.
         self._steering: List[str] = []
@@ -821,6 +824,7 @@ class Agent:
         stop_reason = None
 
         self._bind_abort()
+        self.last_event_at = time.monotonic()
         messages = self._messages_for_llm(
             MAX_STEPS_PROMPT if final_step else None)
         # What we think this prompt weighs; the response's usage says what it
@@ -832,6 +836,11 @@ class Agent:
         try:
             for chunk in stream:
                 self.ctx.check_abort()
+                # The stream's pulse, for the footer: a link that died
+                # silently used to be indistinguishable from a model
+                # thinking. Now the screen can say how long the line has
+                # been quiet.
+                self.last_event_at = time.monotonic()
                 failure = provider_failure(chunk)
                 if failure is not None:
                     # Before on_text and before the history append, both
@@ -854,7 +863,11 @@ class Agent:
                     # spelling of a usage payload, self.tokens is the flat pair
                     # the UIs read.
                     delta = self.usage.record(chunk.usage)
-                    self.tokens["input"] += delta.input_tokens
+                    # Cache reads count: they are tokens the model actually
+                    # consumed. Excluding them made the footer plateau at the
+                    # first prompt's size on a well-cached backend, which a
+                    # user read — twice — as the session having stopped.
+                    self.tokens["input"] += delta.input_tokens + delta.cache_read
                     self.tokens["output"] += delta.output_tokens
                     self._observe_reported_usage(chunk.usage, estimated_prompt)
                 if chunk.stop_reason:
