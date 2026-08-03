@@ -1124,17 +1124,21 @@ class TestWedgedWalRecovery(unittest.TestCase):
         journal = Path(str(self.path) + "-wal")
         journal.write_bytes(b"\0" * 4096)
 
+        store = SessionStore(self.path)
+        store._TRANSIENT_PAUSES = (0, 0)
+        # A dead process's lock state does not clear on its own: the error
+        # must survive the transient retries, or retrying (rightly) makes
+        # recovery unnecessary.
+        wedged_opens = 1 + len(store._TRANSIENT_PAUSES)
         opens = {"count": 0}
         real = sqlite3.connect
 
         def flaky(*args, **kwargs):
-            # Fail exactly like a wedged lock state, once.
             opens["count"] += 1
-            if opens["count"] == 1:
+            if opens["count"] <= wedged_opens:
                 raise sqlite3.OperationalError("locking protocol")
             return real(*args, **kwargs)
 
-        store = SessionStore(self.path)
         try:
             with patch.object(sqlite3, "connect", flaky):
                 rows = store.list_sessions()
@@ -1162,6 +1166,79 @@ class TestWedgedWalRecovery(unittest.TestCase):
                     store.connect()
         finally:
             store.close()
+
+
+class LiveWalGuardTests(unittest.TestCase):
+    """Field failure, two evenings running: a spawned one-shot haikode hit
+    Haiku's transient "locking protocol" on open, found the guard unheld,
+    and "recovered" the live terminal's WAL out from under it — "session
+    not saved" from there until restart, committed turns left in a
+    -wal.recovered file. The guard must be held for the store's lifetime,
+    transient errors must be retried before recovery is even considered,
+    and a wedged connection must heal itself on the next write.
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.path = Path(self._temp.name) / "sessions.db"
+
+    def store(self):
+        store = SessionStore(self.path)
+        self.addCleanup(store.close)
+        return store
+
+    def test_connect_holds_the_guard_while_open(self):
+        store = self.store()
+        store.connect()
+        self.assertIsNotNone(store._guard)
+
+    def test_recovery_declines_while_a_live_owner_holds_the_guard(self):
+        live = self.store()
+        session = live.new_session(".", "p", "m")
+        session.append(Msg(role="user", content="precious, uncheckpointed"))
+        stranger = self.store()
+        stranger._open_here = lambda: False      # simulate another process
+        cleared = stranger._clear_stale_wal(
+            sqlite3.OperationalError("locking protocol"))
+        self.assertFalse(cleared)
+        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+        self.assertTrue(Path(str(self.path) + "-shm").exists())
+
+    def test_a_transient_locking_error_is_retried_not_recovered(self):
+        store = self.store()
+        store._TRANSIENT_PAUSES = (0,)
+        real = store._open
+        blows = [sqlite3.OperationalError("locking protocol")]
+
+        def flaky():
+            if blows:
+                raise blows.pop()
+            return real()
+
+        store._open = flaky
+        store.connect()
+        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+
+    def test_append_reopens_a_wedged_connection(self):
+        store = self.store()
+        session = store.new_session(".", "p", "m")
+        session.append(Msg(role="user", content="first"))
+
+        class Wedged:
+            def execute(self, *args):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            def close(self):
+                pass
+
+        store._conn = Wedged()
+        seq = session.append(Msg(role="user", content="second"))
+        self.assertEqual(2, seq)
+        count = store.connect().execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (session.id,)).fetchone()[0]
+        self.assertEqual(2, count)
 
 
 if __name__ == "__main__":

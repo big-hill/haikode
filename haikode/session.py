@@ -465,13 +465,61 @@ class SessionStore:
                 # is cleared. Observed on Haiku after a killed run: 15 sessions
                 # intact on disk, unreachable, and the only symptom the user
                 # saw was one line saying undo was unavailable.
-                if not self._clear_stale_wal(first):
-                    raise
-                conn = self._open()
+                conn = self._retry_transient(first)
+                if conn is None:
+                    if not self._clear_stale_wal(first):
+                        raise
+                    conn = self._open()
             self._conn = conn
             self._register()
+            # Hold the cross-process guard for as long as the store is open:
+            # it is what tells another process's recovery that this WAL has a
+            # living owner. Failure is fine — a sibling already holding it
+            # means only that *it* owns recovery, the store is still shared.
+            self._claim()
             self._rotate_backup(conn)
             return conn
+
+    # Between-try pauses for a transient open failure. A tuple so tests can
+    # shrink the wait, not a magic number buried in the loop.
+    _TRANSIENT_PAUSES = (0.3, 0.9)
+
+    def _retry_transient(self, error: sqlite3.OperationalError):
+        """A couple more tries for errors a live neighbour causes in passing.
+
+        On Haiku a second live instance intermittently gets "locking
+        protocol" from WAL's shared-memory glue, and it clears in well under
+        a second. Recovery must stay the last resort: it moves the WAL
+        aside, which for a *live* neighbour is how committed turns vanished
+        in the field ("session not saved", twice in two evenings).
+        """
+        message = str(error).lower()
+        if ("locking protocol" not in message
+                and "database is locked" not in message):
+            return None
+        for pause in self._TRANSIENT_PAUSES:
+            time.sleep(pause)
+            try:
+                return self._open()
+            except sqlite3.OperationalError:
+                continue
+        return None
+
+    def reset(self) -> None:
+        """Drop a wedged connection so the next use reopens from scratch.
+
+        The guard is kept: the store is still in use, and releasing it would
+        invite a neighbour's recovery into the very WAL we are reopening.
+        """
+        with self._lock:
+            if self._conn is None:
+                return
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            self._unregister()
 
     def _rotate_backup(self, conn: sqlite3.Connection) -> None:
         """Keep a few verified snapshots beside the database.
@@ -855,6 +903,10 @@ class Session:
 
     # --- messages --------------------------------------------------------
 
+    _append_wedge_tokens = ("disk i/o error",
+                            "database disk image is malformed",
+                            "locking protocol")
+
     def append(self, message: Msg, tokens: Optional[int] = None) -> int:
         """
         Persist one message immediately; returns its seq.
@@ -864,12 +916,8 @@ class Session:
         reported", which token_totals() then fills in with an estimate.
         """
         now = time.time()
-        # Allocating the seq under the store lock: two threads (the task tool
-        # runs tools off the main thread) would otherwise pick the same seq and
-        # INSERT OR REPLACE would silently drop one of the messages.
-        with self.store._lock:
-            seq = self._seq + 1
-            conn = self.store.connect()
+
+        def write(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT OR REPLACE INTO messages "
                 "(session_id, seq, role, content, tool_calls, tool_call_id, "
@@ -882,6 +930,23 @@ class Session:
             conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
                          (now, self.id))
             conn.commit()
+
+        # Allocating the seq under the store lock: two threads (the task tool
+        # runs tools off the main thread) would otherwise pick the same seq and
+        # INSERT OR REPLACE would silently drop one of the messages.
+        with self.store._lock:
+            seq = self._seq + 1
+            try:
+                write(self.store.connect())
+            except sqlite3.DatabaseError as exc:
+                if not any(token in str(exc).lower()
+                           for token in self._append_wedge_tokens):
+                    raise
+                # A ripped WAL or a dropped mapping breaks the connection for
+                # good; without this reopen the session would answer "session
+                # not saved" to every turn until the user restarts.
+                self.store.reset()
+                write(self.store.connect())
             # Only after the write succeeded, so a failed insert cannot leave a
             # hole in the sequence or a message in memory that is not on disk.
             self._seq = seq
