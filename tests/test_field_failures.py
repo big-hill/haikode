@@ -29,6 +29,7 @@ from haikode.providers.openai_compat import OpenAICompatProvider
 from haikode.providers.subscription import ChatGPTSubscriptionProvider
 from haikode.repl import REPL
 from haikode.runtime import build_agent
+from haikode.turn import TurnController
 from haikode.schema import CompletionChunk, Msg, ToolCall
 from haikode.usage import UsageTracker, measure_context
 
@@ -1416,6 +1417,74 @@ class TheExitIsAHaiku(TemporaryProject):
                     if line.strip() and "resume" not in line]
         from haikode.status import FAREWELL_HAIKU
         self.assertIn(tuple(stripped), FAREWELL_HAIKU)
+
+
+class TheFarewellIsWrittenByTheModel(TemporaryProject):
+    """User request refined: a fresh haiku per session, model-written.
+
+    Composed in the background after the first successful turn — the
+    earliest moment the session has a subject and the provider is proven —
+    never at exit, because leaving must not block on the network. The
+    built-in collection remains the fallback for every failure mode.
+    """
+
+    def turn_controller_with(self, poem_text):
+        provider = ScriptedProvider([
+            text_turn("the real answer"),
+            [CompletionChunk(text=poem_text, stop_reason="stop")],
+        ])
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        return controller, agent
+
+    def wait_for(self, controller, timeout=5.0):
+        deadline = time.time() + timeout
+        while controller.farewell_poem is None and time.time() < deadline:
+            time.sleep(0.01)
+        return controller.farewell_poem
+
+    def test_a_successful_turn_composes_the_poem_in_the_background(self):
+        controller, agent = self.turn_controller_with(
+            "threads wind gently down\nthe answer found its way home\nrest now little atom")
+        controller.run_turn(agent, "hello")
+        poem = self.wait_for(controller)
+        self.assertEqual(("threads wind gently down",
+                          "the answer found its way home",
+                          "rest now little atom"), poem)
+        from haikode.status import farewell
+        self.assertIn("rest now little atom", farewell("ses_x", poem=poem))
+
+    def test_malformed_model_output_falls_back_silently(self):
+        controller, agent = self.turn_controller_with(
+            "Here is your haiku!\nline one\nline two\nline three\nHope you like it!")
+        controller.run_turn(agent, "hello")
+        time.sleep(0.3)
+        self.assertIsNone(controller.farewell_poem)
+        from haikode.status import FAREWELL_HAIKU, farewell
+        text = farewell("ses_x", poem=None)
+        body = tuple(line.strip() for line in text.splitlines()
+                     if line.strip() and "resume" not in line)
+        self.assertIn(body, FAREWELL_HAIKU)
+
+    def test_composition_happens_at_most_once(self):
+        controller, agent = self.turn_controller_with("a\nb\nc")
+        controller.run_turn(agent, "hello")
+        self.wait_for(controller)
+        # Second turn must not re-dial the provider for another poem: the
+        # scripted provider has no third response, so a second attempt
+        # would raise inside the thread and leave poem/None flapping.
+        provider_calls = len(agent.provider.messages)
+        controller._prepare_farewell(agent)
+        time.sleep(0.2)
+        self.assertEqual(provider_calls, len(agent.provider.messages))
+
+    def test_validated_haiku_is_strict(self):
+        from haikode.status import validated_haiku
+        self.assertIsNone(validated_haiku(""))
+        self.assertIsNone(validated_haiku("one\ntwo"))
+        self.assertIsNone(validated_haiku("x" * 80 + "\ny\nz"))
+        self.assertEqual(("a", "b", "c"), validated_haiku('"a"\nb\nc\n'))
 
 
 class AnAcknowledgedWriteSurvivesThePlugBeingPulled(TemporaryProject):

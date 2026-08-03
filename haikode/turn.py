@@ -141,6 +141,11 @@ class TurnController:
         self.provider_name = provider_name
         self.model = model
         self.session = None
+        # The model-written exit haiku, composed in the background after the
+        # first successful turn (see _prepare_farewell). None means the
+        # built-in collection answers instead.
+        self.farewell_poem = None
+        self._farewell_started = False
         # Sticky: set by any failure that means this conversation is not on
         # disk, cleared only by a turn that persisted cleanly.
         self.persistence_error = ""
@@ -311,7 +316,52 @@ class TurnController:
             result.error = "%s: %s" % (type(exc).__name__, exc)
         finally:
             self._persist(agent, original, result)
+        if result.text and not result.error:
+            self._prepare_farewell(agent)
         return result
+
+    def _prepare_farewell(self, agent) -> None:
+        """Have the model write this session's exit haiku, in the background.
+
+        Generated after the first successful turn — the earliest moment a
+        session has a subject to write about and proof the provider works —
+        and held in memory until quit. Deliberately NOT generated at exit:
+        leaving must never block on the network. Any failure keeps the
+        built-in collection as the fallback, silently; a farewell that can
+        break the exit is worse than no farewell at all.
+        """
+        if self.farewell_poem is not None or self._farewell_started:
+            return
+        self._farewell_started = True
+        subject = ""
+        session = self.session
+        if session is not None:
+            subject = str(getattr(session, "title", "") or "")
+
+        def compose():
+            from .schema import Msg
+            from .status import validated_haiku
+            prompt = (
+                "Write exactly one haiku: three lines of roughly 5, 7 and 5 "
+                "syllables. Subject: a calm, slightly wry farewell after a "
+                "coding session%s. Technology-flavoured, English, lower case. "
+                "Reply with the three lines only — no title, no quotes, no "
+                "commentary." % (" about: %s" % subject[:80] if subject else ""))
+            try:
+                parts = []
+                for chunk in agent.provider.stream(
+                        [Msg(role="user", content=prompt)], [],
+                        agent.model, 96):
+                    if getattr(chunk, "text", ""):
+                        parts.append(chunk.text)
+                poem = validated_haiku("".join(parts))
+                if poem:
+                    self.farewell_poem = poem
+            except Exception:
+                pass                    # the built-in collection covers it
+
+        threading.Thread(target=compose, daemon=True,
+                         name="haikode-farewell").start()
 
     def _persist(self, agent, title_hint: str, result: TurnResult) -> None:
         """Write the turn to the session, opening one only if there is anything

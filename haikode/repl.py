@@ -591,7 +591,8 @@ class REPL:
         """The exit haiku plus how to come back to this conversation."""
         from .status import farewell
         session = getattr(self.turn, "session", None)
-        return farewell(str(getattr(session, "id", "") or ""))
+        return farewell(str(getattr(session, "id", "") or ""),
+                        poem=getattr(self.turn, "farewell_poem", None))
 
     def new_conversation(self) -> None:
         """Drop the conversation, keeping the provider/model/agent selection.

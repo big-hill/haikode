@@ -5696,4 +5696,5 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     # the session id is otherwise a thing you had to have noted mid-session.
     from .status import farewell
     session = getattr(tui.turn, "session", None)
-    print(farewell(str(getattr(session, "id", "") or "")))
+    print(farewell(str(getattr(session, "id", "") or ""),
+                   poem=getattr(tui.turn, "farewell_poem", None)))

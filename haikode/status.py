@@ -403,16 +403,40 @@ FAREWELL_HAIKU = (
 )
 
 
-def farewell(session_id: str = "") -> str:
+def validated_haiku(text: str):
+    """Three plausible haiku lines from model output, or None.
+
+    The model was told "three lines only", and models embellish anyway —
+    a preamble, quotes, a fourth line. Anything that does not reduce to
+    exactly three short lines is discarded rather than repaired: the
+    built-in collection is always available, and a mangled poem at the
+    very last moment of a session is worse than a familiar one.
+    """
+    lines = [line.strip().strip('"').strip() for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) != 3:
+        return None
+    if any(len(line) > 60 for line in lines):
+        return None
+    return tuple(lines)
+
+
+def farewell(session_id: str = "", poem=None) -> str:
     """The exit message: one haiku, and the way back in.
+
+    `poem` is the session's own model-written haiku when the background
+    composer got one in time (turn.py); the built-in collection answers
+    otherwise, so quitting never waits on anything.
 
     The resume line prints the full session id on purpose — the ids are
     time-prefixed, so every id from the same era shares its first eight
     characters and a shortened form would only ever be ambiguous.
     """
     import random
-    poem = random.choice(FAREWELL_HAIKU)
-    lines = ["", "  %s" % poem[0], "  %s" % poem[1], "  %s" % poem[2], ""]
+    chosen = validated_haiku("\n".join(poem)) if poem else None
+    if chosen is None:
+        chosen = random.choice(FAREWELL_HAIKU)
+    lines = ["", "  %s" % chosen[0], "  %s" % chosen[1], "  %s" % chosen[2], ""]
     if session_id:
         lines.append("resume this session:  haikode -s %s" % session_id)
     return "\n".join(lines)
