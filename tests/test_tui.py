@@ -1254,6 +1254,36 @@ class DialogRoutingTests(unittest.TestCase):
         self.ui._dialog_key(KeyEvent(key="escape"))
         self.assertIsNone(self.ui.dialog)
 
+    def test_escape_steps_back_to_the_dialog_beneath(self):
+        # Field report: from a ctrl+p submenu, Esc dropped the user at the
+        # prompt with no way back to the menu one level up.
+        first = self.open()
+        self.ui._open_dialog(Dialog("second", "Second", items("x")))
+        self.ui._dialog_key(KeyEvent(key="escape"))
+        self.assertIs(self.ui.dialog, first)
+        self.ui._dialog_key(KeyEvent(key="escape"))
+        self.assertIsNone(self.ui.dialog)
+
+    def test_a_completed_submit_closes_the_whole_run(self):
+        self.open()
+        self.ui._open_dialog(Dialog("second", "Second", items("x"),
+                                    payload={}))
+        self.ui._dialog_key(KeyEvent(key="return"))
+        self.assertIsNone(self.ui.dialog)
+        self.assertEqual([], self.ui._dialog_stack)
+
+    def test_esc_in_a_palette_submenu_returns_to_the_palette(self):
+        self.ui._open_commands()
+        self.assertEqual("commands", self.ui.dialog.name)
+        item = next(entry for entry in self.ui._palette.items()
+                    if entry.value == "help.show")
+        self.ui._run_palette_item(item)
+        self.assertEqual("help", self.ui.dialog.name)
+        self.ui._dialog_key(KeyEvent(key="escape"))
+        self.assertEqual("commands", self.ui.dialog.name)
+        self.ui._dialog_key(KeyEvent(key="escape"))
+        self.assertIsNone(self.ui.dialog)
+
     def test_an_action_handler_receives_the_selected_item(self):
         seen = []
         self.open(actions=[DialogAction("model_favorite_toggle", "Fav",

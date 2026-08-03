@@ -2288,6 +2288,11 @@ class TUI:
         # keys, dialogs and accounting
         self.keymap = keybind.Keymap.from_config(config)
         self.dialog: Optional[Any] = None
+        # Dialogs beneath the open one, nearest last: Esc steps back through
+        # these before it dismisses (ctrl+p -> models -> Esc means "back to
+        # the menu", not "drop me at the prompt"). A completed action still
+        # closes the whole run of them at once.
+        self._dialog_stack: List[Any] = []
         self.usage = UsageTracker()
         self._seen_tokens = {"input": 0, "output": 0}
         self._catalog_cache = None
@@ -3940,19 +3945,34 @@ class TUI:
     # --- dialogs ---------------------------------------------------------
 
     def _open_dialog(self, dialog):
-        """Show `dialog`, superseding whatever was open.
+        """Show `dialog`, stacking over whatever was open.
 
         Bumping the serial is what makes an in-flight background load for the
-        previous dialog land in the bin instead of on top of this one.
+        previous dialog land in the bin instead of on top of this one. The
+        superseded dialog is kept so Esc can step back to it.
         """
+        if self.dialog is not None:
+            self._dialog_stack.append(self.dialog)
         self._dialog_serial += 1
         self.dialog = dialog
         self.keymap.reset()
         self._dirty = True
 
     def _close_dialog(self):
+        """Dismiss the whole dialog run, history included."""
         self._dialog_serial += 1
         self.dialog = None
+        self._dialog_stack.clear()
+        self.keymap.reset()
+        self._dirty = True
+
+    def _dialog_back(self):
+        """One step back — to the dialog this one was opened from, if any."""
+        if not self._dialog_stack:
+            self._close_dialog()
+            return
+        self._dialog_serial += 1
+        self.dialog = self._dialog_stack.pop()
         self.keymap.reset()
         self._dirty = True
 
@@ -3978,7 +3998,7 @@ class TUI:
                                       % (type(exc).__name__, exc)))
             return
         if result == DIALOG_CANCEL:
-            self._close_dialog()
+            self._dialog_back()
             return
         if result == DIALOG_SUBMIT:
             self._dialog_submit(dialog)
@@ -4133,6 +4153,7 @@ class TUI:
 
     def _run_palette_item(self, item):
         registry = self._palette
+        parent = self.dialog
         self._close_dialog()
         if registry is None:
             return
@@ -4142,6 +4163,12 @@ class TUI:
             self.status_hint = "%s is not available here" % item.title
         except KeyError:
             self.status_hint = "unknown command"
+        if parent is not None and self.dialog is not None:
+            # The item opened a submenu (models, sessions, a form). Its Esc
+            # should step back to the menu it came from, not dismiss — the
+            # palette closed itself above, so re-arm it as the way back,
+            # beneath anything the handler itself stacked.
+            self._dialog_stack.insert(0, parent)
 
     # --- dialogs: models and providers ------------------------------------
 
