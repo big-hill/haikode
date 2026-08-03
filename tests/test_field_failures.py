@@ -1,6 +1,7 @@
 """Regressions from the 447-message Haiku field session."""
 
 import errno
+import io
 import json
 import os
 import shutil
@@ -8,6 +9,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1310,6 +1312,110 @@ class TheModelCanAskAndBeAnswered(TemporaryProject):
             agent.ctx)
         self.assertIn("MVP first", result.output)
         self.assertEqual(1, result.metadata["answered"])
+
+
+class TheFooterSaysWhatIsActuallyHappening(TemporaryProject):
+    """User request from the 32-bit dogfooding: effort level and parallel
+    activity (subagents, shells) visible in the status line."""
+
+    def test_effort_is_a_footer_segment(self):
+        line = tui_mod.build_status("chatgpt/gpt-5.6-terra", "proj", 10, 20,
+                                    100, tui_mod.Glyphs(True), effort="xhigh")
+        self.assertIn("xhigh", line)
+
+    def test_effort_is_dropped_before_the_provider_when_narrow(self):
+        line = tui_mod.build_status("chatgpt/gpt-5.6-terra", "some-project",
+                                    1000, 2000, 46, tui_mod.Glyphs(False),
+                                    effort="xhigh")
+        self.assertEqual(46, len(line))
+        self.assertNotIn("xhigh", line)
+        self.assertIn("chatgpt/gpt-5.6-terra", line)
+
+    def test_activity_rides_with_the_spinner(self):
+        line = tui_mod.build_status("p", "d", 0, 0, 90, tui_mod.Glyphs(True),
+                                    busy=True, elapsed=3,
+                                    activity="2 agents · 1 shell")
+        self.assertIn("working", line)
+        self.assertIn("2 agents · 1 shell", line)
+
+    def test_the_label_counts_from_the_shared_context(self):
+        ui = tui_mod.TUI(lambda: None, config=None, cwd=".")
+        self.addCleanup(ui.turn.close)
+
+        class Ctx:
+            activity = {"agents": 2, "shells": 1}
+
+        class Agent:
+            ctx = Ctx()
+
+        ui.agent = Agent()
+        self.assertIn("2 agents", ui._activity_label())
+        self.assertIn("1 shell", ui._activity_label())
+        Ctx.activity = {"agents": 0, "shells": 0}
+        self.assertEqual("", ui._activity_label())
+
+    def test_a_subagent_shares_the_parents_counters(self):
+        from haikode.tool.base import ToolContext
+        parent = ToolContext(cwd=self.root)
+        parent.bump_activity("agents", +1)
+        self.assertEqual(1, parent.activity["agents"])
+        parent.bump_activity("agents", -1)
+        parent.bump_activity("agents", -1)      # aldri under null
+        self.assertEqual(0, parent.activity["agents"])
+
+    def test_a_running_shell_is_counted_while_it_runs(self):
+        from haikode.tool.shell import BashTool
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        agent.permissions.auto_approve = True
+        seen = []
+        original = agent.ctx.bump_activity
+
+        def spying_bump(key, delta):
+            seen.append((key, delta, dict(agent.ctx.activity)))
+            original(key, delta)
+
+        agent.ctx.bump_activity = spying_bump
+        BashTool().execute({"command": "true"}, agent.ctx)
+        self.assertIn(("shells", 1, {"agents": 0, "shells": 0}), seen)
+        self.assertEqual(0, agent.ctx.activity["shells"])
+
+
+class TheExitIsAHaiku(TemporaryProject):
+    """User request: a tech/AI haiku on exit, plus how to resume.
+
+    The resume line is the substance — the session id is otherwise a thing
+    you had to have noted mid-session. The poem is the signature.
+    """
+
+    def test_the_farewell_is_a_haiku_with_a_resume_line(self):
+        from haikode.status import FAREWELL_HAIKU, farewell
+        text = farewell("ses_0019fc0123456789abc")
+        self.assertIn("haikode -s ses_0019fc0123456789abc", text)
+        body = [line.strip() for line in text.splitlines() if line.strip()
+                and "resume" not in line]
+        self.assertEqual(3, len(body))
+        self.assertIn(tuple(body), FAREWELL_HAIKU)
+
+    def test_without_a_session_there_is_no_resume_line(self):
+        from haikode.status import farewell
+        self.assertNotIn("resume", farewell(""))
+
+    def test_exit_command_prints_it(self):
+        config = self.config(default_provider="zen", providers={
+            "zen": {"model": "m", "api_key": "x",
+                    "base_url": "https://opencode.ai/zen/v1"}})
+        repl = REPL(config, provider="zen", cwd=self.root)
+        self.addCleanup(repl.turn.close)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            with self.assertRaises(SystemExit):
+                repl.handle_command("/exit")
+        printed = buffer.getvalue()
+        stripped = [line.strip() for line in printed.splitlines()
+                    if line.strip() and "resume" not in line]
+        from haikode.status import FAREWELL_HAIKU
+        self.assertIn(tuple(stripped), FAREWELL_HAIKU)
 
 
 class AnAcknowledgedWriteSurvivesThePlugBeingPulled(TemporaryProject):

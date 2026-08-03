@@ -760,12 +760,19 @@ class BashTool(Tool):
             reader.start()
             readers.append(reader)
 
+        # The footer's "1 shell" count: alive exactly while the child is.
+        bump = getattr(ctx, "bump_activity", None)
+        if callable(bump):
+            bump("shells", +1)
         try:
             timed_out, aborted = _supervise(proc, timeout, ctx, readers)
         except BaseException:
             # Interrupt: never leave the tree running behind us.
             _kill_group(proc)
             raise
+        finally:
+            if callable(bump):
+                bump("shells", -1)
 
         if timed_out or aborted:
             _kill_group(proc)

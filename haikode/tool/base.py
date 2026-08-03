@@ -90,6 +90,19 @@ class ToolContext:
         # Files touched this run, for session revert (phase 6).
         self.modified_files: Dict[str, Optional[str]] = {}
         self.todos: List[Dict[str, str]] = []
+        # Live activity counters the footer reads: running subagents and
+        # shells. Shared by reference into subagent contexts (task.py), so
+        # the root context sees the whole tree's activity.
+        self.activity: Dict[str, int] = {"agents": 0, "shells": 0}
+        self.activity_lock = threading.Lock()
+
+    def bump_activity(self, key: str, delta: int) -> None:
+        """Adjust one live counter; never below zero, never raising."""
+        try:
+            with self.activity_lock:
+                self.activity[key] = max(0, self.activity.get(key, 0) + delta)
+        except Exception:
+            pass
 
     # --- cancellation ---------------------------------------------------
 

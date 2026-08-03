@@ -584,7 +584,14 @@ class REPL:
         return text
 
     def _cmd_exit(self, arg):
+        print(self._farewell())
         raise SystemExit(0)
+
+    def _farewell(self) -> str:
+        """The exit haiku plus how to come back to this conversation."""
+        from .status import farewell
+        session = getattr(self.turn, "session", None)
+        return farewell(str(getattr(session, "id", "") or ""))
 
     def new_conversation(self) -> None:
         """Drop the conversation, keeping the provider/model/agent selection.
@@ -1298,6 +1305,7 @@ class REPL:
                 line = input(_c("> ", BOLD + CYAN)).strip()
             except EOFError:
                 print()
+                print(self._farewell())
                 return
             except KeyboardInterrupt:
                 print("\n(use /exit to quit)")

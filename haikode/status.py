@@ -382,3 +382,37 @@ def detail_lines(info: SetupInfo) -> List[str]:
     rows.append(_row("Python", "%s on %s" % (
         info.python_version, "Haiku" if info.haiku else (info.platform_name or "unknown"))))
     return rows
+
+
+# --------------------------------------------------------------------------
+# the sign-off: a haiku on the way out
+# --------------------------------------------------------------------------
+
+# 5-7-5, tech and AI, in the spirit of the OS this project is named for.
+# One is chosen at random on every exit — a small ritual, not a feature,
+# which is exactly the kind of thing BeOS users kept their machines for.
+FAREWELL_HAIKU = (
+    ("silent threads wind down", "the deskbar clock keeps ticking", "your code is at rest"),
+    ("tokens ebb away", "context folded into sleep", "the model dreams on"),
+    ("a green LED fades", "somewhere a server exhales", "sessions saved to disk"),
+    ("old machines still think", "thirty-two bits are enough", "for one good idea"),
+    ("the cursor blinks twice", "everything you typed remains", "nothing has been lost"),
+    ("packets cross the night", "an answer finds its way home", "the prompt waits for you"),
+    ("compile, test, deploy", "the kernel hums its one song", "be, and be again"),
+    ("autumn of the disk", "each block flushed before the dark", "morning finds them whole"),
+)
+
+
+def farewell(session_id: str = "") -> str:
+    """The exit message: one haiku, and the way back in.
+
+    The resume line prints the full session id on purpose — the ids are
+    time-prefixed, so every id from the same era shares its first eight
+    characters and a shortened form would only ever be ambiguous.
+    """
+    import random
+    poem = random.choice(FAREWELL_HAIKU)
+    lines = ["", "  %s" % poem[0], "  %s" % poem[1], "  %s" % poem[2], ""]
+    if session_id:
+        lines.append("resume this session:  haikode -s %s" % session_id)
+    return "\n".join(lines)

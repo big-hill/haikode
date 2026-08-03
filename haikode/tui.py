@@ -1121,7 +1121,8 @@ def build_status(provider: str, cwd_name: str, tokens_in: int, tokens_out: int,
                  width: int, glyphs: Optional[Glyphs] = None, busy: bool = False,
                  frame: int = 0, elapsed: float = 0.0, hint: str = "",
                  state: str = "ready", agent: str = "", context: str = "",
-                 leader: str = "", yolo: bool = False) -> str:
+                 leader: str = "", yolo: bool = False, effort: str = "",
+                 activity: str = "") -> str:
     """Assemble the footer, dropping segments right-to-left as space runs out.
 
     `state` is the idle word ("ready", "interrupted"): a run that was aborted
@@ -1141,6 +1142,10 @@ def build_status(provider: str, cwd_name: str, tokens_in: int, tokens_out: int,
         segments.append(cwd_name)
     if agent:
         segments.append(agent)
+    if effort:
+        # The reasoning effort in force — the user asked to see it without
+        # opening /effort, because it decides both latency and quality.
+        segments.append(effort)
     left = " %s " % dot.join(segments)
     tokens = "%s in %s out" % (format_tokens(tokens_in), format_tokens(tokens_out))
     if busy:
@@ -1149,6 +1154,9 @@ def build_status(provider: str, cwd_name: str, tokens_in: int, tokens_out: int,
         # still working — right after typing something it has not taken yet —
         # was the one moment the footer would not say.
         working = "%s working %s" % (g.frame(frame), format_duration(elapsed))
+        if activity:
+            # What the work *is*: running subagents and shells, counted.
+            working = "%s  %s" % (working, activity)
         right = "%s  %s" % (working, hint or "esc to interrupt")
     elif hint:
         right = hint
@@ -1163,8 +1171,8 @@ def build_status(provider: str, cwd_name: str, tokens_in: int, tokens_out: int,
     # Widest first, then progressively less: provider+cwd+agent, provider+agent,
     # provider alone, nothing. The right-hand side is what the user is waiting
     # on, so it keeps its space.
-    if len(left) + len(right) > width and agent:
-        left = " %s%s%s " % (provider, dot, agent)
+    if len(left) + len(right) > width and (agent or effort):
+        left = " %s%s%s " % (provider, dot, agent) if agent else " %s " % provider
         if yolo:
             left = " YOLO%s%s " % (dot, provider)
     if len(left) + len(right) > width:
@@ -5256,6 +5264,8 @@ class TUI:
         text = build_status(
             provider=self._provider_label(),
             cwd_name=status.short_label(self.cwd, 24),
+            effort=str(getattr(self.agent, "reasoning_effort", "") or ""),
+            activity=self._activity_label(),
             tokens_in=self._tokens("input"),
             tokens_out=self._tokens("output"),
             width=frame.cols - 1,
@@ -5299,6 +5309,21 @@ class TUI:
             return self.config.data.get("default_provider", "") or ""
         except Exception:
             return ""
+
+    def _activity_label(self) -> str:
+        """"2 agents · 1 shell" while parallel work runs; "" when idle."""
+        counters = getattr(getattr(self.agent, "ctx", None), "activity", None)
+        if not isinstance(counters, dict):
+            return ""
+        parts = []
+        agents = int(counters.get("agents", 0) or 0)
+        shells = int(counters.get("shells", 0) or 0)
+        if agents:
+            parts.append("%d agent%s" % (agents, "" if agents == 1 else "s"))
+        if shells:
+            parts.append("%d shell%s" % (shells, "" if shells == 1 else "s"))
+        joiner = " %s " % self.glyphs.bullet if self.glyphs.unicode_ok else " | "
+        return joiner.join(parts)
 
     def _provider_label(self) -> str:
         name = self._provider_name()
@@ -5666,3 +5691,9 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     tui = TUI(agent_factory, config, cwd, on_command=on_command,
               completer=completer, header=header, agent=agent, turn=turn)
     _wrap_curses(tui.run)
+    # After endwin(), so the poem lands in the terminal scrollback where the
+    # user is actually looking. The resume line matters more than the poem:
+    # the session id is otherwise a thing you had to have noted mid-session.
+    from .status import farewell
+    session = getattr(tui.turn, "session", None)
+    print(farewell(str(getattr(session, "id", "") or "")))

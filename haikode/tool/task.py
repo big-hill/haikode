@@ -21,6 +21,13 @@ numbers, exact commands and concrete findings rather than summaries.
 """
 
 
+def _run_sub(sub, args, label, ctx):
+    return sub.run(args["prompt"], on_text=None,
+                   on_event=lambda kind, payload: ctx.on_progress(
+                       f"  task[{label}] {kind}: {payload}"
+                       if kind == "tool" else ""))
+
+
 class TaskTool(Tool):
     name = "task"
     description = load_prompt("task.txt")
@@ -85,11 +92,15 @@ class TaskTool(Tool):
         sub.ctx.read_files = ctx.read_files
         sub.ctx.subagent_depth = depth + 1
         sub.ctx.aborted = ctx.aborted
+        # Same counters as the parent, so the footer sees nested activity.
+        sub.ctx.activity = ctx.activity
+        sub.ctx.activity_lock = ctx.activity_lock
 
-        result = sub.run(args["prompt"], on_text=None,
-                         on_event=lambda kind, payload: ctx.on_progress(
-                             f"  task[{label}] {kind}: {payload}"
-                             if kind == "tool" else ""))
+        ctx.bump_activity("agents", +1)
+        try:
+            result = _run_sub(sub, args, label, ctx)
+        finally:
+            ctx.bump_activity("agents", -1)
 
         # Surface the sub-agent's file modifications to the parent for revert.
         ctx.modified_files.update(sub.ctx.modified_files)
