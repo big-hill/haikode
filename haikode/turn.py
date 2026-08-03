@@ -330,15 +330,15 @@ class TurnController:
         return result
 
     def _prepare_farewell(self, agent) -> None:
-        """Have the model name this session and write its exit haiku.
+        """Have the model name this session, in the background.
 
-        Both composed in the background after the first successful turn —
-        the earliest moment the session has a subject and the provider is
-        proven — and never at exit or startup: leaving must not block on
-        the network. The title feeds the terminal tab and the session
-        list; the poem is signed with the model's own name at exit. The
-        curated collection covers every failure, silently. /farewell
-        turns the whole composer off (config: farewell_haiku).
+        Only the 3-5 word display title is composed here (terminal tab,
+        session list) — after the first successful turn, when the session
+        has a subject and the provider is proven. The exit poem moved to
+        compose_farewell_now(): the user triggers it with /farewell, at
+        the prompt, when no turn is running — which gives it the whole
+        session as material and removes the concurrent-stream hazard by
+        design.
         """
         if not self.compose_farewell:
             return
@@ -377,7 +377,7 @@ class TurnController:
             return "".join(parts)
 
         def compose():
-            from .status import validated_haiku, validated_title
+            from .status import validated_title
             try:
                 title = validated_title(ask(
                     "Give this coding session a display title of three to "
@@ -388,22 +388,53 @@ class TurnController:
                     self._auto_rename(title)
             except Exception:
                 pass
-            try:
-                poem = validated_haiku(ask(
-                    "Write exactly one haiku: three lines of roughly 5, 7 and "
-                    "5 syllables. Subject: a calm, slightly wry farewell after "
-                    "a coding session%s. Technology-flavoured, English, lower "
-                    "case. Reply with the three lines only — no title, no "
-                    "quotes, no commentary."
-                    % (" about: %s" % subject[:80] if subject else ""), 96))
-                if poem:
-                    self.farewell_poem = poem
-                    self.farewell_poet = str(agent.model or "")
-            except Exception:
-                pass                    # the curated collection covers it
 
         threading.Thread(target=compose, daemon=True,
                          name="haikode-farewell").start()
+
+    def compose_farewell_now(self, agent) -> bool:
+        """Write this session's exit haiku, on demand, with full context.
+
+        The user asked for it by typing /farewell, so blocking briefly is
+        the contract — and because it runs from the prompt, no turn is in
+        flight and the stream has the pipe to itself. The material is the
+        whole conversation's shape: the title and the user's own prompts.
+        Returns True when a poem was composed; the curated collection
+        covers False, as always.
+        """
+        from .schema import Msg
+        from .status import validated_haiku
+        subject = ""
+        session = self.session
+        if session is not None:
+            subject = str(getattr(session, "title", "") or "")
+            asked = [str(m.content or "") for m in
+                     (getattr(session, "messages", None) or [])
+                     if getattr(m, "role", "") == "user"][-4:]
+            if asked:
+                subject = "; ".join([subject] + [a[:80] for a in asked])[:400]
+        prompt = (
+            "Write exactly one haiku: three lines of roughly 5, 7 and 5 "
+            "syllables. Subject: a calm, slightly wry farewell to this "
+            "coding session%s. Technology-flavoured, English, lower case. "
+            "Reply with the three lines only — no title, no quotes, no "
+            "commentary." % (", which was about: %s" % subject
+                             if subject else ""))
+        try:
+            parts = []
+            for chunk in agent.provider.stream(
+                    [Msg(role="user", content=prompt)], [],
+                    agent.model, 96):
+                if getattr(chunk, "text", ""):
+                    parts.append(chunk.text)
+            poem = validated_haiku("".join(parts))
+        except Exception:
+            return False
+        if not poem:
+            return False
+        self.farewell_poem = poem
+        self.farewell_poet = str(agent.model or "")
+        return True
 
     def _auto_rename(self, title: str) -> None:
         """Give the stored session the model's title — unless the user did.

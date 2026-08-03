@@ -3573,6 +3573,17 @@ class TUI:
         if name in ("/exit", "/quit", "/q"):
             self._quit = True
             return
+        if name == "/farewell":
+            if self.running:
+                self.status_hint = "wait for the turn to finish first"
+                self._dirty = True
+                return
+            agent, turn = self.agent, self.turn
+            self._run_async(
+                "composing this session's farewell",
+                lambda: turn.compose_farewell_now(agent),
+                done=lambda _result: setattr(self, "_quit", True))
+            return
         if name in ("/new", "/clear"):
             self._new_session()
             return
@@ -5722,9 +5733,7 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     """
     tui = TUI(agent_factory, config, cwd, on_command=on_command,
               completer=completer, header=header, agent=agent, turn=turn)
-    tui.turn.compose_farewell = bool(
-        getattr(config, "data", {}).get("farewell_haiku", True)
-        if config is not None else True)
+    tui.turn.compose_farewell = True
     _wrap_curses(tui.run)
     # After endwin(), so the poem lands in the terminal scrollback where the
     # user is actually looking. The resume line matters more than the poem:

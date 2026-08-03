@@ -548,7 +548,7 @@ class REPL:
             ("tools", self._cmd_tools, "list available tools"),
             ("mcp", self._cmd_mcp, "list MCP servers and their tools"),
             ("farewell", self._cmd_farewell,
-             "toggle the model-written exit haiku (default on)"),
+             "leave with a haiku the model writes about this session"),
             ("permissions", self._cmd_permissions, "show permission rules"),
             ("reasoning", self._cmd_reasoning, "toggle reasoning display"),
             ("effort", self._cmd_effort, "show or set model reasoning effort"),
@@ -810,25 +810,18 @@ class REPL:
                          for name, tool in sorted(self.agent.tools.items()))
 
     def _cmd_farewell(self, arg):
-        """Turn the model-written exit haiku on or off, persistently.
+        """The ceremonial exit: the model writes this session's haiku.
 
-        Off means no provider call is spent on poetry; the curated
-        collection still says goodbye, because that part is free.
+        Typing the command IS the consent — no toggle, no config key, no
+        hidden background call. It runs from the prompt, so no turn is in
+        flight and the whole conversation is material. /exit and ctrl+c
+        stay instant, with the curated collection saying goodbye for free.
         """
-        choice = (arg or "").strip().lower()
-        if choice not in ("", "on", "off"):
-            return "Usage: /farewell [on|off]"
-        if choice:
-            enabled = choice == "on"
-            self.config.data["farewell_haiku"] = enabled
-            try:
-                self.config.save()
-            except OSError as exc:
-                return f"[error] could not save: {exc}"
-            self.turn.compose_farewell = enabled and sys.stdin.isatty()
-        enabled = self.config.data.get("farewell_haiku", True)
-        return ("model-written exit haiku: %s  (the curated collection "
-                "answers either way)" % ("on" if enabled else "off"))
+        if getattr(self, "agent", None) is not None:
+            print(_c("composing this session's farewell…", DIM))
+            self.turn.compose_farewell_now(self.agent)
+        print(self._farewell())
+        raise SystemExit(0)
 
     def _cmd_mcp(self, arg):
         """Configured MCP servers: connection state, tools, warnings."""
@@ -1319,9 +1312,7 @@ class REPL:
     # --- loop -------------------------------------------------------------
 
     def run(self):
-        self.turn.compose_farewell = (sys.stdin.isatty() and
-                                      self.config.data.get("farewell_haiku",
-                                                           True))
+        self.turn.compose_farewell = sys.stdin.isatty()
         if sys.stdout.isatty():
             from .status import startup_haiku, terminal_title
             sys.stdout.write(terminal_title(

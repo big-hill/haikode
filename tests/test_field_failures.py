@@ -1429,11 +1429,10 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
     test stub must never lose its next scripted answer.
     """
 
-    def test_a_successful_turn_names_the_session_and_composes(self):
+    def test_a_successful_turn_names_the_session(self):
         provider = ScriptedProvider([
             text_turn("the real answer"),
             text_turn("Fixing The Parser"),
-            text_turn("a quiet last diff\nthe parser breathes easily\nrest now, terminal"),
         ])
         agent = Agent(provider, "gpt-5.6-terra", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
@@ -1441,32 +1440,56 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         controller.compose_farewell = True
         controller.run_turn(agent, "please fix the parser bug in main.py")
         deadline = time.time() + 5
-        while controller.farewell_poem is None and time.time() < deadline:
+        while not controller.display_title and time.time() < deadline:
             time.sleep(0.01)
         self.assertEqual("Fixing The Parser", controller.display_title)
-        self.assertEqual(("a quiet last diff", "the parser breathes easily",
-                          "rest now, terminal"), controller.farewell_poem)
-        self.assertEqual("gpt-5.6-terra", controller.farewell_poet)
-        from haikode.status import farewell
-        text = farewell("ses_x", poem=controller.farewell_poem,
-                        poet=controller.farewell_poet)
-        self.assertIn("— gpt-5.6-terra", text)
+        # Bakgrunnen dikter ikke lenger — det gjør /farewell, på forespørsel.
+        self.assertIsNone(controller.farewell_poem)
 
-    def test_the_toggle_persists_and_takes_effect_live(self):
+    def test_slash_farewell_composes_with_context_and_exits(self):
+        """The settled design: /farewell is the ceremonial exit.
+
+        Typing it IS the consent — no toggle, no config key, no hidden
+        background call. It composes at the very end, from the prompt,
+        with the whole session as material and the pipe to itself.
+        """
+        provider = ScriptedProvider([
+            text_turn("done"),
+            text_turn("keys rest in silence\nthe parser sleeps without fear\nmorning brings green tests"),
+        ])
+        agent = Agent(provider, "gpt-5.6-terra", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.run_turn(agent, "fix the parser")
+        self.assertTrue(controller.compose_farewell_now(agent))
+        self.assertEqual(("keys rest in silence",
+                          "the parser sleeps without fear",
+                          "morning brings green tests"),
+                         controller.farewell_poem)
+        self.assertEqual("gpt-5.6-terra", controller.farewell_poet)
+
+    def test_a_failed_composition_reports_false_and_leaves_the_collection(self):
+        provider = ScriptedProvider([text_turn("done")])   # ingen dikt-respons
+        agent = Agent(provider, "m", cwd=self.root,
+                      permissions=Permissions(auto_approve=True))
+        controller = TurnController(cwd=self.root, store_factory=lambda: None)
+        controller.run_turn(agent, "hello")
+        self.assertFalse(controller.compose_farewell_now(agent))
+        self.assertIsNone(controller.farewell_poem)
+
+    def test_plain_exit_never_dials_the_provider(self):
         config = self.config(default_provider="zen", providers={
             "zen": {"model": "m", "api_key": "x",
                     "base_url": "https://opencode.ai/zen/v1"}})
         repl = REPL(config, provider="zen", cwd=self.root)
         self.addCleanup(repl.turn.close)
-        repl.turn.compose_farewell = True
-        self.assertIn("off", repl.handle_command("/farewell off"))
-        self.assertFalse(config.data["farewell_haiku"])
-        self.assertFalse(repl.turn.compose_farewell)
-        from haikode.config import Config
-        self.assertFalse(Config(str(self.config_path))
-                         .data.get("farewell_haiku", True))
-        self.assertIn("on", repl.handle_command("/farewell on"))
-        self.assertIn("Usage", repl.handle_command("/farewell maybe"))
+        calls = []
+        repl.agent.provider.stream = lambda *a, **k: calls.append(1) or iter(())
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            with self.assertRaises(SystemExit):
+                repl.handle_command("/exit")
+        self.assertEqual([], calls)
 
     def test_the_composer_rides_its_own_pipe(self):
         """Field incident: two TUI sessions wedged mid-turn on chatgpt.
@@ -1491,7 +1514,6 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         provider = SessionedProvider([
             text_turn("the real answer"),
             text_turn("Fixing The Parser"),
-            text_turn("a\nb\nc"),
         ])
         agent = Agent(provider, "m", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
@@ -1499,11 +1521,11 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         controller.compose_farewell = True
         controller.run_turn(agent, "fix it")
         deadline = time.time() + 5
-        while controller.farewell_poem is None and time.time() < deadline:
+        while not controller.display_title and time.time() < deadline:
             time.sleep(0.01)
         turn_call = seen[0]
         composer_calls = seen[1:]
-        self.assertEqual(2, len(composer_calls))
+        self.assertEqual(1, len(composer_calls))
         for session_id, abort in composer_calls:
             self.assertNotEqual("live-turn-session", session_id)
             self.assertIsNone(abort)

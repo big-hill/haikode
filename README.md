@@ -401,7 +401,7 @@ transcript.
 | `/compact [keep]` | fold old messages into a summary |
 | `/undo` | revert the file changes made by the last run |
 | `/todos` | show the agent's current task list |
-| `/farewell [on\|off]` | the model-written exit haiku (default on) |
+| `/farewell` | leave with a haiku the model writes about this session |
 
 ### Model and provider
 
@@ -814,8 +814,11 @@ originals signed *botfred, 2026*. Every poem is attributed on screen. On a
 small terminal the poem is the first thing to yield — it never costs you a
 line of facts.
 
-**At exit** — `/exit`, `ctrl+c`, EOF — the model writes a haiku about the
-session it is leaving, signed with its own name:
+**At exit** there are two doors. `/exit`, `ctrl+c` and EOF leave instantly,
+with one more poem from the collection on the way out. `/farewell` is the
+ceremonial exit: the model writes a haiku about the very session it is
+leaving — composed at that moment, from the whole conversation, signed with
+its own name:
 
 ```
   a quiet last diff
@@ -826,13 +829,12 @@ session it is leaving, signed with its own name:
 resume this session:  haikode -s ses_0019fc3c8ebfab7d3e6
 ```
 
-It is composed in the background after the first successful turn (never at
-exit — leaving must not block on the network) by the same background pass
-that writes the session's 3-5 word display title for the terminal tab and
-the session list. `/farewell off` turns the model's poetry off, persistently;
-the curated collection still says goodbye, because that part is free. The
-composer only runs in interactive sessions — one-shots, pipes and scripts
-never spend a token on it.
+Typing `/farewell` is the consent: no toggle, no config key, no hidden
+background call — and because it runs from the prompt, no turn is in flight
+and the stream has the pipe to itself. If composition fails, the collection
+covers the goodbye. The only background call that remains is the session's
+3-5 word display title for the terminal tab and the session list, composed
+once after the first successful turn, in interactive sessions only.
 
 The resume line always prints the full session id: the ids are
 time-prefixed, so every id from the same era shares its first eight
