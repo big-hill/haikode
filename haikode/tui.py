@@ -5722,14 +5722,11 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     """
     tui = TUI(agent_factory, config, cwd, on_command=on_command,
               completer=completer, header=header, agent=agent, turn=turn)
-    tui.turn.compose_farewell = bool(
-        getattr(config, "data", {}).get("farewell_haiku", True)
-        if config is not None else True)
+    tui.turn.compose_farewell = True
     _wrap_curses(tui.run)
     # After endwin(), so the poem lands in the terminal scrollback where the
     # user is actually looking. The resume line matters more than the poem:
     # the session id is otherwise a thing you had to have noted mid-session.
     from .status import farewell
     session = getattr(tui.turn, "session", None)
-    print(farewell(str(getattr(session, "id", "") or ""),
-                   poem=getattr(tui.turn, "farewell_poem", None)))
+    print(farewell(str(getattr(session, "id", "") or "")))

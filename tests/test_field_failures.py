@@ -1389,14 +1389,15 @@ class TheExitIsAHaiku(TemporaryProject):
     you had to have noted mid-session. The poem is the signature.
     """
 
-    def test_the_farewell_is_a_haiku_with_a_resume_line(self):
-        from haikode.status import ALL_FAREWELL_HAIKU as FAREWELL_HAIKU, farewell
+    def test_the_farewell_is_an_attributed_haiku_with_a_resume_line(self):
+        from haikode.status import FAREWELL_HAIKU, farewell
         text = farewell("ses_0019fc0123456789abc")
         self.assertIn("haikode -s ses_0019fc0123456789abc", text)
-        body = [line.strip() for line in text.splitlines() if line.strip()
-                and "resume" not in line]
-        self.assertEqual(3, len(body))
-        self.assertIn(tuple(body), FAREWELL_HAIKU)
+        lines = [line.strip() for line in text.splitlines() if line.strip()
+                 and "resume" not in line]
+        self.assertEqual(4, len(lines))
+        self.assertTrue(lines[3].startswith("— "))
+        self.assertIn(tuple(lines[:3]) + (lines[3][2:],), FAREWELL_HAIKU)
 
     def test_without_a_session_there_is_no_resume_line(self):
         from haikode.status import farewell
@@ -1415,78 +1416,24 @@ class TheExitIsAHaiku(TemporaryProject):
         printed = buffer.getvalue()
         stripped = [line.strip() for line in printed.splitlines()
                     if line.strip() and "resume" not in line]
-        from haikode.status import ALL_FAREWELL_HAIKU
-        self.assertIn(tuple(stripped), ALL_FAREWELL_HAIKU)
+        from haikode.status import FAREWELL_HAIKU
+        self.assertIn(tuple(stripped[:3]) + (stripped[3][2:],),
+                      FAREWELL_HAIKU)
 
 
-class TheFarewellIsWrittenByTheModel(TemporaryProject):
-    """User request refined: a fresh haiku per session, model-written.
+class TheComposerNamesTheSession(TemporaryProject):
+    """The model writes a 3-5 word display title after the first turn.
 
-    Composed in the background after the first successful turn — the
-    earliest moment the session has a subject and the provider is proven —
-    never at exit, because leaving must not block on the network. The
-    built-in collection remains the fallback for every failure mode.
+    It used to write the exit poem too; the user chose the larger curated
+    collection instead, so the composer's one remaining job is the title
+    for the terminal tab and the session list. Interactive fronts only —
+    a piped run or a test stub must never lose its next scripted answer.
     """
 
-    def turn_controller_with(self, poem_text):
-        # The composer makes two requests: the display title, then the poem.
-        provider = ScriptedProvider([
-            text_turn("the real answer"),
-            text_turn("A Fine Session"),
-            [CompletionChunk(text=poem_text, stop_reason="stop")],
-        ])
-        agent = Agent(provider, "m", cwd=self.root,
-                      permissions=Permissions(auto_approve=True))
-        controller = TurnController(cwd=self.root, store_factory=lambda: None)
-        controller.compose_farewell = True      # testen ER den interaktive
-        return controller, agent
-
-    def wait_for(self, controller, timeout=5.0):
-        deadline = time.time() + timeout
-        while controller.farewell_poem is None and time.time() < deadline:
-            time.sleep(0.01)
-        return controller.farewell_poem
-
-    def test_a_successful_turn_composes_the_poem_in_the_background(self):
-        controller, agent = self.turn_controller_with(
-            "threads wind gently down\nthe answer found its way home\nrest now little atom")
-        controller.run_turn(agent, "hello")
-        poem = self.wait_for(controller)
-        self.assertEqual(("threads wind gently down",
-                          "the answer found its way home",
-                          "rest now little atom"), poem)
-        from haikode.status import farewell
-        self.assertIn("rest now little atom", farewell("ses_x", poem=poem))
-
-    def test_malformed_model_output_falls_back_silently(self):
-        controller, agent = self.turn_controller_with(
-            "Here is your haiku!\nline one\nline two\nline three\nHope you like it!")
-        controller.run_turn(agent, "hello")
-        time.sleep(0.3)
-        self.assertIsNone(controller.farewell_poem)
-        from haikode.status import ALL_FAREWELL_HAIKU as FAREWELL_HAIKU, farewell
-        text = farewell("ses_x", poem=None)
-        body = tuple(line.strip() for line in text.splitlines()
-                     if line.strip() and "resume" not in line)
-        self.assertIn(body, FAREWELL_HAIKU)
-
-    def test_composition_happens_at_most_once(self):
-        controller, agent = self.turn_controller_with("a\nb\nc")
-        controller.run_turn(agent, "hello")
-        self.wait_for(controller)
-        # Second turn must not re-dial the provider for another poem: the
-        # scripted provider has no third response, so a second attempt
-        # would raise inside the thread and leave poem/None flapping.
-        provider_calls = len(agent.provider.messages)
-        controller._prepare_farewell(agent)
-        time.sleep(0.2)
-        self.assertEqual(provider_calls, len(agent.provider.messages))
-
-    def test_the_composer_also_names_the_session(self):
+    def test_a_successful_turn_names_the_session(self):
         provider = ScriptedProvider([
             text_turn("the real answer"),
             text_turn("Fixing The Parser"),
-            text_turn("a\nb\nc"),
         ])
         agent = Agent(provider, "m", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
@@ -1494,68 +1441,11 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         controller.compose_farewell = True
         controller.run_turn(agent, "please fix the parser bug in main.py")
         deadline = time.time() + 5
-        while controller.farewell_poem is None and time.time() < deadline:
+        while not controller.display_title and time.time() < deadline:
             time.sleep(0.01)
         self.assertEqual("Fixing The Parser", controller.display_title)
-        self.assertEqual(("a", "b", "c"), controller.farewell_poem)
 
-    def test_titles_and_tab_names_are_validated(self):
-        from haikode.status import terminal_title, validated_title
-        self.assertEqual("Fixing The Parser Bug",
-                         validated_title(' "Fixing The Parser Bug." '))
-        self.assertEqual("", validated_title("word"))
-        self.assertEqual("", validated_title("x" * 60))
-        sequence = terminal_title("haikode — parser\x1b\x07 work")
-        self.assertTrue(sequence.startswith("\x1b]0;"))
-        self.assertTrue(sequence.endswith("\x07"))
-        self.assertNotIn("\x1b", sequence[2:-1])
-
-    def test_the_pool_is_system_aware(self):
-        """A poem about thirty-two bits only where that is literally true."""
-        import sys as sys_mod
-        from haikode.status import (FAREWELL_HAIKU_32BIT,
-                                    FAREWELL_HAIKU_HAIKU_OS, haiku_pool)
-        pool = haiku_pool()
-        is_32bit = sys_mod.maxsize <= 2 ** 31 - 1
-        for poem in FAREWELL_HAIKU_32BIT:
-            self.assertEqual(is_32bit, poem in pool)
-        on_haiku = Path("/boot/home").exists()
-        for poem in FAREWELL_HAIKU_HAIKU_OS:
-            self.assertEqual(on_haiku, poem in pool)
-
-    def test_the_home_screen_greets_with_a_poem(self):
-        from haikode.status import ALL_FAREWELL_HAIKU, startup_haiku
-        self.assertIn(startup_haiku(), ALL_FAREWELL_HAIKU)
-
-    def test_the_personal_haiku_can_be_switched_off_from_the_palette(self):
-        """User request: the model-written farewell must be optional.
-
-        Off means no provider call is spent on poetry. The built-in
-        collection still says goodbye — that part is free.
-        """
-        config = self.config(default_provider="zen", providers={
-            "zen": {"model": "m", "api_key": "x",
-                    "base_url": "https://opencode.ai/zen/v1"}})
-        repl = REPL(config, provider="zen", cwd=self.root)
-        self.addCleanup(repl.turn.close)
-        repl.turn.compose_farewell = True
-
-        answer = repl.handle_command("/farewell off")
-        self.assertIn("off", answer)
-        self.assertFalse(config.data["farewell_haiku"])
-        self.assertFalse(repl.turn.compose_farewell)
-        # Persisted: a fresh config object reads the same choice.
-        from haikode.config import Config
-        self.assertFalse(Config(str(self.config_path))
-                         .data.get("farewell_haiku", True))
-
-        answer = repl.handle_command("/farewell on")
-        self.assertIn("on", answer)
-        self.assertTrue(config.data["farewell_haiku"])
-        self.assertIn("off", repl.handle_command("/farewell off"))
-        self.assertIn("Usage", repl.handle_command("/farewell maybe"))
-
-    def test_a_disabled_composer_spends_nothing(self):
+    def test_disabled_or_piped_composers_spend_nothing(self):
         provider = ScriptedProvider([text_turn("the answer")])
         agent = Agent(provider, "m", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
@@ -1563,15 +1453,26 @@ class TheFarewellIsWrittenByTheModel(TemporaryProject):
         controller.compose_farewell = False
         controller.run_turn(agent, "hello")
         time.sleep(0.2)
-        self.assertIsNone(controller.farewell_poem)
-        self.assertEqual(1, len(provider.messages))    # kun selve turen
+        self.assertEqual("", controller.display_title)
+        self.assertEqual(1, len(provider.messages))
 
-    def test_validated_haiku_is_strict(self):
-        from haikode.status import validated_haiku
-        self.assertIsNone(validated_haiku(""))
-        self.assertIsNone(validated_haiku("one\ntwo"))
-        self.assertIsNone(validated_haiku("x" * 80 + "\ny\nz"))
-        self.assertEqual(("a", "b", "c"), validated_haiku('"a"\nb\nc\n'))
+    def test_titles_and_tab_names_are_validated(self):
+        from haikode.status import terminal_title, validated_title
+        self.assertEqual("Fixing The Parser Bug",
+                         validated_title(' "Fixing The Parser Bug." '))
+        self.assertEqual("", validated_title("word"))
+        self.assertEqual("", validated_title("x" * 60))
+        sequence = terminal_title("haikode — parser work")
+        self.assertTrue(sequence.startswith("\x1b]0;"))
+        self.assertTrue(sequence.endswith("\x07"))
+        self.assertNotIn("\x1b", sequence[2:-1])
+
+    def test_the_home_screen_greets_with_an_attributed_poem(self):
+        from haikode.status import FAREWELL_HAIKU, startup_haiku
+        poem = startup_haiku()
+        self.assertEqual(4, len(poem))
+        self.assertTrue(poem[3].startswith("— "))
+        self.assertIn(poem[:3] + (poem[3][2:],), FAREWELL_HAIKU)
 
 
 class AnAcknowledgedWriteSurvivesThePlugBeingPulled(TemporaryProject):

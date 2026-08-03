@@ -547,8 +547,6 @@ class REPL:
             ("keys", self._cmd_keys, "show credential status"),
             ("tools", self._cmd_tools, "list available tools"),
             ("mcp", self._cmd_mcp, "list MCP servers and their tools"),
-            ("farewell", self._cmd_farewell,
-             "toggle the personal exit haiku (model-written)"),
             ("permissions", self._cmd_permissions, "show permission rules"),
             ("reasoning", self._cmd_reasoning, "toggle reasoning display"),
             ("effort", self._cmd_effort, "show or set model reasoning effort"),
@@ -593,8 +591,7 @@ class REPL:
         """The exit haiku plus how to come back to this conversation."""
         from .status import farewell
         session = getattr(self.turn, "session", None)
-        return farewell(str(getattr(session, "id", "") or ""),
-                        poem=getattr(self.turn, "farewell_poem", None))
+        return farewell(str(getattr(session, "id", "") or ""))
 
     def new_conversation(self) -> None:
         """Drop the conversation, keeping the provider/model/agent selection.
@@ -807,27 +804,6 @@ class REPL:
     def _cmd_tools(self, arg):
         return "\n".join(f"  {name:<12} {tool.description.splitlines()[0][:60]}"
                          for name, tool in sorted(self.agent.tools.items()))
-
-    def _cmd_farewell(self, arg):
-        """Turn the model-written exit haiku on or off, persistently.
-
-        Off means no provider call is spent on poetry; the built-in
-        collection still says goodbye, because that part is free.
-        """
-        choice = (arg or "").strip().lower()
-        if choice not in ("", "on", "off"):
-            return "Usage: /farewell [on|off]"
-        if choice:
-            enabled = choice == "on"
-            self.config.data["farewell_haiku"] = enabled
-            try:
-                self.config.save()
-            except OSError as exc:
-                return f"[error] could not save: {exc}"
-            self.turn.compose_farewell = enabled and sys.stdin.isatty()
-        enabled = self.config.data.get("farewell_haiku", True)
-        return ("personal exit haiku: %s  (the built-in farewell stays "
-                "either way)" % ("on" if enabled else "off"))
 
     def _cmd_mcp(self, arg):
         """Configured MCP servers: connection state, tools, warnings."""
@@ -1318,15 +1294,14 @@ class REPL:
     # --- loop -------------------------------------------------------------
 
     def run(self):
-        self.turn.compose_farewell = (sys.stdin.isatty() and
-                                      self.config.data.get("farewell_haiku",
-                                                           True))
+        self.turn.compose_farewell = sys.stdin.isatty()
         if sys.stdout.isatty():
             from .status import startup_haiku, terminal_title
             sys.stdout.write(terminal_title(
                 "haikode — %s" % Path(self.cwd).name))
             for line in startup_haiku():
-                print(_c("  " + line, DIM))
+                print(_c(("    " if line.startswith("—") else "  ") + line,
+                         DIM))
             print()
         print(_c("haikode", BOLD) + " — AI coding agent for Haiku OS")
         print(f"Provider: {self.provider_name}  Model: {self.model or '(default)'}  "

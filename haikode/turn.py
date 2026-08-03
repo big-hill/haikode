@@ -141,18 +141,14 @@ class TurnController:
         self.provider_name = provider_name
         self.model = model
         self.session = None
-        # The model-written exit haiku, composed in the background after the
-        # first successful turn (see _prepare_farewell). None means the
-        # built-in collection answers instead.
-        self.farewell_poem = None
         self._farewell_started = False
         # Model-written 3-5 word display title for the session, for the
         # terminal tab and the session list. Composed with the poem.
         self.display_title = ""
         # Only an interactive front end turns this on (REPL loop, TUI).
         # A one-shot, a piped run or a test must never spend a provider
-        # call on poetry — and a scripted stub's next response is the next
-        # TURN's answer, not the composer's to eat.
+        # call on a display title — and a scripted stub's next response is
+        # the next TURN's answer, not the composer's to eat.
         self.compose_farewell = False
         # Sticky: set by any failure that means this conversation is not on
         # disk, cleared only by a turn that persisted cleanly.
@@ -329,18 +325,18 @@ class TurnController:
         return result
 
     def _prepare_farewell(self, agent) -> None:
-        """Have the model write this session's exit haiku, in the background.
+        """Have the model name this session, in the background.
 
-        Generated after the first successful turn — the earliest moment a
-        session has a subject to write about and proof the provider works —
-        and held in memory until quit. Deliberately NOT generated at exit:
-        leaving must never block on the network. Any failure keeps the
-        built-in collection as the fallback, silently; a farewell that can
-        break the exit is worse than no farewell at all.
+        The 3-5 word display title feeds the terminal tab and the session
+        list. Composed after the first successful turn — the earliest
+        moment the session has a subject and the provider is proven — and
+        never at exit or startup. The exit poem itself comes from the
+        curated collection; the model stopped writing those when the user
+        chose the simpler, larger collection instead.
         """
         if not self.compose_farewell:
             return
-        if self.farewell_poem is not None or self._farewell_started:
+        if self._farewell_started:
             return
         self._farewell_started = True
         subject = ""
@@ -359,7 +355,7 @@ class TurnController:
             return "".join(parts)
 
         def compose():
-            from .status import validated_haiku, validated_title
+            from .status import validated_title
             try:
                 title = validated_title(ask(
                     "Give this coding session a display title of three to "
@@ -370,18 +366,6 @@ class TurnController:
                     self._auto_rename(title)
             except Exception:
                 pass
-            try:
-                poem = validated_haiku(ask(
-                    "Write exactly one haiku: three lines of roughly 5, 7 and "
-                    "5 syllables. Subject: a calm, slightly wry farewell after "
-                    "a coding session%s. Technology-flavoured, English, lower "
-                    "case. Reply with the three lines only — no title, no "
-                    "quotes, no commentary."
-                    % (" about: %s" % subject[:80] if subject else ""), 96))
-                if poem:
-                    self.farewell_poem = poem
-            except Exception:
-                pass                    # the built-in collection covers it
 
         threading.Thread(target=compose, daemon=True,
                          name="haikode-farewell").start()

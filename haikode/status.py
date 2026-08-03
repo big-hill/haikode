@@ -388,74 +388,57 @@ def detail_lines(info: SetupInfo) -> List[str]:
 # the sign-off: a haiku on the way out
 # --------------------------------------------------------------------------
 
-# 5-7-5, tech and AI, in the spirit of the OS this project is named for.
-# One is chosen at random on every exit — a small ritual, not a feature,
-# which is exactly the kind of thing BeOS users kept their machines for.
-#
-# The pools are system-aware: a poem about thirty-two bits only ever
-# appears on a machine that has exactly thirty-two, and the BeOS-flavoured
-# ones stay home on Haiku. haiku_pool() assembles what fits where.
-FAREWELL_HAIKU = (
-    ("silent threads wind down", "the deskbar clock keeps ticking", "your code is at rest"),
-    ("tokens ebb away", "context folded into sleep", "the model dreams on"),
-    ("a green LED fades", "somewhere a server exhales", "sessions saved to disk"),
-    ("the cursor blinks twice", "everything you typed remains", "nothing has been lost"),
-    ("packets cross the night", "an answer finds its way home", "the prompt waits for you"),
-    ("autumn of the disk", "each block flushed before the dark", "morning finds them whole"),
-    ("one more quiet diff", "reviewed by the evening light", "merged without a sound"),
-    ("the tests all went green", "somewhere a cursor exhales", "ship it in the dawn"),
+# The farewell collection: the three Edo masters in this project's own
+# renderings (their originals are long free; published translations are
+# not, so these are ours), and botfred's contributions, 2026. One flat
+# collection, drawn from blindly — a poem about thirty-two bits on a
+# 64-bit machine is a charm, not a bug (the user ruled).
+# Entries are (line, line, line, attribution).
+
+HAIKU_MASTERS = (
+    # Bashō (1644-1694)
+    ("old pond, still water", "a frog leaps into the dark", "the sound of water", "Bashō"),
+    ("on a bare branch now", "a crow has come down to rest", "autumn's nightfall", "Bashō"),
+    ("summer grasses grow", "all that remains of the dreams", "of the warriors", "Bashō"),
+    ("the first soft snowfall", "just enough to bend the leaves", "of the daffodil", "Bashō"),
+    ("sick on a journey", "my dreams keep wandering on", "over withered fields", "Bashō"),
+    ("stillness everywhere", "sinking into the stones", "the cicada's cry", "Bashō"),
+    # Buson (1716-1784)
+    ("spring's slow ocean waves", "rising and falling all day", "rising and falling", "Buson"),
+    ("a sudden chill, then", "in our bedroom, stepping on", "my dead wife's comb", "Buson"),
+    ("the piercing winter wind", "has no place at all to sleep", "over the graveyard", "Buson"),
+    ("plum blossoms falling", "and the old garden lantern", "lights itself again", "Buson"),
+    ("winter solitude —", "in a world of one colour", "the sound of the wind", "Buson"),
+    ("evening river breeze", "the water laps against", "the heron's thin legs", "Buson"),
+    # Issa (1763-1828)
+    ("little snail, so slow", "climb up, climb up Mount Fuji", "but take your own time", "Issa"),
+    ("this dewdrop world is", "a dewdrop world, and yet — and", "yet, it is, it is", "Issa"),
+    ("do not swat the fly", "see how it wrings its small hands", "wrings its small feet too", "Issa"),
+    ("the moon and flowers", "forty-nine years of walking", "wasting time, at night", "Issa"),
+    ("a good world it is", "the dew still drips from the leaves", "one drop at a time", "Issa"),
 )
 
-# Only where the word is literally true.
-FAREWELL_HAIKU_32BIT = (
-    ("old machines still think", "thirty-two bits are enough", "for one good idea"),
-    ("a netbook wakes up", "carrying its whole address space", "lightly, up the hill"),
-    ("small atom, slow clock", "yet the answer still arrives", "patience is a core"),
+FAREWELL_HAIKU = HAIKU_MASTERS + (
+    ("old machines still think", "thirty-two bits are enough", "for one good idea", "botfred, 2026"),
+    ("a netbook wakes up", "carrying its whole address space", "lightly, up the hill", "botfred, 2026"),
+    ("small atom, slow clock", "yet the answer still arrives", "patience is a core", "botfred, 2026"),
+    ("compile, test, deploy", "the kernel hums its one song", "be, and be again", "botfred, 2026"),
+    ("yellow tab sunset", "the tracker folds its windows", "media kit sleeps", "botfred, 2026"),
+    ("one team at a time", "the deskbar holds the evening", "replicants at rest", "botfred, 2026"),
+    ("silent threads wind down", "the deskbar clock keeps ticking", "your code is at rest", "botfred, 2026"),
+    ("tokens ebb away", "context folded into sleep", "the model dreams on", "botfred, 2026"),
+    ("a green LED fades", "somewhere a server exhales", "sessions saved to disk", "botfred, 2026"),
+    ("the cursor blinks twice", "everything you typed remains", "nothing has been lost", "botfred, 2026"),
+    ("packets cross the night", "an answer finds its way home", "the prompt waits for you", "botfred, 2026"),
+    ("autumn of the disk", "each block flushed before the dark", "morning finds them whole", "botfred, 2026"),
+    ("one more quiet diff", "reviewed by the evening light", "merged without a sound", "botfred, 2026"),
+    ("the tests all went green", "somewhere a cursor exhales", "ship it in the dawn", "botfred, 2026"),
 )
 
-# BeOS inheritance: these stay home on Haiku itself.
-FAREWELL_HAIKU_HAIKU_OS = (
-    ("compile, test, deploy", "the kernel hums its one song", "be, and be again"),
-    ("yellow tab sunset", "the tracker folds its windows", "media kit sleeps"),
-    ("one team at a time", "the deskbar holds the evening", "replicants at rest"),
-)
-
-# Every poem, for tests and the curious. Selection never draws from here.
-ALL_FAREWELL_HAIKU = (FAREWELL_HAIKU + FAREWELL_HAIKU_32BIT
-                      + FAREWELL_HAIKU_HAIKU_OS)
 
 
-def haiku_pool():
-    """The poems that are true on this machine."""
-    import sys as _sys
-    pool = list(FAREWELL_HAIKU)
-    if _sys.maxsize <= 2 ** 31 - 1:
-        pool.extend(FAREWELL_HAIKU_32BIT)
-    try:
-        from pathlib import Path as _Path
-        if _Path("/boot/home").exists():
-            pool.extend(FAREWELL_HAIKU_HAIKU_OS)
-    except OSError:
-        pass
-    return tuple(pool)
-
-
-def validated_haiku(text: str):
-    """Three plausible haiku lines from model output, or None.
-
-    The model was told "three lines only", and models embellish anyway —
-    a preamble, quotes, a fourth line. Anything that does not reduce to
-    exactly three short lines is discarded rather than repaired: the
-    built-in collection is always available, and a mangled poem at the
-    very last moment of a session is worse than a familiar one.
-    """
-    lines = [line.strip().strip('"').strip() for line in str(text or "").splitlines()]
-    lines = [line for line in lines if line]
-    if len(lines) != 3:
-        return None
-    if any(len(line) > 60 for line in lines):
-        return None
-    return tuple(lines)
+# Alias kept so callers and tests have one obvious name for "everything".
+ALL_FAREWELL_HAIKU = FAREWELL_HAIKU
 
 
 def validated_title(text: str) -> str:
@@ -480,27 +463,23 @@ def terminal_title(title: str) -> str:
 
 
 def startup_haiku():
-    """One poem from the built-in collection, for the home screen."""
+    """One attributed poem from the collection, for the home screen."""
     import random
-    return random.choice(haiku_pool())
+    first, second, third, author = random.choice(FAREWELL_HAIKU)
+    return (first, second, third, "— %s" % author)
 
 
-def farewell(session_id: str = "", poem=None) -> str:
-    """The exit message: one haiku, and the way back in.
-
-    `poem` is the session's own model-written haiku when the background
-    composer got one in time (turn.py); the built-in collection answers
-    otherwise, so quitting never waits on anything.
+def farewell(session_id: str = "") -> str:
+    """The exit message: one curated haiku, attributed, and the way back in.
 
     The resume line prints the full session id on purpose — the ids are
     time-prefixed, so every id from the same era shares its first eight
     characters and a shortened form would only ever be ambiguous.
     """
     import random
-    chosen = validated_haiku("\n".join(poem)) if poem else None
-    if chosen is None:
-        chosen = random.choice(haiku_pool())
-    lines = ["", "  %s" % chosen[0], "  %s" % chosen[1], "  %s" % chosen[2], ""]
+    first, second, third, author = random.choice(FAREWELL_HAIKU)
+    lines = ["", "  %s" % first, "  %s" % second, "  %s" % third,
+             "%s— %s" % (" " * 8, author), ""]
     if session_id:
         lines.append("resume this session:  haikode -s %s" % session_id)
     return "\n".join(lines)
