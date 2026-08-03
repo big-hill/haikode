@@ -762,14 +762,44 @@ your back. `--yes` auto-approves everything that is not explicitly denied — a
 | `task` | delegate to a subagent |
 | `memory_write` / `memory_read` | save and recall durable notes |
 | `question` | ask the user a multiple-choice question |
+| `skill` | load a named instruction set on demand |
+| `plan_exit` | submit a finished plan for approval (plan mode only) |
 
 Calls use the provider's own tool-call protocol (OpenAI function calling,
 Anthropic tool use), not prompt-parsed pseudo-syntax, so the model can call
 several tools in one turn and results return as real `tool` messages.
 
-`question` is registered, but no front-end implements the answer contract yet —
-it degrades to "Unanswered" rather than hanging. See
-[docs/PARITY.md](docs/PARITY.md).
+Both front ends implement the `question` answer contract as a modal; in a
+non-interactive run it degrades to "Unanswered" rather than hanging.
+
+## Skills
+
+A skill is a named instruction set the model loads when the task calls for
+it — the same `SKILL.md` shape opencode and Claude Code use: a directory
+per skill, frontmatter for identity, markdown for the instructions.
+
+    <global config dir>/skill/<name>/SKILL.md
+    <project>/.haikode/skill/<name>/SKILL.md      (wins on a name clash)
+
+```markdown
+---
+name: release-checklist
+description: How releases are cut and verified in this repo
+when to use: Whenever asked to tag, package or publish a release
+---
+
+The instructions themselves, as long as they need to be. Files shipped
+beside SKILL.md (scripts/, reference/) are listed to the model together
+with the skill's base directory, so "run scripts/check.sh" resolves.
+```
+
+Only the name and a one-line summary reach the system prompt; the body
+arrives when the model calls the `skill` tool. That split is the point:
+twenty skills cost twenty lines of context, not twenty documents. `/skills`
+lists everything found — and everything skipped, with the reason — and
+loading is gated by the `skill` permission key, so an agent overlay can
+deny a skill outright. A worked example ships in
+[docs/examples/skills/](docs/examples/skills/).
 
 ## Memory
 
