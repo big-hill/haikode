@@ -19,7 +19,9 @@
 #include <ListView.h>
 #include <Menu.h>
 #include <MenuBar.h>
+#include <MenuField.h>
 #include <MenuItem.h>
+#include <PopUpMenu.h>
 #include <OS.h>
 #include <OutlineListView.h>
 #include <Path.h>
@@ -312,10 +314,20 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	BButton* sendBtn = new BButton("send", "Send", new BMessage(kMsgUiSend));
 	BButton* stopBtn = new BButton("stop", "Stop", new BMessage(kMsgUiStop));
 
+	// The model picker lives beside the input, where every current chat
+	// application puts it (Claude, Cursor: the composer corner) — and a
+	// label-less BMenuField showing the marked item is the native way to
+	// say it. The menu bar's Provider menu stays for discoverability.
+	fModelPopup = new BPopUpMenu("model");
+	BMenuField* modelField = new BMenuField("modelField", NULL, fModelPopup);
+	modelField->SetExplicitMaxSize(
+		BSize(be_plain_font->StringWidth("M") * 18, B_SIZE_UNSET));
+
 	BView* composer = new BView("composer", B_WILL_DRAW);
 	BLayoutBuilder::Group<>(composer, B_HORIZONTAL, 4)
 		.SetInsets(6, 4, 6, 6)
 		.Add(inputScroll)
+		.Add(modelField)
 		.Add(sendBtn)
 		.Add(stopBtn)
 	.End();
@@ -496,6 +508,8 @@ HaiWindow::MessageReceived(BMessage* message)
 				break;
 			while (fProviderMenu->CountItems() > 0)
 				delete fProviderMenu->RemoveItem((int32)0);
+			while (fModelPopup->CountItems() > 0)
+				delete fModelPopup->RemoveItem((int32)0);
 			BStringList lines;
 			BString(message->GetString("output", "")).Split("\n", true,
 				lines);
@@ -516,6 +530,11 @@ HaiWindow::MessageReceived(BMessage* message)
 				if (name == fAgentProvider)
 					item->SetMarked(true);
 				fProviderMenu->AddItem(item);
+				BMessage* pickToo = new BMessage(*pick);
+				BMenuItem* popupItem = new BMenuItem(label, pickToo);
+				if (name == fAgentProvider)
+					popupItem->SetMarked(true);
+				fModelPopup->AddItem(popupItem);
 			}
 			fProviderMenu->AddSeparatorItem();
 			fProviderMenu->AddItem(new BMenuItem(

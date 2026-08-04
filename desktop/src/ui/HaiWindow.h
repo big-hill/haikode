@@ -8,6 +8,7 @@
 
 class BFont;
 class BMenu;
+class BPopUpMenu;
 class BTextView;
 class BOutlineListView;
 class BListView;
@@ -58,6 +59,7 @@ private:
 			BStatusBar*			fContextBar;
 			BStatusBar*			fStatusBar;
 			BMenu*				fProviderMenu;
+			BPopUpMenu*			fModelPopup;
 			BString				fPendingAttachments;
 			BString				fAgentProvider;
 			bool				fRunning;
