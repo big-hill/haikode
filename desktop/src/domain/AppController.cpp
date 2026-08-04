@@ -560,8 +560,9 @@ AppController::MessageReceived(BMessage* message)
 			// The child is dead whatever generation it carried; skipping
 			// the cleanup on a stale frame left fChildPid set and every
 			// later send refused. Clean up first, gate nothing on it.
+			int32 generation = message->GetInt32("gen", fGeneration);
 			app_log("worker done: gen %d (current %d) status %d",
-				(int)message->GetInt32("gen", -1), (int)fGeneration,
+				(int)generation, (int)fGeneration,
 				(int)message->GetInt32("status", -1));
 			fChildPid = -1;
 			if (fWorkerInputFD >= 0) {
