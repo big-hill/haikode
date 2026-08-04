@@ -22,6 +22,7 @@ import queue
 import random
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -2416,6 +2417,31 @@ class TUI:
         finally:
             self._shutdown()
 
+    # A turn long enough that the user plausibly tabbed away earns a
+    # native notification when it lands.
+    NOTIFY_AFTER = 45
+
+    def _notify_turn_done(self):
+        """Haiku-native turn-finished notification; a no-op elsewhere.
+
+        Haiku's `notify` command talks to the notification_server, so the
+        banner looks and behaves like every other app's. Fire and forget:
+        a missing binary or a refused message must never disturb the TUI.
+        """
+        if not sys.platform.startswith("haiku") or not self.running:
+            return
+        elapsed = time.time() - (self._run_started or time.time())
+        if elapsed < self.NOTIFY_AFTER:
+            return
+        title = str(getattr(self.turn, "display_title", "") or "haikode")
+        try:
+            subprocess.Popen(
+                ["notify", "--group", "haikode", "--title", title,
+                 "reply ready after %s" % format_duration(elapsed)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     def _start_update_check(self):
         """The passive release check, entirely off the curses thread.
 
@@ -2856,6 +2882,7 @@ class TUI:
                 self._refresh_tab_title()
                 self._on_turn(payload)
             elif kind == "done":
+                self._notify_turn_done()
                 self.running = False
                 self._stream_entry = None
                 self._reasoning_entry = None

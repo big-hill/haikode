@@ -421,6 +421,20 @@ def main(argv=None):
         print("ok")
         return 0
 
+    if cmd == "update-check" and not args:
+        from . import update
+        state = update.check()
+        if state.get("error"):
+            print("check failed: %s" % state["error"], file=sys.stderr)
+            return 1
+        if not state.get("available"):
+            print("up to date\t%s" % state.get("current"))
+            return 0
+        print("update\t%s\t%s\t%s" % (state.get("latest"),
+                                        state.get("current"),
+                                        state.get("url")))
+        return 0
+
     if cmd == "set-key" and len(args) == 2:
         # Deprecated: the secret sits in this process's argv, which every user
         # on the machine can read with `ps`. Kept for one release because

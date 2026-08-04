@@ -73,6 +73,8 @@ enum : uint32 {
 	MSG_EFFORT_CURRENT   = 'ECur',
 	MSG_EFFORT_PICKED    = 'EPck',
 	MSG_SESSIONS_RETRY   = 'SRty',
+	MSG_UPDATE_CHECKED   = 'UChk',
+	MSG_CHECK_UPDATES    = 'UGo ',
 	MSG_SHOW_SETTINGS   = 'STNG',
 };
 
@@ -260,6 +262,8 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	menuBar->AddItem(fProviderMenu);
 
 	BMenu* helpMenu = new BMenu("Help");
+	helpMenu->AddItem(new BMenuItem("Check for Updates" B_UTF8_ELLIPSIS,
+		new BMessage(MSG_CHECK_UPDATES)));
 	helpMenu->AddItem(new BMenuItem("About haikode", new BMessage(MSG_ABOUT)));
 	menuBar->AddItem(helpMenu);
 
@@ -1060,6 +1064,38 @@ HaiWindow::MessageReceived(BMessage* message)
 			spawn_history_task(BMessenger(this), "sessions",
 				MSG_SESSIONS_LOADED);
 			break;
+
+		case MSG_CHECK_UPDATES:
+			fStatusBar->SetText("Checking for updates" B_UTF8_ELLIPSIS);
+			spawn_history_task(BMessenger(this), "update-check",
+				MSG_UPDATE_CHECKED);
+			break;
+
+		case MSG_UPDATE_CHECKED:
+		{
+			BString output = message->GetString("output", "");
+			output.Trim();
+			BStringList fields;
+			output.Split("\t", false, fields);
+			if (message->GetInt32("exit", -1) != 0) {
+				fStatusBar->SetText("Update check failed - are you online?");
+				break;
+			}
+			if (fields.CountStrings() >= 1
+				&& fields.StringAt(0) == "update") {
+				BString text("haikode ");
+				text << fields.StringAt(1) << " is available (running "
+					<< fields.StringAt(2)
+					<< ").\n\nFetch it with /update in the terminal, or "
+					<< "download from the releases page.";
+				BAlert* alert = new BAlert("Update", text.String(), "OK");
+				alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+				alert->Go(NULL);
+				fStatusBar->SetText("Update available");
+			} else
+				fStatusBar->SetText("haikode is up to date");
+			break;
+		}
 
 		case MSG_SESSIONS_RETRY:
 			spawn_history_task(BMessenger(this), "sessions",
