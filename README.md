@@ -875,6 +875,23 @@ or a note after every turn. `/memory` always prints both editable directories,
 even before the first note exists. Memories ride in the system prompt under a
 fixed budget: descriptions first, oldest dropped when the budget runs out.
 
+## PowerPC, since someone will ask
+
+Sean of ActionRetro has been dragging Haiku onto 32-bit PowerPC — kernel,
+app_server and an interactive desktop under DingusPPC (iMac G3), close to
+a desktop on real G4 hardware, in a fork built substantially with AI
+assistance. haikode would follow that port essentially for free: it is
+pure Python plus one small BeAPI helper, with no architecture-specific
+code and no endianness assumptions. What stands between here and a coding
+agent on a 1999 iMac is not haikode — it is a network stack for the port
+and a `python3.10` cross-built for `ppc`. The day those exist, the
+package's architecture field says `ppc` and the rest of this README
+applies unchanged.
+
+Forks are welcome, on PowerPC or anywhere else. That is what the MIT
+license is for — and this project is itself a reimplementation of someone
+else's good idea, so it would be poor manners to mind.
+
 ## The haiku
 
 The project is named for an operating system that is named for a poem, and

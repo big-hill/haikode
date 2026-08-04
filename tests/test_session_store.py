@@ -1227,6 +1227,16 @@ class LiveWalGuardTests(unittest.TestCase):
         self.assertTrue(loner._claim(exclusive=True),
                         "with everyone gone, recovery is claimable again")
 
+    def test_a_file_that_is_not_a_database_fails_loudly_at_open(self):
+        # Field forensics: a live store got TLS record bytes written into
+        # it. The WAL pragma's "filesystems may refuse WAL" tolerance then
+        # swallowed the resulting "file is not a database", and the session
+        # limped on half-blind instead of failing at the door.
+        self.path.write_bytes(b"SQLit\x17\x03\x03 tls garbage" + b"\0" * 128)
+        store = self.store()
+        with self.assertRaises(sqlite3.DatabaseError):
+            store.connect()
+
     def test_a_non_transient_error_mid_retry_is_raised_not_recovered(self):
         store = self.store()
         store._TRANSIENT_PAUSES = (0, 0)

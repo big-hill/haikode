@@ -602,10 +602,13 @@ class SessionStore:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
             # Some network/older filesystems reject WAL; the rollback
-            # journal is slower but correct.
-            pass
+            # journal is slower but correct. But "file is not a database"
+            # is no WAL refusal: swallowing it here masked a corrupted
+            # store on a field machine until every later write failed.
+            if "not a database" in str(exc).lower():
+                raise
         # Explicit, though it is sqlite's default: every committed turn is
         # fsynced. A session's last turns before a power cut are exactly the
         # ones the user comes back for — one machine lost that tail in the
