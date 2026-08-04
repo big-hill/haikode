@@ -5821,8 +5821,14 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     # After endwin(), so the poem lands in the terminal scrollback where the
     # user is actually looking. The resume line matters more than the poem:
     # the session id is otherwise a thing you had to have noted mid-session.
-    from .status import farewell
+    from .status import farewell, record_farewell
     session = getattr(tui.turn, "session", None)
+    # A composed goodbye joins the local collection before it is shown:
+    # startup draws from that file, so the poem is not gone with the
+    # scrollback.
+    record_farewell(getattr(tui.turn, "farewell_poem", None),
+                    getattr(tui.turn, "farewell_poet", ""),
+                    str(getattr(tui.turn, "display_title", "") or ""))
     print(farewell(str(getattr(session, "id", "") or ""),
                    poem=getattr(tui.turn, "farewell_poem", None),
                    poet=getattr(tui.turn, "farewell_poet", "")))

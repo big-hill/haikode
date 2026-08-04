@@ -593,8 +593,11 @@ class REPL:
 
     def _farewell(self) -> str:
         """The exit haiku plus how to come back to this conversation."""
-        from .status import farewell
+        from .status import farewell, record_farewell
         session = getattr(self.turn, "session", None)
+        record_farewell(getattr(self.turn, "farewell_poem", None),
+                        getattr(self.turn, "farewell_poet", ""),
+                        str(getattr(self.turn, "display_title", "") or ""))
         return farewell(str(getattr(session, "id", "") or ""),
                         poem=getattr(self.turn, "farewell_poem", None),
                         poet=getattr(self.turn, "farewell_poet", ""))

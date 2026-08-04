@@ -934,6 +934,12 @@ The resume line always prints the full session id: the ids are
 time-prefixed, so every id from the same era shares its first eight
 characters, and a shortened form would only ever be ambiguous.
 
+Every farewell a model writes is also appended to `farewells.md` in the
+global config directory — a plain markdown file you own, same contract as
+memory: keep what deserves keeping, delete the rest. The startup poem is
+drawn from the curated collection *plus* what you kept, so a session's
+best goodbye comes back as another morning's greeting.
+
 ## Sessions and undo
 
 Conversations are stored in SQLite at

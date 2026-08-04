@@ -482,9 +482,12 @@ def terminal_title(title: str) -> str:
 
 
 def startup_haiku():
-    """One attributed poem from the collection, for the home screen."""
+    """One attributed poem for the home screen: the curated collection,
+    plus every farewell this machine's sessions wrote and the user chose
+    to keep."""
     import random
-    first, second, third, author = random.choice(FAREWELL_HAIKU)
+    pool = list(FAREWELL_HAIKU) + saved_farewells()
+    first, second, third, author = random.choice(pool)
     return (first, second, third, "— %s" % author)
 
 
@@ -512,3 +515,77 @@ def farewell(session_id: str = "", poem=None, poet: str = "") -> str:
     if session_id:
         lines.append("resume this session:  haikode -s %s" % session_id)
     return "\n".join(lines)
+
+
+# The local collection of model-written farewells. A plain markdown file
+# the user owns: open it, keep what deserves keeping, delete the rest —
+# the same contract as memory. startup_haiku() draws from it, so a
+# session's best goodbye comes back as another morning's greeting.
+FAREWELL_LOG = "farewells.md"
+MAX_FAREWELL_LOG_BYTES = 256 * 1024
+MAX_SAVED_FAREWELLS = 200
+
+
+def record_farewell(poem, poet: str = "", title: str = "") -> None:
+    """Append one model-written farewell to the collection. Never raises."""
+    chosen = validated_haiku("\n".join(poem)) if poem else None
+    if chosen is None:
+        return
+    import time
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    clean_title = " ".join(str(title or "").split())
+    head = "## %s%s" % (stamp, " — %s" % clean_title if clean_title else "")
+    entry = "\n".join([head, chosen[0], chosen[1], chosen[2],
+                       "— %s" % (poet or "the model"), "", ""])
+    try:
+        directory = Path(global_config_dir())
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / FAREWELL_LOG
+        try:
+            # An exit path that says goodbye twice must not archive twice.
+            tail = target.read_text("utf-8")[-2048:]
+            if all(line in tail for line in chosen):
+                return
+        except (OSError, UnicodeDecodeError):
+            pass
+        with open(target, "a", encoding="utf-8") as f:
+            f.write(entry)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def saved_farewells() -> List[Tuple[str, str, str, str]]:
+    """The kept farewells, parsed tolerantly. A hand-edited file must
+    never break startup: anything that does not read as an attributed
+    three-line poem is simply skipped."""
+    try:
+        raw = (Path(global_config_dir()) / FAREWELL_LOG).read_text("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    if len(raw) > MAX_FAREWELL_LOG_BYTES:
+        raw = raw[-MAX_FAREWELL_LOG_BYTES:]
+    blocks: List[List[str]] = []
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            blocks.append([])
+        elif blocks:
+            blocks[-1].append(line)
+    poems: List[Tuple[str, str, str, str]] = []
+    for block in blocks:
+        author = ""
+        body: List[str] = []
+        for line in block:
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("—") or text.startswith("--"):
+                author = text.lstrip("—-").strip()
+            else:
+                body.append(text)
+        chosen = validated_haiku("\n".join(body)) if len(body) == 3 else None
+        if chosen is not None:
+            poems.append((chosen[0], chosen[1], chosen[2],
+                          author or "a departed session"))
+    return poems[-MAX_SAVED_FAREWELLS:]

@@ -1448,6 +1448,66 @@ class TheFooterSaysWhatIsActuallyHappening(TemporaryProject):
         self.assertIn("quiet 4", ui._activity_label())
 
 
+class TheFarewellsAreKeptForPosterity(TemporaryProject):
+    """User request: model-written farewells vanished with the scrollback.
+
+    They now join a plain markdown collection the user owns, and startup
+    draws from it — a session's best goodbye becomes another morning's
+    greeting. Hand-editing the file must never break anything.
+    """
+
+    POEM = ["quiet fans at night", "the cursor waits for no one",
+            "sessions drift to sleep"]
+
+    def collection(self):
+        from haikode import status
+        return patch.object(status, "global_config_dir",
+                            lambda: str(self.root))
+
+    def test_a_recorded_farewell_comes_back_from_the_collection(self):
+        from haikode.status import record_farewell, saved_farewells
+        with self.collection():
+            record_farewell(self.POEM, "gpt-5.6-sol", "night shift")
+            kept = saved_farewells()
+        self.assertEqual(1, len(kept))
+        self.assertEqual(tuple(self.POEM), kept[0][:3])
+        self.assertEqual("gpt-5.6-sol", kept[0][3])
+
+    def test_recording_the_same_poem_twice_archives_it_once(self):
+        from haikode.status import record_farewell, saved_farewells
+        with self.collection():
+            record_farewell(self.POEM, "gpt-5.6-sol")
+            record_farewell(self.POEM, "gpt-5.6-sol")
+            self.assertEqual(1, len(saved_farewells()))
+
+    def test_an_invalid_poem_is_not_archived(self):
+        from haikode.status import record_farewell, saved_farewells
+        with self.collection():
+            record_farewell(["just one line"], "model")
+            self.assertEqual([], saved_farewells())
+
+    def test_hand_edits_cannot_break_the_parse(self):
+        from haikode.status import FAREWELL_LOG, record_farewell, saved_farewells
+        with self.collection():
+            record_farewell(self.POEM, "gpt-5.6-sol")
+            path = Path(self.root) / FAREWELL_LOG
+            path.write_text(path.read_text("utf-8")
+                            + "\n## torn entry\nonly\ntwo lines\n"
+                            + "then a fourth\nand a fifth stray line\n",
+                            encoding="utf-8")
+            kept = saved_farewells()
+        self.assertEqual(1, len(kept))
+
+    def test_startup_draws_from_the_kept_farewells_too(self):
+        from haikode import status
+        with self.collection():
+            status.record_farewell(self.POEM, "gpt-5.6-sol")
+            with patch("random.choice", side_effect=lambda pool: pool[-1]):
+                first, second, third, author = status.startup_haiku()
+        self.assertEqual(tuple(self.POEM), (first, second, third))
+        self.assertEqual("— gpt-5.6-sol", author)
+
+
 class TheExitIsAHaiku(TemporaryProject):
     """User request: a tech/AI haiku on exit, plus how to resume.
 
