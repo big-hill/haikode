@@ -2466,14 +2466,23 @@ class TUI:
         self.turn.close()
 
     def _enable_mouse(self):
-        """Subscribe to wheel presses only.
+        """Subscribe to wheel presses only — and not at all on Haiku.
+
+        Any non-zero mask makes the terminal report button events to us, and
+        with that its own click-drag text selection stops working. On Haiku
+        that price buys nothing: Terminal never reports the wheel as mouse
+        events in the first place — it writes arrow keys (see _on_vertical)
+        — so the subscription only took selection away, which is how a field
+        report found it.
 
         REPORT_MOUSE_POSITION (0x8000000) must NOT be in the mask: it puts the
         terminal into any-motion tracking, which floods the queue on every
-        mouse move and takes the terminal's own text selection away from the
-        user. Old ncurses builds simply have no wheel-down code; on those the
-        wheel scrolls up only, which is better than reacting to motion.
+        mouse move. Old ncurses builds simply have no wheel-down code; on
+        those the wheel scrolls up only, which is better than reacting to
+        motion.
         """
+        if sys.platform.startswith("haiku"):
+            return
         mask = 0
         for name in ("BUTTON4_PRESSED", "BUTTON5_PRESSED"):
             value = getattr(curses, name, 0)

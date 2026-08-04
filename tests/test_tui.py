@@ -8,6 +8,7 @@ can be tested without a tty.
 """
 
 import unittest
+from unittest.mock import patch
 
 from haikode import keybind, tui
 from haikode.keybind import KeyEvent
@@ -1553,6 +1554,16 @@ class WheelEmulationTests(unittest.TestCase):
         ui.history = ["earlier prompt"]
         ui.history_index = 1
         return ui
+
+    def test_no_mouse_subscription_on_haiku(self):
+        # Field report: click-drag selection was dead in the TUI. Any
+        # non-zero mousemask makes the terminal report buttons to us, and
+        # on Haiku that buys nothing — the wheel arrives as arrow keys.
+        ui = make_tui()
+        with patch.object(tui.sys, "platform", "haiku1"), \
+                patch.object(tui.curses, "mousemask") as spy:
+            ui._enable_mouse()
+        spy.assert_not_called()
 
     def test_arrow_up_scrolls_while_a_turn_is_running(self):
         ui = self._seeded()

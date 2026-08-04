@@ -70,15 +70,29 @@ Nothing else. No pip install, ever.
 
 ## Install
 
-### The package (preferred)
+### A release package (easiest)
 
-The Haiku-native way. Build the `.hpkg` on the Haiku machine, then install it
-with the package manager so it can also be cleanly removed:
+Download the `.hpkg` for your architecture (`x86_64`, or `x86_gcc2` for
+32-bit) from the [releases page](../../releases), then either double-click
+it in Tracker or:
+
+```sh
+pkgman install ./haikode-*.hpkg
+```
+
+Remove it again with `pkgman uninstall haikode`. No build tools, no git,
+no pip — the requirements table above is the whole story.
+
+### Building the package yourself
+
+The same thing from a source checkout. Build the `.hpkg` on the Haiku
+machine, then install it with the package manager so it can also be
+cleanly removed:
 
 ```sh
 cd /boot/home/haikode
-scripts/build-hpkg.sh                                  # needs haiku_devel
-pkgman install build/haikode-0.1.0-1-$(uname -m).hpkg
+scripts/build-hpkg.sh                    # needs haiku_devel; prints the
+pkgman install build/haikode-*.hpkg      # package version it produced
 ```
 
 That installs into `/boot/system`:
@@ -101,6 +115,8 @@ packaged launcher needs no `PYTHONPATH`. Remove it again with
 ### Developer install (a source checkout that runs)
 
 ```sh
+pkgman install git            # or download the repository ZIP in a browser
+git clone https://github.com/big-hill/haikode.git /boot/home/haikode
 cd /boot/home/haikode
 sh scripts/install-on-haiku.sh
 ```
