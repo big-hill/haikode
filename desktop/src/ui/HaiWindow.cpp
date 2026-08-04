@@ -198,6 +198,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 		B_QUIT_ON_WINDOW_CLOSE | B_AUTO_UPDATE_SIZE_LIMITS),
 	fController(controller),
 	fRunning(false),
+	fStreamed(false),
 	fGeneration(0)
 {
 	// (BWindow has no SetViewColor; child views use ui_color-based
@@ -414,9 +415,15 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	// === Main native resizable split (BSplitView is classic Haiku) ===
 	BSplitView* mainSplit = new BSplitView(B_HORIZONTAL, B_USE_DEFAULT_SPACING);
 	mainSplit->SetName("mainSplit");
-	mainSplit->AddChild(leftPane);
-	mainSplit->AddChild(centerPane);
-	mainSplit->AddChild(rightPane);
+	// The conversation is the product; the side panes are furniture. Give
+	// them sidebar proportions and let the user fold them away entirely —
+	// the right pane earns its space only while tools run or approvals
+	// wait (field question: "what value does it give me?").
+	mainSplit->AddChild(leftPane, 0.18f);
+	mainSplit->AddChild(centerPane, 0.60f);
+	mainSplit->AddChild(rightPane, 0.22f);
+	mainSplit->SetCollapsible(0, true);
+	mainSplit->SetCollapsible(2, true);
 
 	// === Native BStatusBar ===
 	// No label: BStatusBar paints label and text side by side, which glued
@@ -485,7 +492,8 @@ HaiWindow::MessageReceived(BMessage* message)
 			fInput->SetText("");
 			fPendingAttachments.Truncate(0);
 			_SetRunning(true);
-			fStatusBar->SetText("Connecting to configured provider...");
+			fStreamed = false;
+			fStatusBar->SetText("Starting the worker" B_UTF8_ELLIPSIS);
 			break;
 		}
 
@@ -596,6 +604,11 @@ HaiWindow::MessageReceived(BMessage* message)
 				&& generation == fGeneration
 				&& message->FindString("text", &text) == B_OK)
 			{
+				if (!fStreamed) {
+					fStreamed = true;
+					fStatusBar->SetText("Streaming the reply"
+						B_UTF8_ELLIPSIS);
+				}
 				_Append(text);
 			}
 			break;
@@ -683,6 +696,12 @@ HaiWindow::MessageReceived(BMessage* message)
 			if (message->FindInt32("gen", &generation) != B_OK
 				|| generation != fGeneration)
 				break;
+			// The worker is up and the request is out: from here the
+			// wait belongs to the model, and the status should say so.
+			BString status("Waiting for ");
+			status << message->GetString("provider", "the provider")
+				<< B_UTF8_ELLIPSIS;
+			fStatusBar->SetText(status.String());
 			BString info(message->GetString("agent", ""));
 			if (info.IsEmpty())
 				info = "build";

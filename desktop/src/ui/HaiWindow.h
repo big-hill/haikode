@@ -63,6 +63,7 @@ private:
 			BString				fPendingAttachments;
 			BString				fAgentProvider;
 			bool				fRunning;
+			bool				fStreamed;
 			int32				fGeneration;
 };
 
