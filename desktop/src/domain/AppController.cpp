@@ -2,6 +2,10 @@
 #include "Messages.h"
 
 #include <errno.h>
+#include <stdarg.h>
+#include <time.h>
+
+
 #include <Message.h>
 #include <OS.h>
 #include <signal.h>
@@ -10,6 +14,30 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+
+// One line per lifecycle event, appended to /tmp/haikode-desktop.log.
+// /tmp clears on boot, the writes are rare and tiny, and every field
+// debugging round so far has consisted of guessing what the controller
+// did because nothing recorded it.
+static void
+app_log(const char* format, ...)
+{
+	FILE* file = fopen("/tmp/haikode-desktop.log", "a");
+	if (file == NULL)
+		return;
+	time_t now = time(NULL);
+	struct tm local;
+	localtime_r(&now, &local);
+	fprintf(file, "%02d:%02d:%02d ", local.tm_hour, local.tm_min,
+		local.tm_sec);
+	va_list args;
+	va_start(args, format);
+	vfprintf(file, format, args);
+	va_end(args);
+	fputc('\n', file);
+	fclose(file);
+}
 
 // Internal worker-thread -> controller messages. The window only sees the
 // public messages in Messages.h.
@@ -531,8 +559,13 @@ AppController::MessageReceived(BMessage* message)
 		{
 			int32 generation;
 			if (message->FindInt32("gen", &generation) != B_OK
-				|| generation != fGeneration)
+				|| generation != fGeneration) {
+				app_log("worker done DROPPED: frame gen %d vs current %d",
+					(int)(message->GetInt32("gen", -1)), (int)fGeneration);
 				break;
+			}
+			app_log("worker done: gen %d status %d", (int)generation,
+				(int)message->GetInt32("status", -1));
 			fChildPid = -1;
 			if (fWorkerInputFD >= 0) {
 				close(fWorkerInputFD);
@@ -588,6 +621,8 @@ void
 AppController::_StartRun(const char* prompt, BMessenger sink, int32 generation)
 {
 	if (fChildPid > 0) {
+		app_log("send refused: previous worker (pid %d) still running",
+			(int)fChildPid);
 		BMessage failed(kMsgRunFailed);
 		failed.AddInt32("gen", generation);
 		failed.AddString("error", "A response is already running");
@@ -666,6 +701,7 @@ AppController::_StartRun(const char* prompt, BMessenger sink, int32 generation)
 	close(inputPipe[0]);
 	close(outputPipe[1]);
 	free_environment(environment);
+	app_log("worker spawned: pid %d gen %d", (int)child, (int)generation);
 	if (child < 0) {
 		close(inputPipe[1]);
 		close(outputPipe[0]);
