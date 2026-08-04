@@ -430,7 +430,13 @@ HaiWindow::MessageReceived(BMessage* message)
 	switch (message->what) {
 		case kMsgUiSend:
 		{
-			if (fRunning) break;
+			if (fRunning) {
+				// Never a silent no-op: the silence read as a dead app.
+				fStatusBar->SetText(
+					"A reply is still running" B_UTF8_ELLIPSIS
+					"  press Stop first");
+				break;
+			}
 			const char* text = fInput->Text();
 			if (text == NULL || text[0] == '\0') break;
 
@@ -655,6 +661,11 @@ HaiWindow::MessageReceived(BMessage* message)
 
 		case kMsgRunFailed:
 		{
+			// A run ending — any run, any generation — means nothing is
+			// running now. The generation gates only the transcript side
+			// effects; letting a stale end-frame keep fRunning true made
+			// every later Send die on its guard in total silence.
+			_SetRunning(false);
 			int32 generation;
 			const char* error;
 			if (message->FindInt32("gen", &generation) == B_OK
@@ -766,6 +777,7 @@ HaiWindow::MessageReceived(BMessage* message)
 		case kMsgRunCompleted:
 		case kMsgRunCancelled:
 		{
+			_SetRunning(false);      // ends always end; see kMsgRunFailed
 			int32 generation;
 			if (message->FindInt32("gen", &generation) != B_OK || generation != fGeneration)
 				break;

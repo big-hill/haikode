@@ -557,14 +557,11 @@ AppController::MessageReceived(BMessage* message)
 		}
 		case kMsgWorkerDone:
 		{
-			int32 generation;
-			if (message->FindInt32("gen", &generation) != B_OK
-				|| generation != fGeneration) {
-				app_log("worker done DROPPED: frame gen %d vs current %d",
-					(int)(message->GetInt32("gen", -1)), (int)fGeneration);
-				break;
-			}
-			app_log("worker done: gen %d status %d", (int)generation,
+			// The child is dead whatever generation it carried; skipping
+			// the cleanup on a stale frame left fChildPid set and every
+			// later send refused. Clean up first, gate nothing on it.
+			app_log("worker done: gen %d (current %d) status %d",
+				(int)message->GetInt32("gen", -1), (int)fGeneration,
 				(int)message->GetInt32("status", -1));
 			fChildPid = -1;
 			if (fWorkerInputFD >= 0) {
