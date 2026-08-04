@@ -415,6 +415,12 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
         agent.warnings = list(agent.warnings) + list(manager.warnings)
         # Servers this process started die with it, like the LSP ones.
         atexit.register(manager.shutdown_all)
+    # An agent definition may pin `model: otherprovider/model-id` — a QA
+    # subagent on a different vendor's model, say. The task tool then needs
+    # a client this session never built, and it must come through the same
+    # profile machinery (auth, dialect, stall budget) as the main one. Any
+    # configured provider works; nothing is special-cased to a vendor.
+    agent.provider_factory = lambda name: build_provider(session_config, name)
     return agent
 
 

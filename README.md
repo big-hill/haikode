@@ -699,6 +699,27 @@ swaps the prompt, the tool list, the permissions, the step budget and the
 agent's own model — and never touches the conversation. The `task` tool takes
 a `subagent_type`, so the model picks the right subagent for the job.
 
+A custom agent (`.haikode/agent/<name>.md`, or an `agents` block in config)
+may pin its own model with `model: <provider>/<id>` — any configured provider,
+no vendor is special. A subagent pinned that way runs on its own client for
+that provider, built through the same profile machinery (auth, dialect, stall
+budget) as the session's. That is how you get genuinely independent review:
+
+```markdown
+---
+name: second-opinion
+description: Adversarial reviewer on a different vendor's model
+mode: subagent
+model: ollama/qwen3-coder:480b
+---
+You review the parent agent's conclusion adversarially. Attack it;
+do not extend it. Return findings only.
+```
+
+If the pinned provider is not configured, the task call fails with a clear
+error — never a silent fallback to the parent's model, because a "second
+opinion" secretly rendered by the same model is worse than no opinion.
+
 Plan mode is read-only in **both** dimensions at once, because hiding a tool
 only discourages a model while a permission deny actually stops it: `plan` sees
 only `read`, `grep`, `glob`, `list`, `task`, `todowrite`, `question` and

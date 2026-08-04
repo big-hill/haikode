@@ -78,9 +78,39 @@ class TaskTool(Tool):
             if candidate is not None and candidate.mode in ("subagent", "all"):
                 defn = candidate
 
+        # An agent definition may pin its own model — `model: kimi/k3`,
+        # `model: gpt-5.6-sol`, any configured provider. Cross-provider needs
+        # a sibling client from the session's factory; failure is loud, never
+        # a silent fallback: a QA verdict from the wrong model masquerading
+        # as the requested one is worse than no verdict.
+        provider = parent.provider
+        model = parent.model
+        if defn is not None:
+            want_provider, want_model = defn.model_parts()
+            if want_model:
+                current = str(getattr(provider, "name", "") or "")
+                if want_provider and want_provider != current:
+                    factory = getattr(parent, "provider_factory", None)
+                    if not callable(factory):
+                        raise RuntimeError(
+                            "subagent '%s' pins %s/%s, but this session "
+                            "cannot build other providers"
+                            % (defn.name, want_provider, want_model))
+                    try:
+                        provider = factory(want_provider)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "subagent '%s' pins provider '%s', which is not "
+                            "available: %s" % (defn.name, want_provider, exc))
+                    # The user's interrupt must reach the sibling client too.
+                    abort = getattr(parent.provider, "abort", None)
+                    if abort is not None and hasattr(provider, "abort"):
+                        provider.abort = abort
+                model = want_model
+
         sub = Agent(
-            provider=parent.provider,
-            model=parent.model,
+            provider=provider,
+            model=model,
             permissions=ctx.permissions,
             cwd=ctx.cwd,
             max_steps=MAX_SUBAGENT_STEPS,

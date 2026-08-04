@@ -366,6 +366,11 @@ class Agent:
         self._pending_reminders: List[str] = []
 
         self._registry = registry
+        # Set by runtime.build_agent: builds a sibling provider by profile
+        # name, for subagent definitions that pin a different provider's
+        # model. None in bare/test construction — the task tool fails loudly
+        # rather than silently reviewing on the wrong model.
+        self.provider_factory = None
         self.agent_name = agent_name or (registry.default().name if registry
                                          else DEFAULT_AGENT)
         # No registry and no named agent is the sub-agent case (the task tool):

@@ -718,5 +718,79 @@ class TestToolMessagePairing(AgentTestCase):
         self.assertEqual(agent.model, "claude-sonnet-5")
 
 
+class TestCrossProviderSubagents(AgentTestCase):
+    """An agent definition may pin `model: provider/id`; the task tool must
+    run the sub-agent on that provider — or fail loudly. Nothing here is
+    vendor-specific: any configured profile name works, which is the point.
+    """
+
+    class Sibling(ScriptedProvider):
+        name = "elsewhere"
+
+        def __init__(self, turns):
+            super().__init__(turns)
+            self.models = []
+
+        def stream(self, messages, tools, model, max_tokens):
+            self.models.append(model)
+            return super().stream(messages, tools, model, max_tokens)
+
+    def parent_with(self, defn_model, factory=None):
+        from haikode.agents import AgentDef
+        registry = AgentRegistry.load(self.dir)
+        registry.agents["qa"] = AgentDef(name="qa", description="pinned QA",
+                                         mode="subagent", model=defn_model)
+        parent = Agent(provider=self.Sibling([]), model="parent-model",
+                       permissions=Permissions(auto_approve=True),
+                       cwd=self.dir, registry=registry)
+        parent.provider.name = "scripted"      # the session's own provider
+        parent.provider_factory = factory
+        return parent
+
+    def run_task(self, parent):
+        from haikode.tool.task import TaskTool
+        return TaskTool().execute(
+            {"description": "qa", "prompt": "review this",
+             "subagent_type": "qa"}, parent.ctx)
+
+    def test_a_pinned_provider_model_runs_on_the_sibling_client(self):
+        sibling = self.Sibling([[CompletionChunk(text="verdict",
+                                                 stop_reason="stop")]])
+        built = []
+
+        def factory(name):
+            built.append(name)
+            return sibling
+
+        parent = self.parent_with("elsewhere/model-x", factory)
+        self.run_task(parent)
+        self.assertEqual(["elsewhere"], built)
+        self.assertEqual(["model-x"], sibling.models)
+        self.assertEqual([], parent.provider.seen)   # parent's client unused
+
+    def test_a_bare_model_id_stays_on_the_parents_provider(self):
+        parent = self.parent_with("model-y")
+        parent.provider.turns = [[CompletionChunk(text="ok",
+                                                  stop_reason="stop")]]
+        self.run_task(parent)
+        self.assertEqual(["model-y"], parent.provider.models)
+
+    def test_no_factory_fails_loudly_not_silently_on_the_wrong_model(self):
+        parent = self.parent_with("elsewhere/model-z")
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_task(parent)
+        self.assertIn("elsewhere", str(caught.exception))
+        self.assertIn("qa", str(caught.exception))
+
+    def test_an_unavailable_provider_names_itself_in_the_failure(self):
+        def factory(name):
+            raise KeyError("no profile %r" % name)
+
+        parent = self.parent_with("elsewhere/model-z", factory)
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_task(parent)
+        self.assertIn("not available", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
