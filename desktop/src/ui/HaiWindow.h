@@ -57,6 +57,7 @@ private:
 			BStatusBar*			fContextBar;
 			BStatusBar*			fStatusBar;
 			BString				fPendingAttachments;
+			BString				fAgentProvider;
 			bool				fRunning;
 			int32				fGeneration;
 };

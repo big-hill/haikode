@@ -2,6 +2,7 @@
 #define HAI_SETTINGS_WINDOW_H
 
 #include <InterfaceDefs.h>
+#include <Messenger.h>
 #include <String.h>
 #include <Window.h>
 
@@ -34,7 +35,8 @@ struct ProviderInfo {
 // results back to this window.
 class SettingsWindow : public BWindow {
 public:
-								SettingsWindow();
+								SettingsWindow(
+									BMessenger owner = BMessenger());
 	virtual	void				MessageReceived(BMessage* message);
 
 private:
@@ -92,6 +94,7 @@ private:
 
 			std::vector<ProviderInfo> fProviders;
 			BString				fPendingProvider;
+			BMessenger			fOwner;
 			bool				fBusy;
 };
 

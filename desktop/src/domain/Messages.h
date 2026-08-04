@@ -9,6 +9,7 @@
 enum : uint32 {
 	// Window → Controller
 	kMsgSendPrompt   = 'hSnd',  // "text", "sink" (BMessenger to window), "gen" (int32)
+	kMsgConfigChanged = 'hCfg', // Settings saved: re-read provider/model state
 	kMsgCancelRun    = 'hCan',  // "gen"
 	kMsgNewSession   = 'hNew',  // start a new durable desktop conversation
 	kMsgSelectSession = 'hSel', // "name": select an existing durable conversation

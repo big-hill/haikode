@@ -1,5 +1,6 @@
 #include "SettingsWindow.h"
 #include "../domain/ConfigBridge.h"
+#include "../domain/Messages.h"
 
 #include <Button.h>
 #include <CheckBox.h>
@@ -126,13 +127,14 @@ device_code_from(const BStringList& fields)
 // #pragma mark - SettingsWindow
 
 
-SettingsWindow::SettingsWindow()
+SettingsWindow::SettingsWindow(BMessenger owner)
 	:
 	BWindow(BRect(0, 0, 560, 330), "Settings", B_TITLED_WINDOW,
 		B_AUTO_UPDATE_SIZE_LIMITS | B_NOT_ZOOMABLE | B_CLOSE_ON_ESCAPE),
 	fDeviceDeadline(0),
 	fDeviceGeneration(0),
-	fBusy(false)
+	fBusy(false),
+	fOwner(owner)
 {
 	fProviderMenu = new BPopUpMenu("provider");
 	fProviderField = new BMenuField("providerField", "Provider:",
@@ -489,6 +491,10 @@ SettingsWindow::MessageReceived(BMessage* message)
 					if (fApiKey->Text()[0] != '\0')
 						info->keyStatus = "yes";
 				}
+				// The main window shows "choose a provider in Settings"
+				// until told otherwise — saving IS the telling. Field
+				// report: save worked, nothing visibly changed.
+				fOwner.SendMessage(kMsgConfigChanged);
 				PostMessage(B_QUIT_REQUESTED);
 			} else {
 				BString output = message->GetString("output", "");

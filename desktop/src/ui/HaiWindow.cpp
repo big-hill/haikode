@@ -54,6 +54,8 @@ enum : uint32 {
 	MSG_RELOAD_SESSIONS = 'SRLD',
 	MSG_SESSIONS_LOADED = 'SLDD',
 	MSG_HISTORY_LOADED  = 'HLDD',
+	MSG_AGENT_PROVIDER_LOADED = 'APrv',
+	MSG_AGENT_MODEL_LOADED    = 'AMdl',
 	MSG_TOOL_SELECTED   = 'TSLD',
 	MSG_APPROVE_ONCE    = 'AONC',
 	MSG_APPROVE_ALWAYS  = 'AALW',
@@ -266,12 +268,15 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	.End();
 
 	BTabView* leftPane = new BTabView("leftTabs", B_WIDTH_FROM_WIDEST);
+	// AddTab() resets a BTab's label from the view it adopts, so labels set
+	// before it silently vanish — the field report was "nameless tabs, an
+	// enigma". Label AFTER adding.
 	BTab* sessionsTab = new BTab();
-	sessionsTab->SetLabel("Sessions");
 	leftPane->AddTab(sessionsPane, sessionsTab);
+	sessionsTab->SetLabel("Sessions");
 	BTab* projectTab = new BTab();
-	projectTab->SetLabel("Project");
 	leftPane->AddTab(projectPane, projectTab);
+	projectTab->SetLabel("Project");
 
 	fProjectList->AddItem(new BStringItem("No project selected"));
 
@@ -392,9 +397,11 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	mainSplit->AddChild(rightPane);
 
 	// === Native BStatusBar ===
-	fStatusBar = new BStatusBar("status", "Ready");
+	// No label: BStatusBar paints label and text side by side, which glued
+	// "Ready" onto every later status ("ReadyConnecting to ...").
+	fStatusBar = new BStatusBar("status", "");
 	fStatusBar->SetBarColor(ui_color(B_STATUS_BAR_COLOR));
-	fStatusBar->SetText("No project  •  Native Haiku UI (BMenuBar, BSplitView, BOutlineListView...)");
+	fStatusBar->SetText("Ready");
 
 	// Root layout
 	BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
@@ -414,6 +421,11 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fInput->MakeFocus(true);
 	SetSizeLimits(720, 2400, 520, 1600);
 	spawn_history_task(BMessenger(this), "sessions", MSG_SESSIONS_LOADED);
+	// Whether a run would have an agent right now — the header claimed
+	// "No agent yet" forever, even with a provider configured and signed
+	// in, because nothing ever asked.
+	spawn_history_task(BMessenger(this), "get default_provider",
+		MSG_AGENT_PROVIDER_LOADED);
 }
 
 void
@@ -455,6 +467,38 @@ HaiWindow::MessageReceived(BMessage* message)
 			if (fRunning)
 				fController.SendMessage(kMsgCancelRun);
 			break;
+
+		case kMsgConfigChanged:
+			// Settings saved: ask again which agent a run would use.
+			spawn_history_task(BMessenger(this), "get default_provider",
+				MSG_AGENT_PROVIDER_LOADED);
+			break;
+
+		case MSG_AGENT_PROVIDER_LOADED:
+		{
+			BString provider = message->GetString("output", "");
+			provider.Trim();
+			if (message->GetInt32("exit", -1) != 0 || provider.IsEmpty())
+				break;      // the choose-in-Settings line stays honest
+			fAgentProvider = provider;
+			BString args("get providers.");
+			args << provider << ".model";
+			spawn_history_task(BMessenger(this), args,
+				MSG_AGENT_MODEL_LOADED);
+			break;
+		}
+
+		case MSG_AGENT_MODEL_LOADED:
+		{
+			BString info(fAgentProvider);
+			BString model = message->GetString("output", "");
+			model.Trim();
+			if (message->GetInt32("exit", -1) == 0 && !model.IsEmpty())
+				info << " / " << model;
+			info << "  •  ready — the first Send starts the agent";
+			fInfoView->SetText(info.String());
+			break;
+		}
 
 		case kMsgStreamDelta:
 		{
@@ -972,7 +1016,8 @@ HaiWindow::MessageReceived(BMessage* message)
 			if (fSettings.IsValid())
 				fSettings.SendMessage(kMsgActivateSettings);
 			else {
-				SettingsWindow* settings = new SettingsWindow();
+				SettingsWindow* settings
+					= new SettingsWindow(BMessenger(this));
 				fSettings = BMessenger(settings);
 				settings->Show();
 			}
