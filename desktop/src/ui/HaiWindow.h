@@ -7,6 +7,7 @@
 #include <String.h>
 
 class BFont;
+class BMenu;
 class BTextView;
 class BOutlineListView;
 class BListView;
@@ -56,6 +57,7 @@ private:
 			BStringView*		fInfoView;
 			BStatusBar*			fContextBar;
 			BStatusBar*			fStatusBar;
+			BMenu*				fProviderMenu;
 			BString				fPendingAttachments;
 			BString				fAgentProvider;
 			bool				fRunning;

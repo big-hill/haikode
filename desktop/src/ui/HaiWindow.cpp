@@ -61,6 +61,9 @@ enum : uint32 {
 	MSG_APPROVE_ALWAYS  = 'AALW',
 	MSG_DENY_TOOL       = 'ADNY',
 	MSG_ABOUT           = 'ABOU',
+	MSG_PROVIDERS_LISTED = 'PLst',
+	MSG_PROVIDER_PICKED  = 'PPck',
+	MSG_PROVIDER_SET     = 'PSet',
 	MSG_SHOW_SETTINGS   = 'STNG',
 };
 
@@ -228,6 +231,13 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	sessionMenu->AddItem(new BMenuItem("Compact Context", new BMessage('CMPC')));
 	sessionMenu->AddItem(new BMenuItem("Show Cost", new BMessage('COST')));
 	menuBar->AddItem(sessionMenu);
+
+	// Switching provider lives one click away, not behind Settings: the
+	// menu lists every configured profile with its model, marks the one a
+	// run would use, and keeps Settings for keys and endpoints.
+	fProviderMenu = new BMenu("Provider");
+	fProviderMenu->SetRadioMode(true);
+	menuBar->AddItem(fProviderMenu);
 
 	BMenu* helpMenu = new BMenu("Help");
 	helpMenu->AddItem(new BMenuItem("About haikode", new BMessage(MSG_ABOUT)));
@@ -422,6 +432,8 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	// in, because nothing ever asked.
 	spawn_history_task(BMessenger(this), "get default_provider",
 		MSG_AGENT_PROVIDER_LOADED);
+	spawn_history_task(BMessenger(this), "list-providers",
+		MSG_PROVIDERS_LISTED);
 }
 
 void
@@ -474,6 +486,61 @@ HaiWindow::MessageReceived(BMessage* message)
 			// Settings saved: ask again which agent a run would use.
 			spawn_history_task(BMessenger(this), "get default_provider",
 				MSG_AGENT_PROVIDER_LOADED);
+			spawn_history_task(BMessenger(this), "list-providers",
+				MSG_PROVIDERS_LISTED);
+			break;
+
+		case MSG_PROVIDERS_LISTED:
+		{
+			if (message->GetInt32("exit", -1) != 0)
+				break;
+			while (fProviderMenu->CountItems() > 0)
+				delete fProviderMenu->RemoveItem((int32)0);
+			BStringList lines;
+			BString(message->GetString("output", "")).Split("\n", true,
+				lines);
+			for (int32 i = 0; i < lines.CountStrings(); i++) {
+				BStringList fields;
+				lines.StringAt(i).Split("\t", false, fields);
+				if (fields.CountStrings() < 1
+					|| fields.StringAt(0).IsEmpty())
+					continue;
+				BString name = fields.StringAt(0);
+				BString label(name);
+				if (fields.CountStrings() >= 4
+					&& !fields.StringAt(3).IsEmpty())
+					label << " \xe2\x80\x94 " << fields.StringAt(3);
+				BMessage* pick = new BMessage(MSG_PROVIDER_PICKED);
+				pick->AddString("name", name);
+				BMenuItem* item = new BMenuItem(label, pick);
+				if (name == fAgentProvider)
+					item->SetMarked(true);
+				fProviderMenu->AddItem(item);
+			}
+			fProviderMenu->AddSeparatorItem();
+			fProviderMenu->AddItem(new BMenuItem(
+				"Model & keys" B_UTF8_ELLIPSIS,
+				new BMessage(MSG_SHOW_SETTINGS)));
+			break;
+		}
+
+		case MSG_PROVIDER_PICKED:
+		{
+			const char* name = message->GetString("name", NULL);
+			if (name == NULL || name[0] == '\0')
+				break;
+			BString args("set default_provider ");
+			args << ConfigBridge::ShellQuote(name);
+			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
+			break;
+		}
+
+		case MSG_PROVIDER_SET:
+			// Re-read what a run would use now; rebuild the checkmarks.
+			spawn_history_task(BMessenger(this), "get default_provider",
+				MSG_AGENT_PROVIDER_LOADED);
+			spawn_history_task(BMessenger(this), "list-providers",
+				MSG_PROVIDERS_LISTED);
 			break;
 
 		case MSG_AGENT_PROVIDER_LOADED:
