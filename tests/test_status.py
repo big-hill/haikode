@@ -157,7 +157,10 @@ class CollectTests(unittest.TestCase):
             with isolated(directory):
                 info = collect(config, "demo", str(sub))
         self.assertEqual(info.git_branch, "main")
-        self.assertEqual(info.cwd_label, "pkg")
+        # short_label keeps a path that fits whole and falls back to the
+        # basename only when it does not — /tmp/... on Linux fits, macOS's
+        # deep temp paths do not, so only the tail is stable across both.
+        self.assertTrue(info.cwd_label.endswith("pkg"), info.cwd_label)
 
     def test_instruction_files_found_up_to_the_repository_root(self):
         with tempfile.TemporaryDirectory() as directory:

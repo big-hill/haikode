@@ -377,6 +377,11 @@ def atime_is_settable(directory) -> bool:
     probe.write_text("x")
     try:
         os.utime(probe, (OLD_TIME, OLD_TIME))
+        # An edit READS the file before writing it back, and relatime-style
+        # mounts (Linux ext4) bump atime on exactly that read — so a probe
+        # that never reads reports "settable" on a filesystem where the
+        # value is unpreservable in practice. Mirror what the writer does.
+        probe.read_text()
         return abs(os.stat(probe).st_atime - OLD_TIME) < 1
     finally:
         probe.unlink()
