@@ -2906,6 +2906,12 @@ class TUI:
         while not self._quit:
             try:
                 self._pump()
+                # The display title composes in the background AFTER the
+                # turn that triggered it, but the tab was only renamed ON
+                # turn events — a resumed session's single turn left the
+                # tab nameless forever. _set_tab_title no-ops on unchanged,
+                # so per tick this is one string compare.
+                self._refresh_tab_title()
                 if self._pending:
                     # Pop first, then answer in a finally: a crash inside the
                     # modal must still unblock the worker waiting on us.
@@ -5408,6 +5414,11 @@ class TUI:
 
     def _refresh_tab_title(self) -> None:
         generated = str(getattr(self.turn, "display_title", "") or "")
+        if not generated:
+            # A resumed session knows its subject before any new turn runs;
+            # the stored title names the tab until the composed one lands.
+            session = getattr(self.turn, "session", None)
+            generated = str(getattr(session, "title", "") or "")[:40].strip()
         if generated:
             self._set_tab_title(generated)
 
