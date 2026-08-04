@@ -239,7 +239,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fSessionList->SetFont(be_plain_font);
 	fSessionList->SetInvocationMessage(new BMessage(MSG_SESSION_INVOKED));
 	BScrollView* sessionsScroll = new BScrollView("ss", fSessionList,
-		B_FOLLOW_ALL, 0, false, true);
+		0, false, true);
 	BButton* reloadSessions = new BButton("reloadSessions", "Reload",
 		new BMessage(MSG_RELOAD_SESSIONS));
 	BGroupView* sessionsPane = new BGroupView(B_VERTICAL);
@@ -255,7 +255,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fProjectList->SetFont(be_plain_font);
 	fProjectList->SetInvocationMessage(new BMessage(MSG_PROJECT_INVOKED));
 
-	BScrollView* projectScroll = new BScrollView("ps", fProjectList, B_FOLLOW_ALL, 0, false, true);
+	BScrollView* projectScroll = new BScrollView("ps", fProjectList, 0, false, true);
 
 	BStringView* projectLabel = new BStringView("pl", "Project");
 	projectLabel->SetFont(be_bold_font);
@@ -289,7 +289,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fTranscript->SetWordWrap(true);
 	fTranscript->SetStylable(true);  // allow native styled runs for "You:" / "haikode:" labels (very Haiku)
 
-	BScrollView* transcriptScroll = new BScrollView("sc", fTranscript, B_FOLLOW_ALL, 0, false, true);
+	BScrollView* transcriptScroll = new BScrollView("sc", fTranscript, 0, false, true);
 
 	fInput = new ComposerTextView("input", BMessenger(this));
 	fInput->SetViewColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
@@ -297,7 +297,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	float composerHeight = be_plain_font->Size() * 4.5f;
 	fInput->SetExplicitMinSize(BSize(B_SIZE_UNSET, composerHeight));
 	BScrollView* inputScroll = new BScrollView("inputScroll", fInput,
-		B_FOLLOW_ALL, 0, false, true);
+		0, false, true);
 
 	BButton* sendBtn = new BButton("send", "Send", new BMessage(kMsgUiSend));
 	BButton* stopBtn = new BButton("stop", "Stop", new BMessage(kMsgUiStop));
@@ -351,7 +351,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fToolList->SetFont(be_plain_font);
 	fToolList->SetSelectionMessage(new BMessage(MSG_TOOL_SELECTED));
 
-	BScrollView* toolScroll = new BScrollView("ts", fToolList, B_FOLLOW_ALL, 0, false, true);
+	BScrollView* toolScroll = new BScrollView("ts", fToolList, 0, false, true);
 
 	BStringView* toolLabel = new BStringView("tl", "Tools & Approvals");
 	toolLabel->SetFont(be_bold_font);
