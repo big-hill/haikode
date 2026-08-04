@@ -247,6 +247,19 @@ def _rebuild_table(conn: sqlite3.Connection, table: str, required: str,
             pass
 
 
+def _transient_shaped(error: BaseException) -> bool:
+    """True for the errors a live neighbour causes in passing.
+
+    "locking protocol" is Haiku's WAL shared-memory glue coughing under a
+    second live process; "database is locked" is ordinary contention. Both
+    clear on their own. Anything else does not, and must never be waited
+    out or recovered over.
+    """
+    message = str(error).lower()
+    return ("locking protocol" in message
+            or "database is locked" in message)
+
+
 def _reason(exc: BaseException) -> str:
     return getattr(exc, "strerror", None) or str(exc) or exc.__class__.__name__
 
@@ -469,14 +482,21 @@ class SessionStore:
                 if conn is None:
                     if not self._clear_stale_wal(first):
                         raise
-                    conn = self._open()
+                    try:
+                        conn = self._open()
+                    except BaseException:
+                        # A failed reopen must not squat on the exclusive
+                        # guard: the next attempt (ours or anyone's) would
+                        # find recovery permanently "in progress".
+                        self._release_guard()
+                        raise
             self._conn = conn
             self._register()
-            # Hold the cross-process guard for as long as the store is open:
-            # it is what tells another process's recovery that this WAL has a
-            # living owner. Failure is fine — a sibling already holding it
-            # means only that *it* owns recovery, the store is still shared.
-            self._claim()
+            # Every live store holds the guard shared for its lifetime;
+            # recovery needs it exclusive, so it cannot run while anyone
+            # lives. This also atomically downgrades a recovery's own
+            # exclusive hold.
+            self._claim_shared()
             self._rotate_backup(conn)
             return conn
 
@@ -493,15 +513,18 @@ class SessionStore:
         aside, which for a *live* neighbour is how committed turns vanished
         in the field ("session not saved", twice in two evenings).
         """
-        message = str(error).lower()
-        if ("locking protocol" not in message
-                and "database is locked" not in message):
+        if not _transient_shaped(error):
             return None
         for pause in self._TRANSIENT_PAUSES:
             time.sleep(pause)
             try:
                 return self._open()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as again:
+                if not _transient_shaped(again):
+                    # A different failure class mid-retry is a different
+                    # problem: judging recovery on the *first* error's shape
+                    # would clear WAL state over, say, a malformed database.
+                    raise
                 continue
         return None
 
@@ -538,6 +561,16 @@ class SessionStore:
         Any failure here is silent: a missing backup must never stop a user
         from reaching their sessions.
         """
+        if self._guard is None:
+            # On a platform with advisory locks, no guard means something is
+            # off — do not also race a sibling's rotation. Lockless platforms
+            # keep rotating: an occasional double copy beats no safety net.
+            try:
+                import fcntl  # noqa: F401
+            except ImportError:
+                pass
+            else:
+                return
         try:
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 return
@@ -625,31 +658,68 @@ class SessionStore:
                 SessionStore._open_paths.pop(key, None)
         self._registered = False
 
-    def _claim(self) -> bool:
-        """Take the cross-process guard for this database.
+    def _claim(self, exclusive: bool = False) -> bool:
+        """Take (or convert) the cross-process guard for this database.
 
-        True when no other haikode holds it. The guard is advisory and only
-        gates recovery: two instances may share the store, but only a lone
-        one may conclude that a leftover WAL is a corpse's.
+        The lock model an adversarial review demanded, after the one-owner
+        version left every store but the first unguarded: all live stores
+        hold the guard *shared*, recovery alone needs it *exclusive*, so no
+        recovery can run while anyone at all is alive — and no store is ever
+        the unlucky one that "merely failed to claim". Conversion on the
+        already-held handle is atomic, which is how a recovery's exclusive
+        hold downgrades to the shared lifetime hold afterwards.
         """
-        if self._guard is not None:
-            return True
         try:
             import fcntl
         except ImportError:
             return False  # no advisory locks: never assume we are alone
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if self._guard is not None:
+            try:
+                fcntl.flock(self._guard.fileno(), mode | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             handle = open(str(self.path) + ".guard", "a+")
         except OSError:
             return False
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
         except OSError:
             handle.close()
             return False
         self._guard = handle
         return True
+
+    def _release_guard(self) -> None:
+        if self._guard is not None:
+            try:
+                self._guard.close()
+            except OSError:
+                pass
+            self._guard = None
+
+    def _claim_shared(self) -> None:
+        """Hold the shared guard for the store's lifetime.
+
+        Waits out a neighbour recovery's brief exclusive hold rather than
+        living unguarded past it; raising after the patience runs out is
+        deliberate — an unguarded store is exactly the state that lost
+        committed turns in the field. No-lock platforms are exempt: there
+        the guard cannot protect anyone anyway.
+        """
+        try:
+            import fcntl  # noqa: F401
+        except ImportError:
+            return
+        for _ in range(25):
+            if self._claim():
+                return
+            time.sleep(0.2)
+        raise sqlite3.OperationalError(
+            "another haikode is recovering this database; try again shortly")
 
     def _clear_stale_wal(self, error: sqlite3.OperationalError) -> bool:
         """Remove a dead process's WAL index so the database opens again.
@@ -676,7 +746,8 @@ class SessionStore:
             return False
         if self._open_here():
             return False
-        if not self._claim():
+        if not self._claim(exclusive=True):
+            # Someone alive holds the guard shared — their WAL, not a corpse's.
             return False
 
         cleared = False
@@ -705,12 +776,7 @@ class SessionStore:
                 self._conn.close()
                 self._conn = None
                 self._unregister()
-            if self._guard is not None:
-                try:
-                    self._guard.close()
-                except OSError:
-                    pass
-                self._guard = None
+            self._release_guard()
 
     def _query(self, sql: str, params=()) -> List[sqlite3.Row]:
         with self._lock:
@@ -917,27 +983,62 @@ class Session:
         """
         now = time.time()
 
-        def write(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                "INSERT OR REPLACE INTO messages "
-                "(session_id, seq, role, content, tool_calls, tool_call_id, "
-                "display, created, tokens) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (self.id, seq, message.role, message.content or "",
-                 _serialize_calls(message.tool_calls), message.tool_call_id or "",
-                 json.dumps(message.display or {}, default=str), now,
-                 None if tokens is None else int(tokens)))
-            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
-                         (now, self.id))
-            conn.commit()
+        def write(conn: sqlite3.Connection, at: int) -> None:
+            # An explicit transaction with a guaranteed rollback: without it
+            # a failure between the two statements left half an append
+            # behind. Plain INSERT, never OR REPLACE — a seq collision must
+            # surface, not silently swallow whichever message came first.
+            if getattr(conn, "in_transaction", False):
+                # A sibling write path's implicit transaction (legacy
+                # isolation) would make BEGIN fail; every such path commits
+                # under the same store lock, so anything open here is stray.
+                conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO messages "
+                    "(session_id, seq, role, content, tool_calls, "
+                    "tool_call_id, display, created, tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (self.id, at, message.role, message.content or "",
+                     _serialize_calls(message.tool_calls),
+                     message.tool_call_id or "",
+                     json.dumps(message.display or {}, default=str), now,
+                     None if tokens is None else int(tokens)))
+                conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
+                             (now, self.id))
+                conn.execute("COMMIT")
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+
+        def landed(conn: sqlite3.Connection, at: int) -> bool:
+            # A commit can be durable and still *report* failure (the fsync
+            # answered late, the mapping dropped). Rewriting in that state
+            # is how a message overwrites its committed self — check first.
+            row = conn.execute(
+                "SELECT content FROM messages WHERE session_id = ? "
+                "AND seq = ?", (self.id, at)).fetchone()
+            return row is not None and row[0] == (message.content or "")
 
         # Allocating the seq under the store lock: two threads (the task tool
-        # runs tools off the main thread) would otherwise pick the same seq and
-        # INSERT OR REPLACE would silently drop one of the messages.
+        # runs tools off the main thread) would otherwise pick the same seq.
         with self.store._lock:
             seq = self._seq + 1
             try:
-                write(self.store.connect())
+                try:
+                    write(self.store.connect(), seq)
+                except sqlite3.IntegrityError:
+                    # Another writer of this session took our seq. Adopt the
+                    # database's truth and take the next one, once.
+                    row = self.store.connect().execute(
+                        "SELECT MAX(seq) FROM messages WHERE session_id = ?",
+                        (self.id,)).fetchone()
+                    seq = int(row[0] or 0) + 1
+                    write(self.store.connect(), seq)
             except sqlite3.DatabaseError as exc:
                 if not any(token in str(exc).lower()
                            for token in self._append_wedge_tokens):
@@ -946,7 +1047,9 @@ class Session:
                 # good; without this reopen the session would answer "session
                 # not saved" to every turn until the user restarts.
                 self.store.reset()
-                write(self.store.connect())
+                conn = self.store.connect()
+                if not landed(conn, seq):
+                    write(conn, seq)
             # Only after the write succeeded, so a failed insert cannot leave a
             # hole in the sequence or a message in memory that is not on disk.
             self._seq = seq

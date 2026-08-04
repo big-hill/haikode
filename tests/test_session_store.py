@@ -1205,6 +1205,97 @@ class LiveWalGuardTests(unittest.TestCase):
         self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
         self.assertTrue(Path(str(self.path) + "-shm").exists())
 
+    def test_every_live_store_stays_guarded_until_the_last_one_leaves(self):
+        # The adversarial review's staircase: with a single exclusive owner,
+        # the second store lived unguarded the moment the first one left,
+        # and recovery could rip its live WAL. Shared lifetime locks close
+        # that: recovery needs the exclusive lock, impossible while ANY
+        # store lives.
+        first = self.store()
+        first.connect()
+        second = self.store()
+        second.connect()
+        stranger = self.store()
+        stranger._open_here = lambda: False
+        err = sqlite3.OperationalError("locking protocol")
+        self.assertFalse(stranger._clear_stale_wal(err))
+        first.close()                      # the original owner leaves
+        self.assertFalse(stranger._clear_stale_wal(err),
+                         "the survivor must still be guarded")
+        second.close()
+        loner = self.store()
+        self.assertTrue(loner._claim(exclusive=True),
+                        "with everyone gone, recovery is claimable again")
+
+    def test_a_non_transient_error_mid_retry_is_raised_not_recovered(self):
+        store = self.store()
+        store._TRANSIENT_PAUSES = (0, 0)
+        real = store._open
+        blows = [sqlite3.OperationalError("locking protocol"),
+                 sqlite3.OperationalError("database disk image is malformed")]
+
+        def flaky():
+            if blows:
+                raise blows.pop(0)
+            return real()
+
+        store._open = flaky
+        with self.assertRaises(sqlite3.OperationalError) as caught:
+            store.connect()
+        self.assertIn("malformed", str(caught.exception))
+        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+
+    def test_a_durable_but_reported_failed_commit_is_not_overwritten(self):
+        # The review's reproduction: commit lands, then reports "disk I/O
+        # error"; the old INSERT OR REPLACE retry then overwrote the
+        # committed row with the next message.
+        store = self.store()
+        session = store.new_session(".", "p", "m")
+        session.append(Msg(role="user", content="first"))
+        real = store.connect()
+
+        class Liar:
+            armed = True
+
+            def execute(self, sql, *params):
+                result = real.execute(sql, *params)
+                if Liar.armed and sql == "COMMIT":
+                    Liar.armed = False
+                    raise sqlite3.OperationalError("disk I/O error")
+                return result
+
+            def close(self):
+                pass
+
+        store._conn = Liar()
+        seq = session.append(Msg(role="user", content="durable"))
+        self.assertEqual(2, seq)
+        session.append(Msg(role="user", content="third"))
+        rows = [tuple(row) for row in store.connect().execute(
+            "SELECT seq, content FROM messages WHERE session_id = ? "
+            "ORDER BY seq", (session.id,))]
+        self.assertEqual([(1, "first"), (2, "durable"), (3, "third")], rows)
+
+    def test_a_failed_second_statement_rolls_back_the_first(self):
+        store = self.store()
+        session = store.new_session(".", "p", "m")
+        real = store.connect()
+
+        class Boom:
+            def execute(self, sql, *params):
+                if sql.startswith("UPDATE sessions"):
+                    raise sqlite3.OperationalError("boom")
+                return real.execute(sql, *params)
+
+        store._conn = Boom()
+        with self.assertRaises(sqlite3.OperationalError):
+            session.append(Msg(role="user", content="half"))
+        store._conn = real
+        count = real.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (session.id,)).fetchone()[0]
+        self.assertEqual(0, count, "the insert must not survive alone")
+
     def test_a_transient_locking_error_is_retried_not_recovered(self):
         store = self.store()
         store._TRANSIENT_PAUSES = (0,)
