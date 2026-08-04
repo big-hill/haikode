@@ -559,5 +559,48 @@ class TestHeaders(unittest.TestCase):
         self.assertEqual(seen.get("user-agent"), "custom/1")
 
 
+class HardCloseKeepsTheDescriptorOccupied(unittest.TestCase):
+    """Field forensics: _hard_close used to free the descriptor NUMBER while
+    a reader still sat inside OpenSSL; sqlite reused the number and a stray
+    TLS record was written into the database file. The descriptor must stay
+    occupied (parked on /dev/null) until the socket object itself dies.
+    """
+
+    def _response(self, sock):
+        class Raw:
+            _sock = sock
+        class Fp:
+            raw = Raw()
+        class Response:
+            fp = Fp()
+            def close(self):
+                pass
+        return Response()
+
+    def test_the_number_is_parked_not_freed(self):
+        import os
+        import socket as socket_module
+        from haikode import net
+        left, right = socket_module.socketpair()
+        self.addCleanup(right.close)
+        number = left.fileno()
+        net._hard_close(self._response(left))
+        # The number must NOT be reusable: a fresh open may not inherit it.
+        probe = open(os.devnull, "rb")
+        self.addCleanup(probe.close)
+        self.assertNotEqual(number, probe.fileno())
+        # A straggler writing on the old number lands in /dev/null — it
+        # must neither fail with EBADF nor reach the old peer.
+        os.write(number, b"\x17\x03\x03 stray record")
+        right.settimeout(0.2)
+        try:
+            data = right.recv(64)     # EOF from the shutdown is fine;
+        except (socket_module.timeout, OSError):
+            data = b""                # so is a timeout — but never the
+        self.assertNotIn(b"stray record", data)   # straggler's payload
+        os.close(number)                 # our cleanup of the parked number
+        left.detach()                    # the object no longer owns it
+
+
 if __name__ == "__main__":
     unittest.main()

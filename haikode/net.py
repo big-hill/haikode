@@ -299,13 +299,42 @@ def _hard_close(response):
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-        for closeable in (raw, sock):
-            if closeable is not None:
+            # Closing the descriptor here is what corrupted a database in
+            # the field: close() frees the NUMBER, another thread's sqlite
+            # reused it within the race window, and when the reader that
+            # was still blocked inside OpenSSL woke up, a stray TLS record
+            # (17 03 03 …) was written into the new owner's file. dup2 of
+            # /dev/null wakes the blocked Haiku reader exactly like close
+            # — it closes the old description — but keeps the number
+            # OCCUPIED until the socket object's own close runs at GC, so
+            # no stranger can inherit it in between. Every straggling read
+            # or write in the SSL machinery lands in /dev/null.
+            import os
+            descriptor = -1
+            try:
+                descriptor = sock.fileno()
+            except Exception:
+                pass
+            if descriptor >= 0:
                 try:
-                    closeable.close()
-                    released = True
-                except Exception:
+                    null_fd = os.open(os.devnull, os.O_RDWR)
+                    try:
+                        os.dup2(null_fd, descriptor)
+                        released = True
+                    finally:
+                        os.close(null_fd)
+                except OSError:
                     pass
+        if not released:
+            # No descriptor to park: fall back to the plain close, which at
+            # least frees the resources.
+            for closeable in (raw, sock):
+                if closeable is not None:
+                    try:
+                        closeable.close()
+                        released = True
+                    except Exception:
+                        pass
     except Exception:
         pass
 
