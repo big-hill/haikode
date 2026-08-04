@@ -1,9 +1,19 @@
 #include "ConfigBridge.h"
 
+#include <Autolock.h>
+#include <Locker.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+// popen() from several threads at once segfaulted on Haiku the moment
+// startup began issuing three listings concurrently (crash report: SEGV
+// in a "haikode history loader" thread). The calls are rare and quick,
+// so one lock serialises them all; the async task threads still keep
+// the window looper free, which is the part that matters.
+static BLocker sConfigToolLock("configtool bridge");
 
 // Same install root and PYTHONPATH as the CLI launcher
 // /boot/home/config/non-packaged/bin/haikode:
@@ -15,6 +25,7 @@ static const char* kConfigToolPrefix =
 /*static*/ BString
 ConfigBridge::RunConfigTool(const BString& args, int* exitCode)
 {
+	BAutolock lock(sConfigToolLock);
 	if (exitCode != NULL)
 		*exitCode = -1;
 
@@ -47,6 +58,7 @@ ConfigBridge::RunConfigTool(const BString& args, int* exitCode)
 ConfigBridge::RunConfigToolWithInput(const BString& args,
 	const BString& input, int* exitCode)
 {
+	BAutolock lock(sConfigToolLock);
 	if (exitCode != NULL)
 		*exitCode = -1;
 

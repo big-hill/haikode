@@ -99,10 +99,14 @@ public:
 
 	virtual void KeyDown(const char* bytes, int32 numBytes)
 	{
-		if (numBytes == 1 && (bytes[0] == '\n' || bytes[0] == '\r')
-			&& (modifiers() & B_COMMAND_KEY) != 0) {
-			fTarget.SendMessage(kMsgUiSend);
-			return;
+		// Enter sends, Shift+Enter breaks the line — what every chat
+		// application taught every user. Command+Enter still sends, for
+		// fingers trained on the old binding.
+		if (numBytes == 1 && (bytes[0] == '\n' || bytes[0] == '\r')) {
+			if ((modifiers() & B_SHIFT_KEY) == 0) {
+				fTarget.SendMessage(kMsgUiSend);
+				return;
+			}
 		}
 		BTextView::KeyDown(bytes, numBytes);
 	}
@@ -197,6 +201,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	BWindow(frame, "haikode", B_TITLED_WINDOW,
 		B_QUIT_ON_WINDOW_CLOSE | B_AUTO_UPDATE_SIZE_LIMITS),
 	fController(controller),
+	fMainSplit(NULL),
 	fRunning(false),
 	fStreamed(false),
 	fGeneration(0)
@@ -324,13 +329,20 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	modelField->SetExplicitMaxSize(
 		BSize(be_plain_font->StringWidth("M") * 18, B_SIZE_UNSET));
 
+	// The input aligns edge to edge with the transcript above it — the
+	// two read as one surface — and the controls sit on a thin row below:
+	// picker left, actions right, the geometry chat applications settled
+	// on years ago.
 	BView* composer = new BView("composer", B_WILL_DRAW);
-	BLayoutBuilder::Group<>(composer, B_HORIZONTAL, 4)
-		.SetInsets(6, 4, 6, 6)
+	BLayoutBuilder::Group<>(composer, B_VERTICAL, 4)
+		.SetInsets(0, 4, 0, 0)
 		.Add(inputScroll)
-		.Add(modelField)
-		.Add(sendBtn)
-		.Add(stopBtn)
+		.AddGroup(B_HORIZONTAL, 4)
+			.Add(modelField)
+			.AddGlue()
+			.Add(sendBtn)
+			.Add(stopBtn)
+		.End()
 	.End();
 
 	// Header strip: which agent/model is answering on the left, how full the
@@ -338,7 +350,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	// its prompt. Both are filled in from worker frames; until the first run
 	// they say so rather than showing a stale zero.
 	fInfoView = new BStringView("mi",
-		"No agent yet  •  choose a provider and model in Settings");
+		"New session — the first Send starts the agent");
 	fInfoView->SetFont(be_plain_font);
 	fInfoView->SetHighUIColor(B_PANEL_TEXT_COLOR);
 	fInfoView->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNSET));
@@ -414,6 +426,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 
 	// === Main native resizable split (BSplitView is classic Haiku) ===
 	BSplitView* mainSplit = new BSplitView(B_HORIZONTAL, B_USE_DEFAULT_SPACING);
+	fMainSplit = mainSplit;
 	mainSplit->SetName("mainSplit");
 	// The conversation is the product; the side panes are furniture. Give
 	// them sidebar proportions and let the user fold them away entirely —
@@ -424,6 +437,10 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	mainSplit->AddChild(rightPane, 0.22f);
 	mainSplit->SetCollapsible(0, true);
 	mainSplit->SetCollapsible(2, true);
+	// Folded until the agent actually runs a tool or asks for an
+	// approval — until then it is furniture answering a question nobody
+	// asked (field question: "what is it, what value does it give me?").
+	mainSplit->SetItemCollapsed(2, true);
 
 	// === Native BStatusBar ===
 	// No label: BStatusBar paints label and text side by side, which glued
@@ -585,16 +602,10 @@ HaiWindow::MessageReceived(BMessage* message)
 		}
 
 		case MSG_AGENT_MODEL_LOADED:
-		{
-			BString info(fAgentProvider);
-			BString model = message->GetString("output", "");
-			model.Trim();
-			if (message->GetInt32("exit", -1) == 0 && !model.IsEmpty())
-				info << " / " << model;
-			info << "  •  ready — the first Send starts the agent";
-			fInfoView->SetText(info.String());
+			// The provider and model already show in the composer picker;
+			// the header belongs to the session. Nothing to do here beyond
+			// having refreshed fAgentProvider for the checkmarks.
 			break;
-		}
 
 		case kMsgStreamDelta:
 		{
@@ -630,6 +641,9 @@ HaiWindow::MessageReceived(BMessage* message)
 
 		case kMsgToolStarted:
 		{
+			// The working pane reveals itself the moment there is work.
+			if (fMainSplit != NULL && fMainSplit->IsItemCollapsed(2))
+				fMainSplit->SetItemCollapsed(2, false);
 			int32 generation;
 			const char* name;
 			if (message->FindInt32("gen", &generation) != B_OK
@@ -803,6 +817,8 @@ HaiWindow::MessageReceived(BMessage* message)
 		}
 
 		case kMsgApprovalRequested:
+			if (fMainSplit != NULL && fMainSplit->IsItemCollapsed(2))
+				fMainSplit->SetItemCollapsed(2, false);
 		{
 			int32 generation;
 			const char* id;
