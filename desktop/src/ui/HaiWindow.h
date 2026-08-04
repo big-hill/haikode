@@ -5,10 +5,12 @@
 #include <Window.h>
 #include <Messenger.h>
 #include <String.h>
+#include <StringList.h>
 
 class BFont;
 class BMenu;
 class BPopUpMenu;
+class BMenuField;
 class BSplitView;
 class BTextView;
 class BOutlineListView;
@@ -31,6 +33,8 @@ private:
 									const BFont* font = NULL);
 			void				_AppendDiff(const char* diff);
 			void				_SetRunning(bool running);
+			void				_AddModelChoice(const BString& provider,
+									const BString& model);
 			void				_ClearPendingApprovals();
 			void				_AppendStyledLabel(const char* label, bool isUser);
 			void				_LogToolActivity(const char* text);
@@ -62,8 +66,13 @@ private:
 			BMenu*				fProviderMenu;
 			BSplitView*			fMainSplit;
 			BPopUpMenu*			fModelPopup;
+			BPopUpMenu*			fEffortPopup;
+			BMenuField*			fEffortField;
 			BString				fPendingAttachments;
 			BString				fAgentProvider;
+			BString				fAgentModel;
+			BString				fCurrentEffort;
+			BStringList			fCatalogModels;
 			bool				fRunning;
 			bool				fStreamed;
 			int32				fGeneration;

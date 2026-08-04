@@ -20,6 +20,7 @@
 #include <Menu.h>
 #include <MenuBar.h>
 #include <MenuField.h>
+#include <MessageRunner.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
 #include <OS.h>
@@ -66,6 +67,12 @@ enum : uint32 {
 	MSG_PROVIDERS_LISTED = 'PLst',
 	MSG_PROVIDER_PICKED  = 'PPck',
 	MSG_PROVIDER_SET     = 'PSet',
+	MSG_PROVIDER_MODELS  = 'PMdl',
+	MSG_MODEL_PICKED     = 'MPck',
+	MSG_EFFORTS_LISTED   = 'ELst',
+	MSG_EFFORT_CURRENT   = 'ECur',
+	MSG_EFFORT_PICKED    = 'EPck',
+	MSG_SESSIONS_RETRY   = 'SRty',
 	MSG_SHOW_SETTINGS   = 'STNG',
 };
 
@@ -136,6 +143,7 @@ struct HistoryTask {
 	BMessenger target;
 	BString args;
 	uint32 replyWhat;
+	BString context;
 };
 
 
@@ -148,6 +156,8 @@ run_history_task(void* data)
 	BMessage result(task->replyWhat);
 	result.AddInt32("exit", exitCode);
 	result.AddString("output", output);
+	if (!task->context.IsEmpty())
+		result.AddString("context", task->context);
 	task->target.SendMessage(&result);
 	delete task;
 	return 0;
@@ -155,12 +165,14 @@ run_history_task(void* data)
 
 
 static void
-spawn_history_task(BMessenger target, const BString& args, uint32 replyWhat)
+spawn_history_task(BMessenger target, const BString& args, uint32 replyWhat,
+	const BString& context = BString())
 {
 	HistoryTask* task = new HistoryTask;
 	task->target = target;
 	task->args = args;
 	task->replyWhat = replyWhat;
+	task->context = context;
 	thread_id thread = spawn_thread(run_history_task, "haikode history loader",
 		B_NORMAL_PRIORITY, task);
 	if (thread >= 0)
@@ -258,6 +270,9 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fSessionList->SetInvocationMessage(new BMessage(MSG_SESSION_INVOKED));
 	BScrollView* sessionsScroll = new BScrollView("ss", fSessionList,
 		0, false, true);
+	// Wide enough for an actual title, or the pane answers nothing.
+	sessionsScroll->SetExplicitMinSize(
+		BSize(be_plain_font->StringWidth("M") * 16, B_SIZE_UNSET));
 	BButton* reloadSessions = new BButton("reloadSessions", "Reload",
 		new BMessage(MSG_RELOAD_SESSIONS));
 	BGroupView* sessionsPane = new BGroupView(B_VERTICAL);
@@ -328,6 +343,14 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	BMenuField* modelField = new BMenuField("modelField", NULL, fModelPopup);
 	modelField->SetExplicitMaxSize(
 		BSize(be_plain_font->StringWidth("M") * 18, B_SIZE_UNSET));
+	// Reasoning effort is model-aware by construction: the provider says
+	// which levels its current model takes, and a model with none makes
+	// the control disappear rather than lie.
+	fEffortPopup = new BPopUpMenu("effort");
+	fEffortField = new BMenuField("effortField", NULL, fEffortPopup);
+	fEffortField->SetExplicitMaxSize(
+		BSize(be_plain_font->StringWidth("M") * 9, B_SIZE_UNSET));
+	fEffortField->Hide();
 
 	// The input aligns edge to edge with the transcript above it — the
 	// two read as one surface — and the controls sit on a thin row below:
@@ -339,6 +362,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 		.Add(inputScroll)
 		.AddGroup(B_HORIZONTAL, 4)
 			.Add(modelField)
+			.Add(fEffortField)
 			.AddGlue()
 			.Add(sendBtn)
 			.Add(stopBtn)
@@ -432,9 +456,9 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	// them sidebar proportions and let the user fold them away entirely —
 	// the right pane earns its space only while tools run or approvals
 	// wait (field question: "what value does it give me?").
-	mainSplit->AddChild(leftPane, 0.18f);
-	mainSplit->AddChild(centerPane, 0.60f);
-	mainSplit->AddChild(rightPane, 0.22f);
+	mainSplit->AddChild(leftPane, 0.24f);
+	mainSplit->AddChild(centerPane, 0.56f);
+	mainSplit->AddChild(rightPane, 0.20f);
 	mainSplit->SetCollapsible(0, true);
 	mainSplit->SetCollapsible(2, true);
 	// Folded until the agent actually runs a tool or asks for an
@@ -535,6 +559,7 @@ HaiWindow::MessageReceived(BMessage* message)
 				delete fProviderMenu->RemoveItem((int32)0);
 			while (fModelPopup->CountItems() > 0)
 				delete fModelPopup->RemoveItem((int32)0);
+			fCatalogModels.MakeEmpty();
 			BStringList lines;
 			BString(message->GetString("output", "")).Split("\n", true,
 				lines);
@@ -545,26 +570,118 @@ HaiWindow::MessageReceived(BMessage* message)
 					|| fields.StringAt(0).IsEmpty())
 					continue;
 				BString name = fields.StringAt(0);
+				BString configured = fields.CountStrings() >= 4
+					? fields.StringAt(3) : BString();
 				BString label(name);
-				if (fields.CountStrings() >= 4
-					&& !fields.StringAt(3).IsEmpty())
-					label << " \xe2\x80\x94 " << fields.StringAt(3);
+				if (!configured.IsEmpty())
+					label << " \xe2\x80\x94 " << configured;
 				BMessage* pick = new BMessage(MSG_PROVIDER_PICKED);
 				pick->AddString("name", name);
 				BMenuItem* item = new BMenuItem(label, pick);
 				if (name == fAgentProvider)
 					item->SetMarked(true);
 				fProviderMenu->AddItem(item);
-				BMessage* pickToo = new BMessage(*pick);
-				BMenuItem* popupItem = new BMenuItem(label, pickToo);
-				if (name == fAgentProvider)
-					popupItem->SetMarked(true);
-				fModelPopup->AddItem(popupItem);
+				// The composer popup gets the full catalogue per
+				// provider: field request, "chatgpt -> gpt-5.6 -> sol".
+				fCatalogModels.AddString(name);
+				spawn_history_task(BMessenger(this),
+					BString("models ") << name,
+					MSG_PROVIDER_MODELS, name);
+				// Until the catalogue answers, the configured model is
+				// selectable so the popup is never empty.
+				if (!configured.IsEmpty())
+					_AddModelChoice(name, configured);
 			}
 			fProviderMenu->AddSeparatorItem();
 			fProviderMenu->AddItem(new BMenuItem(
 				"Model & keys" B_UTF8_ELLIPSIS,
 				new BMessage(MSG_SHOW_SETTINGS)));
+			break;
+		}
+
+		case MSG_PROVIDER_MODELS:
+		{
+			const char* provider = message->GetString("context", NULL);
+			if (provider == NULL || provider[0] == '\0'
+				|| message->GetInt32("exit", -1) != 0)
+				break;
+			BStringList models;
+			BString(message->GetString("output", "")).Split("\n", true,
+				models);
+			for (int32 i = 0; i < models.CountStrings(); i++) {
+				BString id = models.StringAt(i);
+				id.Trim();
+				if (!id.IsEmpty())
+					_AddModelChoice(provider, id);
+			}
+			break;
+		}
+
+		case MSG_MODEL_PICKED:
+		{
+			const char* provider = message->GetString("provider", NULL);
+			const char* model = message->GetString("model", NULL);
+			if (provider == NULL || model == NULL)
+				break;
+			BString args("set-model ");
+			args << ConfigBridge::ShellQuote(provider) << " "
+				<< ConfigBridge::ShellQuote(model);
+			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
+			break;
+		}
+
+		case MSG_EFFORTS_LISTED:
+		{
+			while (fEffortPopup->CountItems() > 0)
+				delete fEffortPopup->RemoveItem((int32)0);
+			BStringList efforts;
+			BString(message->GetString("output", "")).Split("\n", true,
+				efforts);
+			int32 shown = 0;
+			for (int32 i = 0; i < efforts.CountStrings(); i++) {
+				BString level = efforts.StringAt(i);
+				level.Trim();
+				if (level.IsEmpty())
+					continue;
+				BMessage* pick = new BMessage(MSG_EFFORT_PICKED);
+				pick->AddString("effort", level);
+				BMenuItem* item = new BMenuItem(level, pick);
+				if (level == fCurrentEffort)
+					item->SetMarked(true);
+				fEffortPopup->AddItem(item);
+				shown++;
+			}
+			// A model with no effort levels has no effort control: hiding
+			// beats lying (field requirement: model-aware).
+			if (shown == 0 && !fEffortField->IsHidden())
+				fEffortField->Hide();
+			else if (shown > 0 && fEffortField->IsHidden())
+				fEffortField->Show();
+			break;
+		}
+
+		case MSG_EFFORT_CURRENT:
+		{
+			BString current = message->GetString("output", "");
+			current.Trim();
+			if (message->GetInt32("exit", -1) == 0)
+				fCurrentEffort = current;
+			BString args("efforts ");
+			args << ConfigBridge::ShellQuote(fAgentProvider);
+			spawn_history_task(BMessenger(this), args, MSG_EFFORTS_LISTED);
+			break;
+		}
+
+		case MSG_EFFORT_PICKED:
+		{
+			const char* level = message->GetString("effort", NULL);
+			if (level == NULL || fAgentProvider.IsEmpty())
+				break;
+			fCurrentEffort = level;
+			BString args("set-effort ");
+			args << ConfigBridge::ShellQuote(fAgentProvider) << " "
+				<< ConfigBridge::ShellQuote(level);
+			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
 			break;
 		}
 
@@ -592,20 +709,38 @@ HaiWindow::MessageReceived(BMessage* message)
 			BString provider = message->GetString("output", "");
 			provider.Trim();
 			if (message->GetInt32("exit", -1) != 0 || provider.IsEmpty())
-				break;      // the choose-in-Settings line stays honest
+				break;
 			fAgentProvider = provider;
 			BString args("get providers.");
 			args << provider << ".model";
 			spawn_history_task(BMessenger(this), args,
 				MSG_AGENT_MODEL_LOADED);
+			BString effortArgs("get providers.");
+			effortArgs << provider << ".reasoning_effort";
+			spawn_history_task(BMessenger(this), effortArgs,
+				MSG_EFFORT_CURRENT);
 			break;
 		}
 
 		case MSG_AGENT_MODEL_LOADED:
-			// The provider and model already show in the composer picker;
-			// the header belongs to the session. Nothing to do here beyond
-			// having refreshed fAgentProvider for the checkmarks.
+		{
+			BString model = message->GetString("output", "");
+			model.Trim();
+			if (message->GetInt32("exit", -1) == 0)
+				fAgentModel = model;
+			// Re-mark the popup now that the current pair is known.
+			for (int32 i = 0; i < fModelPopup->CountItems(); i++) {
+				BMenuItem* item = fModelPopup->ItemAt(i);
+				BMessage* pick = item->Message();
+				if (pick == NULL)
+					continue;
+				bool current = fAgentProvider
+						== pick->GetString("provider", "")
+					&& fAgentModel == pick->GetString("model", "");
+				item->SetMarked(current);
+			}
 			break;
+		}
 
 		case kMsgStreamDelta:
 		{
@@ -899,6 +1034,9 @@ HaiWindow::MessageReceived(BMessage* message)
 		case kMsgRunCancelled:
 		{
 			_SetRunning(false);      // ends always end; see kMsgRunFailed
+			// The finished run may have created or renamed a session.
+			spawn_history_task(BMessenger(this), "sessions",
+				MSG_SESSIONS_LOADED);
 			int32 generation;
 			if (message->FindInt32("gen", &generation) != B_OK || generation != fGeneration)
 				break;
@@ -923,10 +1061,24 @@ HaiWindow::MessageReceived(BMessage* message)
 				MSG_SESSIONS_LOADED);
 			break;
 
+		case MSG_SESSIONS_RETRY:
+			spawn_history_task(BMessenger(this), "sessions",
+				MSG_SESSIONS_LOADED);
+			break;
+
 		case MSG_SESSIONS_LOADED:
 		{
-			if (message->GetInt32("exit", -1) != 0)
+			if (message->GetInt32("exit", -1) != 0) {
+				// Contention with a live TUI is transient; say so and try
+				// once more instead of presenting an empty list as truth.
+				while (fSessionList->CountItems() > 0)
+					delete fSessionList->RemoveItem((int32)0);
+				fSessionList->AddItem(new BStringItem(
+					"(store busy - retrying" B_UTF8_ELLIPSIS ")"));
+				BMessageRunner::StartSending(BMessenger(this),
+					new BMessage(MSG_SESSIONS_RETRY), 4000000, 1);
 				break;
+			}
 			while (fSessionList->CountItems() > 0)
 				delete fSessionList->RemoveItem((int32)0);
 			BString output = message->GetString("output", "");
@@ -1378,6 +1530,52 @@ void
 HaiWindow::_SetRunning(bool running)
 {
 	fRunning = running;
+}
+
+
+void
+HaiWindow::_AddModelChoice(const BString& provider, const BString& model)
+{
+	// A sectioned flat list: a disabled "provider:" header, its models
+	// indented beneath — the requested category navigation without
+	// submenu-label acrobatics BMenuField cannot render.
+	BString header(provider);
+	header << ":";
+	int32 headerIndex = -1;
+	for (int32 i = 0; i < fModelPopup->CountItems(); i++) {
+		BMenuItem* item = fModelPopup->ItemAt(i);
+		if (item->Label() != NULL && header == item->Label()) {
+			headerIndex = i;
+			break;
+		}
+	}
+	if (headerIndex < 0) {
+		if (fModelPopup->CountItems() > 0)
+			fModelPopup->AddSeparatorItem();
+		BMenuItem* head = new BMenuItem(header.String(), NULL);
+		head->SetEnabled(false);
+		fModelPopup->AddItem(head);
+		headerIndex = fModelPopup->IndexOf(head);
+	}
+	BString label("  ");
+	label << model;
+	int32 insertAt = headerIndex + 1;
+	while (insertAt < fModelPopup->CountItems()) {
+		BMenuItem* item = fModelPopup->ItemAt(insertAt);
+		const char* existing = item->Label();
+		if (existing == NULL || existing[0] != ' ')
+			break;
+		if (label == existing)
+			return;
+		insertAt++;
+	}
+	BMessage* pick = new BMessage(MSG_MODEL_PICKED);
+	pick->AddString("provider", provider.String());
+	pick->AddString("model", model.String());
+	BMenuItem* item = new BMenuItem(label.String(), pick);
+	if (provider == fAgentProvider && model == fAgentModel)
+		item->SetMarked(true);
+	fModelPopup->AddItem(item, insertAt);
 }
 
 void
