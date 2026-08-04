@@ -573,6 +573,8 @@ class REPL:
             ("todos", self._cmd_todos, "show the current todo list"),
             ("cost", self._cmd_cost, "show token usage"),
             ("init", self._cmd_init, "write AGENTS.md and haikode.json"),
+            ("update", self._cmd_update,
+             "check for a newer haikode and fetch it"),
         ]
 
     def _cmd_help(self, arg):
@@ -1235,6 +1237,20 @@ class REPL:
         except OSError as e:
             return f"[error] {e}"
         return f"Exported {len(text)} bytes to {path}"
+
+    def _cmd_update(self, arg):
+        """Check the releases feed; apply what applies safely."""
+        from . import update
+        state = update.check()
+        if state.get("error"):
+            print("update check failed: %s" % state["error"])
+            return
+        if not state.get("available"):
+            print("haikode is up to date (%s)." % state.get("current"))
+            return
+        print("newest release: %s (running %s)"
+              % (state.get("latest"), state.get("current")))
+        print(update.apply_update(state))
 
     def _cmd_compact(self, arg):
         keep = COMPACT_KEEP

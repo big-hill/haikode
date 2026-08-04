@@ -2339,6 +2339,8 @@ class TUI:
         # the menu", not "drop me at the prompt"). A completed action still
         # closes the whole run of them at once.
         self._dialog_stack: List[Any] = []
+        # Set by the passive update-check thread; consumed by the tick.
+        self._update_notice = ""
         self.usage = UsageTracker()
         self._seen_tokens = {"input": 0, "output": 0}
         self._catalog_cache = None
@@ -2408,10 +2410,28 @@ class TUI:
             return _wrap_curses(self.run)
         self._attach(stdscr)
         self._set_tab_title(status.short_label(self.cwd, 24))
+        self._start_update_check()
         try:
             self._loop()
         finally:
             self._shutdown()
+
+    def _start_update_check(self):
+        """The passive release check, entirely off the curses thread.
+
+        Silent on every failure and on up-to-date; a one-line notice in
+        the transcript otherwise. `update_check: false` disables it.
+        """
+        def body():
+            try:
+                from . import update
+                data = getattr(self.config, "data", None) or {}
+                self._update_notice = update.startup_notice(data)
+            except Exception:
+                pass
+
+        threading.Thread(target=body, name="update check",
+                         daemon=True).start()
 
     def _attach(self, stdscr):
         if curses is None:  # pragma: no cover - platform guard
@@ -2959,6 +2979,11 @@ class TUI:
         while not self._quit:
             try:
                 self._pump()
+                notice = self._update_notice
+                if notice:
+                    self._update_notice = ""
+                    self.transcript.add(Entry("info", text=notice))
+                    self._dirty = True
                 # The display title composes in the background AFTER the
                 # turn that triggered it, but the tab was only renamed ON
                 # turn events — a resumed session's single turn left the
