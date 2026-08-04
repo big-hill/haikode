@@ -402,6 +402,10 @@ def build_agent(config: Config, provider_name: str = "", cwd: str = ".",
     # with no servers installed this costs a memoised PATH miss and nothing
     # else. `lsp: false` in the config opts out entirely.
     agent.ctx.lsp = LSPManager.from_config(session_config, cwd)
+    # The "shell" key names the binary the bash tool hands commands to; it
+    # was validated and then ignored for as long as the wiring audit has
+    # existed.
+    agent.ctx.shell = str(data.get("shell") or "")
 
     # MCP is the one extensibility path on an OS with no pip: a configured
     # server's tools join the agent's set, behind the "mcp" permission key.

@@ -1555,6 +1555,35 @@ class WheelEmulationTests(unittest.TestCase):
         ui.history_index = 1
         return ui
 
+    def test_activity_band_names_each_actor_with_its_age(self):
+        # Claude/Codex-style: the status area grows a line per live
+        # agent/shell instead of one aggregated count.
+        details = {1: ("agent", "docs sweep", 100.0),
+                   2: ("shell", "make -C desktop", 40.0)}
+        lines = tui.build_activity_lines(details, 70, tui.RenderOptions(
+            glyphs=tui.Glyphs(True)), now=170.0)
+        self.assertEqual(2, len(lines))
+        # Oldest first: the longest-running actor reads at the top.
+        self.assertIn("shell: make -C desktop", lines[0].text)
+        self.assertIn("2m10s", lines[0].text)
+        self.assertIn("agent: docs sweep", lines[1].text)
+        self.assertIn("1m10s", lines[1].text)
+
+    def test_activity_band_caps_and_counts_the_rest(self):
+        details = {i: ("agent", "worker %d" % i, float(i)) for i in range(9)}
+        lines = tui.build_activity_lines(details, 70, tui.RenderOptions(
+            glyphs=tui.Glyphs(True)), now=100.0)
+        self.assertEqual(tui.MAX_ACTIVITY_ROWS, len(lines))
+        self.assertIn("and 5 more", lines[-1].text)
+
+    def test_frame_reserves_activity_rows_between_queue_and_todos(self):
+        frame = tui.layout_frame(40, 100, 1, session=True,
+                                 wanted_todo_rows=2, wanted_queue_rows=1,
+                                 wanted_activity_rows=2)
+        self.assertEqual(2, frame.activity_rows)
+        self.assertEqual(frame.queue_top - 2, frame.activity_top)
+        self.assertEqual(frame.activity_top - 2, frame.todo_top)
+
     def test_no_mouse_subscription_on_haiku(self):
         # Field report: click-drag selection was dead in the TUI. Any
         # non-zero mousemask makes the terminal report buttons to us, and

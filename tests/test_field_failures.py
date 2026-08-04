@@ -1395,6 +1395,22 @@ class TheFooterSaysWhatIsActuallyHappening(TemporaryProject):
         self.assertIn(("shells", 1, {"agents": 0, "shells": 0}), seen)
         self.assertEqual(0, agent.ctx.activity["shells"])
 
+    def test_the_bash_tool_honours_the_projects_shell(self):
+        # haikode.json `shell` was validated and never read — one of the
+        # audit's executable bug reports, now closed for real: the wrapper
+        # below proves the configured binary is the one that runs.
+        from haikode.tool.shell import BashTool
+        wrapper = Path(self.root) / "wrapper.sh"
+        wrapper.write_text("#!/bin/sh\necho WRAPPED\nexec /bin/sh \"$@\"\n")
+        wrapper.chmod(0o755)
+        config = self.config()
+        agent = build_agent(config, "", cwd=self.root)
+        agent.permissions.auto_approve = True
+        agent.ctx.shell = str(wrapper)
+        result = BashTool().execute({"command": "echo inner"}, agent.ctx)
+        self.assertIn("WRAPPED", result.output)
+        self.assertIn("inner", result.output)
+
     def test_bump_activity_stamps_and_clears_the_start_time(self):
         from haikode.tool.base import ToolContext
         ctx = ToolContext(cwd=self.root)

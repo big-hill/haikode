@@ -29,8 +29,8 @@ reviewer.
 python3 -m unittest discover -s tests -b
 ```
 
-The suite is 2300+ tests. It fails **exactly five** on purpose — the
-wiring-audit backlog documented in the README — and skips two. A sixth
+The suite is 2300+ tests. It fails **exactly four** on purpose — the
+wiring-audit backlog documented in the README — and skips two. A fifth
 failure is a real regression.
 
 ## Acceptance shape

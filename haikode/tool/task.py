@@ -145,13 +145,14 @@ class TaskTool(Tool):
         # Same counters as the parent, so the footer sees nested activity.
         sub.ctx.activity = ctx.activity
         sub.ctx.activity_since = ctx.activity_since
+        sub.ctx.activity_detail = ctx.activity_detail
         sub.ctx.activity_lock = ctx.activity_lock
 
-        ctx.bump_activity("agents", +1)
+        token = ctx.activity_begin("agent", label)
         try:
             result = _run_sub(sub, args, label, ctx)
         finally:
-            ctx.bump_activity("agents", -1)
+            ctx.activity_end("agent", token)
 
         # Surface the sub-agent's file modifications to the parent for revert.
         ctx.modified_files.update(sub.ctx.modified_files)

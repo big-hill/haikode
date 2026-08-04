@@ -739,9 +739,13 @@ class BashTool(Tool):
         env.setdefault("GIT_PAGER", "cat")
         env["TERM"] = "dumb"  # stop tools from emitting escape sequences
 
+        # The project may name its own shell (haikode.json "shell"); the
+        # system default answers otherwise.
+        shell_binary = str(getattr(ctx, "shell", "") or "") or None
         try:
             proc = subprocess.Popen(
-                command, shell=True, cwd=workdir, env=env,
+                command, shell=True, executable=shell_binary,
+                cwd=workdir, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL, text=True, errors="replace",
                 # New session => new process group => a timeout can kill the
@@ -760,10 +764,11 @@ class BashTool(Tool):
             reader.start()
             readers.append(reader)
 
-        # The footer's "1 shell" count: alive exactly while the child is.
-        bump = getattr(ctx, "bump_activity", None)
-        if callable(bump):
-            bump("shells", +1)
+        # The footer's "1 shell" count — and its named line: alive exactly
+        # while the child is.
+        begin = getattr(ctx, "activity_begin", None)
+        end = getattr(ctx, "activity_end", None)
+        token = begin("shell", command) if callable(begin) else 0
         try:
             timed_out, aborted = _supervise(proc, timeout, ctx, readers)
         except BaseException:
@@ -771,8 +776,8 @@ class BashTool(Tool):
             _kill_group(proc)
             raise
         finally:
-            if callable(bump):
-                bump("shells", -1)
+            if callable(end):
+                end("shell", token)
 
         if timed_out or aborted:
             _kill_group(proc)

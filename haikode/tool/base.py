@@ -91,6 +91,9 @@ class ToolContext:
         # Files touched this run, for session revert (phase 6).
         self.modified_files: Dict[str, Optional[str]] = {}
         self.todos: List[Dict[str, str]] = []
+        # The project's configured shell for the bash tool ("" = system
+        # default). Set by runtime.build_agent from the merged config.
+        self.shell: str = ""
         # Live activity counters the footer reads: running subagents and
         # shells. Shared by reference into subagent contexts (task.py), so
         # the root context sees the whole tree's activity.
@@ -99,6 +102,10 @@ class ToolContext:
         # long the work has been running — a 15-minute compile with no
         # provider stream open reads as a dead session without it.
         self.activity_since: Dict[str, float] = {}
+        # token -> (kind, label, started): the named work behind the
+        # counters, for footers that list actors rather than sums.
+        self.activity_detail: Dict[int, tuple] = {}
+        self._activity_serial = 0
         self.activity_lock = threading.Lock()
 
     def bump_activity(self, key: str, delta: int) -> None:
@@ -114,6 +121,34 @@ class ToolContext:
                     self.activity_since.pop(key, None)
         except Exception:
             pass
+
+    def activity_begin(self, kind: str, label: str) -> int:
+        """Register one named piece of live work; returns its token.
+
+        The counters answer "how many"; this answers "which, and for how
+        long" — what the footer's per-actor lines are drawn from. Shared by
+        reference into subagent contexts like the counters themselves.
+        """
+        token = 0
+        try:
+            with self.activity_lock:
+                self._activity_serial += 1
+                token = self._activity_serial
+                self.activity_detail[token] = (
+                    kind, " ".join(str(label or "").split())[:80],
+                    time.monotonic())
+        except Exception:
+            pass
+        self.bump_activity(kind + "s", +1)
+        return token
+
+    def activity_end(self, kind: str, token: int) -> None:
+        try:
+            with self.activity_lock:
+                self.activity_detail.pop(token, None)
+        except Exception:
+            pass
+        self.bump_activity(kind + "s", -1)
 
     # --- cancellation ---------------------------------------------------
 

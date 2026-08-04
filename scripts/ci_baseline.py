@@ -2,14 +2,14 @@
 
 The README's correctness claim is precise: exactly five failures, all in
 tests/test_wiring_audit.py (the wiring backlog kept as executable debt),
-zero errors. A sixth failure is a regression; a fourth is someone fixing
+zero errors. A fifth failure is a regression; a third is someone fixing
 the backlog without updating the claim. Both should fail the build.
 """
 
 import sys
 import unittest
 
-EXPECTED_WIRING_FAILURES = 5
+EXPECTED_WIRING_FAILURES = 4
 
 
 def main() -> int:

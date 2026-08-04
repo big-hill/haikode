@@ -910,6 +910,44 @@ def build_pinned_todo_lines(todos: Sequence[Any], width: int,
     return out[:limit]
 
 
+MAX_ACTIVITY_ROWS = 5
+
+
+def build_activity_lines(details: Dict[int, tuple], width: int,
+                         opts: RenderOptions, now: Optional[float] = None,
+                         limit: int = MAX_ACTIVITY_ROWS) -> List[Line]:
+    """One line per running agent/shell, oldest first, with its age.
+
+    The footer's aggregate ("2 agents · 1 shell") says how many; these
+    lines say WHICH, which is what makes a five-minute fan-out legible
+    instead of ominous. Capped, with a "+N more" tail past the cap.
+    """
+    g = opts.glyphs
+    stamp = time.monotonic() if now is None else now
+    items = sorted((value for value in (details or {}).values()
+                    if isinstance(value, tuple) and len(value) == 3),
+                   key=lambda item: item[2])
+    if not items:
+        return []
+    room = limit if len(items) <= limit else limit - 1
+    out: List[Line] = []
+    dot = g.bullet if g.unicode_ok else "*"
+    sep = " %s " % g.bullet if g.unicode_ok else " | "
+    for kind, label, started in items[:room]:
+        prefix = "  %s %s: " % (dot, kind)
+        age = format_duration(max(0.0, stamp - started))
+        body = status.truncate(str(label), max(4, width - len(prefix)
+                                               - len(sep) - len(age)))
+        out.extend(_styled(sanitize(prefix + body + sep + age,
+                                    g.unicode_ok), width, "hint", "", ""))
+    if len(items) > room:
+        out.extend(_styled("    %s and %d more" % ("…" if g.unicode_ok
+                                                   else "...",
+                                                   len(items) - room),
+                           width, "hint", "", ""))
+    return out[:limit]
+
+
 def build_pinned_queue_lines(pending: Sequence[str], width: int,
                              opts: RenderOptions,
                              limit: int = MAX_PINNED_QUEUE_ROWS) -> List[Line]:
@@ -2064,7 +2102,7 @@ class Frame:
     __slots__ = ("rows", "cols", "box_top", "box_left", "box_width",
                  "box_height", "input_rows", "content_width", "hint_row",
                  "footer_row", "body_height", "todo_rows", "todo_top",
-                 "queue_rows", "queue_top")
+                 "queue_rows", "queue_top", "activity_rows", "activity_top")
 
     def __repr__(self):  # pragma: no cover - debugging aid
         return ("Frame(rows=%d, cols=%d, body=%d, box_top=%d, box_height=%d, "
@@ -2088,7 +2126,8 @@ def box_width(cols: int, session: bool = False) -> int:
 
 def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
                  session: bool = False, wanted_todo_rows: int = 0,
-                 wanted_queue_rows: int = 0) -> Frame:
+                 wanted_queue_rows: int = 0,
+                 wanted_activity_rows: int = 0) -> Frame:
     """Split the screen bottom-up: footer, hint, prompt, queue, plan, the rest.
 
     The footer owns the last row and the box grows upwards from it, so the
@@ -2123,9 +2162,16 @@ def layout_frame(rows: int, cols: int, wanted_input_rows: int = 1,
                                   available))
     frame.queue_top = frame.box_top - frame.queue_rows
     available -= frame.queue_rows
+    # Live agents/shells sit between the queue and the plan: nearer the
+    # prompt than the plan (they are NOW), behind the queue (that is the
+    # user's own words waiting).
+    frame.activity_rows = max(0, min(int(wanted_activity_rows),
+                                     MAX_ACTIVITY_ROWS, available))
+    frame.activity_top = frame.queue_top - frame.activity_rows
+    available -= frame.activity_rows
     frame.todo_rows = max(0, min(int(wanted_todo_rows), MAX_PINNED_TODO_ROWS,
                                  available))
-    frame.todo_top = frame.queue_top - frame.todo_rows
+    frame.todo_top = frame.activity_top - frame.todo_rows
     frame.body_height = max(1, frame.todo_top)
     return frame
 
@@ -4998,13 +5044,15 @@ class TUI:
         content = max(4, box_width(cols, session=session) - 4)
         wanted = len(layout_input(self.buffer, self.cursor, content,
                                   prompt=self._prompt()).rows)
-        todo_rows = queue_rows = 0
+        todo_rows = queue_rows = activity_rows = 0
         if session:
             todo_rows = len(self._pinned_todo_lines(content))
             queue_rows = len(self._pinned_queue_lines(content))
+            activity_rows = len(self._activity_lines(content))
         return layout_frame(rows, cols, wanted, session=session,
                             wanted_todo_rows=todo_rows,
-                            wanted_queue_rows=queue_rows)
+                            wanted_queue_rows=queue_rows,
+                            wanted_activity_rows=activity_rows)
 
     def _pending_messages(self) -> List[str]:
         """Everything typed but not yet handed to the model, in send order.
@@ -5212,6 +5260,14 @@ class TUI:
                 if line.text:
                     self._addstr(frame.queue_top + offset, frame.box_left + 2,
                                  line.text, self._attr(line.style))
+        if frame.activity_rows:
+            for offset, line in enumerate(
+                    self._activity_lines(frame.content_width)
+                    [:frame.activity_rows]):
+                if line.text:
+                    self._addstr(frame.activity_top + offset,
+                                 frame.box_left + 2, line.text,
+                                 self._attr(line.style))
         cursor = self._draw_prompt_box(frame.box_top, frame)
         self._draw_hint_row(frame.hint_row, frame)
         return cursor
@@ -5428,6 +5484,16 @@ class TUI:
             generated = str(getattr(session, "title", "") or "")[:40].strip()
         if generated:
             self._set_tab_title(generated)
+
+    def _activity_lines(self, width: int) -> List[Line]:
+        """The per-actor band above the prompt while agents/shells run."""
+        if not self.running:
+            return []
+        details = getattr(getattr(self.agent, "ctx", None),
+                          "activity_detail", None)
+        if not isinstance(details, dict) or not details:
+            return []
+        return build_activity_lines(dict(details), width, self.opts)
 
     QUIET_AFTER = 30      # seconds of stream silence before the footer says so
 
