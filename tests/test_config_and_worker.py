@@ -543,8 +543,10 @@ class ConfigAndWorkerTests(unittest.TestCase):
             self.assertEqual(frame_events(output.getvalue()),
                              ["started", "info", "usage", "error"])
 
-    def test_desktop_worker_unknown_session_starts_fresh(self):
-        """An id the app no longer has must not resurrect a stale transcript."""
+    def test_desktop_worker_refuses_to_fork_a_named_session(self):
+        """Adversarial-review finding: a named session that cannot load must
+        refuse the run, never answer with a blank history under a new id —
+        that silent fork lost the whole conversation without a word."""
         with tempfile.TemporaryDirectory() as directory:
             provider = ScriptedProvider([
                 [CompletionChunk(text="reply", stop_reason="stop")]])
@@ -553,9 +555,26 @@ class ConfigAndWorkerTests(unittest.TestCase):
             with patches[0], patches[1], patches[2], patches[3], \
                     redirect_stdout(output):
                 self.assertEqual(
-                    desktop_worker.run("hi", session_name="ses_doesnotexist"), 0)
+                    desktop_worker.run("hi", session_name="ses_doesnotexist"),
+                    1)
+            frames = worker_frames(output.getvalue())
+            self.assertEqual("error", frames[0]["event"])
+            self.assertEqual("session", frames[0]["kind"])
+            self.assertIn("ses_doesnotexist", frames[0]["message"])
+
+    def test_desktop_worker_an_empty_session_name_starts_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider = ScriptedProvider([
+                [CompletionChunk(text="reply", stop_reason="stop")]])
+            _, patches = self._worker_env(directory, provider)
+            output = StringIO()
+            with patches[0], patches[1], patches[2], patches[3], \
+                    redirect_stdout(output):
+                self.assertEqual(
+                    desktop_worker.run("hi", session_name=""), 0)
             started = worker_frames(output.getvalue())[0]
-            self.assertNotEqual(started["session"], "ses_doesnotexist")
+            self.assertEqual("started", started["event"])
+            self.assertTrue(started["session"])
 
     def test_desktop_worker_maps_agent_events_onto_frames(self):
         """Every Agent.on_event kind has a frame; unknown kinds stay silent."""
@@ -617,6 +636,50 @@ class ConfigAndWorkerTests(unittest.TestCase):
                 self.assertEqual(configtool.main(["set-key-stdin", "openai"]), 0)
                 self.assertNotIn("secret-value", output.getvalue())
                 self.assertEqual(config.get_api_key("openai"), "secret-value")
+
+    def test_configtool_set_model_is_one_atomic_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(os.path.join(directory, "config.json"))
+            config.data.setdefault("providers", {})["chatgpt"] = {
+                "dialect": "chatgpt", "model": "gpt-5.6-terra"}
+            output = StringIO()
+            with (patch.object(configtool, "Config", return_value=config),
+                  redirect_stdout(output)):
+                self.assertEqual(
+                    configtool.main(["set-model", "chatgpt", "gpt-5.6-sol"]),
+                    0)
+                self.assertEqual(
+                    configtool.main(["set-model", "nowhere", "x"]), 1)
+            self.assertEqual("gpt-5.6-sol",
+                             config.data["providers"]["chatgpt"]["model"])
+            self.assertEqual("chatgpt", config.data["default_provider"])
+
+    def test_configtool_efforts_is_model_aware(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(os.path.join(directory, "config.json"))
+            config.data.setdefault("providers", {})["chatgpt"] = {
+                "dialect": "chatgpt", "model": "gpt-5.6-sol"}
+            output = StringIO()
+            with (patch.object(configtool, "Config", return_value=config),
+                  redirect_stdout(output)):
+                self.assertEqual(configtool.main(["efforts", "chatgpt"]), 0)
+            listed = output.getvalue().split()
+            self.assertIn("max", listed)
+            self.assertIn("xhigh", listed)
+
+    def test_configtool_set_effort_persists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(os.path.join(directory, "config.json"))
+            config.data.setdefault("providers", {})["chatgpt"] = {
+                "dialect": "chatgpt", "model": "gpt-5.6-sol"}
+            output = StringIO()
+            with (patch.object(configtool, "Config", return_value=config),
+                  redirect_stdout(output)):
+                self.assertEqual(
+                    configtool.main(["set-effort", "chatgpt", "xhigh"]), 0)
+            self.assertEqual(
+                "xhigh",
+                config.data["providers"]["chatgpt"]["reasoning_effort"])
 
     def test_custom_provider_management(self):
         with tempfile.TemporaryDirectory() as directory:

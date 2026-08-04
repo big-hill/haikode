@@ -470,33 +470,38 @@ class SessionStore:
             if self._conn is not None:
                 return self._conn
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            # The shared guard comes FIRST (adversarial-review finding):
+            # claimed after the open there was a window where a neighbour's
+            # recovery could win the exclusive lock against a database we
+            # were already inside — and a claim failure after a successful
+            # open left an unguarded live connection registered. Recovery in
+            # the except-path below upgrades this same handle to exclusive
+            # atomically, and any failure rolls the whole claim back.
+            self._claim_shared()
             try:
-                conn = self._open()
-            except sqlite3.OperationalError as first:
-                # A process that died mid-write leaves the WAL index behind,
-                # and every later open fails with "locking protocol" until it
-                # is cleared. Observed on Haiku after a killed run: 15 sessions
-                # intact on disk, unreachable, and the only symptom the user
-                # saw was one line saying undo was unavailable.
-                conn = self._retry_transient(first)
-                if conn is None:
-                    if not self._clear_stale_wal(first):
-                        raise
-                    try:
+                try:
+                    conn = self._open()
+                except sqlite3.OperationalError as first:
+                    # A process that died mid-write leaves the WAL index
+                    # behind, and every later open fails with "locking
+                    # protocol" until it is cleared. Observed on Haiku after
+                    # a killed run: 15 sessions intact on disk, unreachable.
+                    conn = self._retry_transient(first)
+                    if conn is None:
+                        if not self._clear_stale_wal(first):
+                            raise
                         conn = self._open()
-                    except BaseException:
-                        # A failed reopen must not squat on the exclusive
-                        # guard: the next attempt (ours or anyone's) would
-                        # find recovery permanently "in progress".
-                        self._release_guard()
-                        raise
+            except BaseException:
+                # Neither a held guard nor recovery's exclusive upgrade may
+                # outlive a failed open: the next attempt — ours or a
+                # neighbour's — would find the store permanently "busy".
+                self._release_guard()
+                raise
             self._conn = conn
             self._register()
-            # Every live store holds the guard shared for its lifetime;
-            # recovery needs it exclusive, so it cannot run while anyone
-            # lives. This also atomically downgrades a recovery's own
-            # exclusive hold.
-            self._claim_shared()
+            # Downgrade a recovery's exclusive hold back to the shared
+            # lifetime hold; a no-op when no recovery ran.
+            self._claim()
             self._rotate_backup(conn)
             return conn
 

@@ -374,6 +374,53 @@ def main(argv=None):
         print("ok")
         return 0
 
+    if cmd == "set-model" and len(args) == 2:
+        # One atomic save for what the desktop picker changes together: a
+        # review found the two-step set (model, then default) could race a
+        # concurrent reader into a half-applied context.
+        name, model = args
+        providers = config.data.setdefault("providers", {})
+        if name not in providers:
+            print(f"unknown provider '{name}'", file=sys.stderr)
+            return 1
+        providers[name]["model"] = model
+        config.data["default_provider"] = name
+        config.save()
+        print("ok")
+        return 0
+
+    if cmd == "efforts" and len(args) == 1:
+        # The allowed reasoning efforts for the provider's CURRENT model —
+        # model-aware by construction: the provider itself answers, and an
+        # empty answer means the control should not be shown at all.
+        from .runtime import build_provider
+        prov = config.data.get("providers", {}).get(args[0])
+        if prov is None:
+            print(f"unknown provider '{args[0]}'", file=sys.stderr)
+            return 1
+        try:
+            client = build_provider(config, args[0])
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        listing = getattr(client, "reasoning_efforts", None)
+        if not callable(listing):
+            return 0
+        for effort in listing(prov.get("model", "")) or ():
+            print(effort)
+        return 0
+
+    if cmd == "set-effort" and len(args) == 2:
+        name, effort = args
+        providers = config.data.setdefault("providers", {})
+        if name not in providers:
+            print(f"unknown provider '{name}'", file=sys.stderr)
+            return 1
+        providers[name]["reasoning_effort"] = effort
+        config.save()
+        print("ok")
+        return 0
+
     if cmd == "set-key" and len(args) == 2:
         # Deprecated: the secret sits in this process's argv, which every user
         # on the machine can read with `ps`. Kept for one release because

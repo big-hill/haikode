@@ -363,26 +363,41 @@ def _run_smoke(reply: str, provider_name: str, model: str,
 def _attach_session(controller: TurnController, session_name: str):
     """Continue the conversation the app named, or start a new one.
 
-    The app hands us the id it last saw. An unknown id means "start a new
-    conversation", and the real id goes back out in `started` so the app can
-    adopt it and keep appending to the same session.
+    An EMPTY name means "start a new conversation"; the real id goes back
+    out in `started` so the app can adopt it. A non-empty name must load:
+    an adversarial review showed the old fall-through silently FORKING the
+    conversation — a transient load failure became a fresh blank session
+    under a new id, and the model lost the whole history without anyone
+    being told. Returns (session, error); exactly one is meaningful.
     """
     store = controller.store()
-    if store is not None and session_name:
-        try:
-            existing = store.load(session_name)
-        except Exception:
-            existing = None
-        if existing is not None:
-            controller.adopt(existing)
-            return existing
-    return controller.open_session()
+    if not session_name:
+        return controller.open_session(), None
+    if store is None:
+        return None, ("the session store is unavailable, so session %r "
+                      "cannot be continued" % session_name)
+    try:
+        existing = store.load(session_name)
+    except Exception as exc:
+        return None, ("could not load session %r: %s"
+                      % (session_name, exc))
+    if existing is None:
+        return None, ("unknown session %r - start a new session"
+                      % session_name)
+    controller.adopt(existing)
+    return existing, None
 
 
 def _turn(controller: TurnController, config: Config, provider_name: str,
           provider_config: dict, model: str, model_override: str,
           session_name: str, cwd: str, prompt: str) -> int:
-    session = _attach_session(controller, session_name)
+    session, attach_error = _attach_session(controller, session_name)
+    if attach_error:
+        # Refuse to run rather than answer with amnesia: calling the
+        # provider on a blank history when the user named a session is the
+        # worse failure, however available the model is.
+        emit("error", message=attach_error, kind="session", retryable=True)
+        return 1
     session_id = getattr(session, "id", "") or session_name
     emit("started", provider=provider_name, model=model, directory=cwd,
          session=session_id)
@@ -485,8 +500,11 @@ def run(prompt: str, provider_name: str = "", model_override: str = "",
         return 2
 
     model = model_override or provider_config.get("model", "")
-    session_name = (session_name or os.environ.get("HAI_SESSION_ID", "")
-                    or "desktop-default")
+    # Empty means "create a new session" — the one unambiguous contract.
+    # The old synthetic "desktop-default" fallback made every non-empty id
+    # ambiguous, which is what allowed a load failure to fork the
+    # conversation silently.
+    session_name = session_name or os.environ.get("HAI_SESSION_ID", "")
     project_dir = directory or os.environ.get("HAI_PROJECT_DIR", "")
     if project_dir:
         try:

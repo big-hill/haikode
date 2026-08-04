@@ -471,7 +471,10 @@ AppController::AppController()
 	fCancelling(false)
 {
 	signal(SIGPIPE, SIG_IGN);
-	fSessionName = "desktop-default";
+	// Empty means "create a new session"; the worker reports the real id
+	// and kMsgWorkerSession adopts it. Synthetic names made every non-empty
+	// id ambiguous, which is what allowed silent conversation forks.
+	fSessionName = "";
 }
 
 
@@ -518,8 +521,7 @@ AppController::MessageReceived(BMessage* message)
 		}
 		case kMsgNewSession:
 			_CancelRun();
-			fSessionName.SetToFormat("desktop-%lld",
-				(long long)system_time());
+			fSessionName = "";
 			break;
 		case kMsgSelectSession:
 		{

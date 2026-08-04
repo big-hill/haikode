@@ -1205,6 +1205,18 @@ class LiveWalGuardTests(unittest.TestCase):
         self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
         self.assertTrue(Path(str(self.path) + "-shm").exists())
 
+    def test_a_failed_open_releases_the_claimed_guard(self):
+        # The guard is claimed before the open now; a permanent open
+        # failure must hand it back, or the store reads as forever busy.
+        store = self.store()
+        def explode():
+            raise sqlite3.OperationalError("boom")
+        store._open = explode
+        with self.assertRaises(sqlite3.OperationalError):
+            store.connect()
+        self.assertIsNone(store._guard)
+        self.assertIsNone(store._conn)
+
     def test_every_live_store_stays_guarded_until_the_last_one_leaves(self):
         # The adversarial review's staircase: with a single exclusive owner,
         # the second store lived unguarded the moment the first one left,
