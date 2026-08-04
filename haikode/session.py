@@ -501,8 +501,12 @@ class SessionStore:
             return conn
 
     # Between-try pauses for a transient open failure. A tuple so tests can
-    # shrink the wait, not a magic number buried in the loop.
-    _TRANSIENT_PAUSES = (0.3, 0.9)
+    # shrink the wait, not a magic number buried in the loop. The ladder got
+    # fatter after the desktop worker, opening beside a TUI mid-turn, burned
+    # through 1.2s of "locking protocol" and ran session-less; recovery
+    # stays safe regardless — it needs the exclusive guard, which no live
+    # neighbour will yield.
+    _TRANSIENT_PAUSES = (0.3, 0.9, 1.8, 3.0)
 
     def _retry_transient(self, error: sqlite3.OperationalError):
         """A couple more tries for errors a live neighbour causes in passing.
