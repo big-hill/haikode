@@ -410,13 +410,9 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 		.Add(fStatusBar)
 	.End();
 
-	// Welcome text using proper append
-	_Append("haikode — native Haiku AI chat and coding agent\n");
-	_Append("Pure BeAPI: BMenuBar • BSplitView • BOutlineListView • BTextView • BStatusBar • BFilePanel\n");
-	_Append("System colors + be_plain_font. Looks & feels like Tracker / Pe.\n\n");
-	_Append("File → Open Project... uses a real native BFilePanel.\n");
-	_Append("Choose a cloud, subscription, or Ollama LAN provider in Settings.\n");
-	_Append("Type a prompt and press Send. Live streaming and Stop are non-blocking.\n\n");
+	// The transcript starts empty; what the app is and how it works lives
+	// in Help > About, not in promotional boilerplate above the first reply
+	// (field request).
 
 	fInput->MakeFocus(true);
 	SetSizeLimits(720, 2400, 520, 1600);
@@ -1034,6 +1030,9 @@ HaiWindow::MessageReceived(BMessage* message)
 				"Architecture: window posts to AppController (BLooper).\n"
 				"Controller owns a real cancellable provider worker.\n"
 				"Never blocks the window looper.\n\n"
+				"Choose a provider and model in Settings, type a prompt "
+				"and press Send. File > Open Project… scopes the agent to "
+				"a directory.\n\n"
 				"Feels like a first-party Haiku application.",
 				"OK");
 			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
