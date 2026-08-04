@@ -90,9 +90,18 @@ fi
 # ---------------------------------------------------------------------------
 # version
 # ---------------------------------------------------------------------------
-# hpkg versions are <major>.<minor>.<micro>-<revision>; the package revision is
-# not part of the Python version, so the suffix after the first dash becomes
-# the pre-release label instead of leaking into the revision field.
+# hpkg versions are <major>.<minor>.<micro>-<revision>. The Python
+# pre-release suffix ("0.1.0-m0m1") is dropped deliberately, not carried as
+# an hpkg ~label: a pre-release sorts BELOW the plain version, so adopting
+# it now would turn every field upgrade into a refused downgrade.
+#
+# The revision is the part that must differ between two builds: packagefs
+# refuses to activate a same-name-same-version file with "Name in use",
+# while pkgman's transcript still reads like a successful upgrade — a
+# silent no-op, found in the field by comparing installed files against
+# the checkout. The commit count is monotonic and needs no bookkeeping;
+# HAIKODE_PACKAGE_REVISION still overrides, and a git-less tree falls
+# back to a timestamp.
 FULL_VERSION=$("$PYTHON" - "$PROJECT_DIR" <<'PY'
 import re, sys, pathlib
 text = (pathlib.Path(sys.argv[1]) / "haikode" / "__init__.py").read_text()
@@ -101,7 +110,14 @@ print(match.group(1) if match else "0.0.0")
 PY
 )
 BASE_VERSION=${FULL_VERSION%%-*}
-REVISION=${HAIKODE_PACKAGE_REVISION:-1}
+if [ -n "${HAIKODE_PACKAGE_REVISION:-}" ]; then
+	REVISION=$HAIKODE_PACKAGE_REVISION
+elif REVISION=$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null) \
+		&& [ -n "$REVISION" ]; then
+	:
+else
+	REVISION=$(date +%Y%m%d%H%M)
+fi
 PKG_VERSION="$BASE_VERSION-$REVISION"
 PKG_FILE="$OUT_DIR/haikode-$PKG_VERSION-$ARCH.hpkg"
 

@@ -1,66 +1,42 @@
-# hai completion and verification matrix
+# haikode completion and verification matrix
 
-Last updated: 2026-07-14. This file records executable evidence, not intended
-behavior. Account-dependent checks remain partial until the account owner
-completes the provider's device authorization.
+Last updated: 2026-08-04. This file records executable evidence, not
+intended behavior. Every PASS below names the machine class it was
+demonstrated on; nothing is claimed from reading the source alone.
+
+Hardware the evidence comes from: a stock-named x86_64 desktop
+(hrev57937), a 32-bit x86_gcc2 Acer Aspire One (R1/beta6, hrev59866), and
+a MacBook5,1 (R1/beta6 development, hrev59917) run by an independent
+reviewer.
 
 | Requirement | Current evidence | Status |
 |---|---|---|
-| Standalone CLI on Haiku | Installed at `/boot/home/config/non-packaged/bin/hai`; no OpenCode client, server profile, tunnel script, Node, or Bun runtime remains. Native routing audit returned `HAI_NATIVE_STANDALONE_ROUTING_OK`. | PASS |
-| Local agent/runtime | REPL, ReAct loop, tools, session state, provider clients, OAuth polling, and refresh are Python processes launched on Haiku. | PASS |
-| OpenCode-compatible subscription protocols | ChatGPT headless device OAuth and Codex Responses SSE, plus xAI RFC 8628 and bearer chat, follow the current upstream contracts. Native contract tests cover all request/response branches used by hai. | PASS |
-| Direct API keys | Hidden CLI input, validation, mode-0600 fallback, native BKeyStore helper, and stdin-only desktop transport are implemented and tested. | PASS |
-| ChatGPT subscription OAuth | Local initiation, polling, exchange, JWT account extraction, refresh rotation, mode-0600 persistence, model listing, and Responses streaming tests pass natively. A real account login still requires the user to authorize a device code. | PARTIAL |
-| SuperGrok subscription OAuth | Local RFC 8628 initiation/polling/backoff, refresh rotation, mode-0600 persistence, model listing path, and bearer chat tests pass natively. A real account login still requires the user. | PARTIAL |
-| Ollama Cloud | Direct provider path is installed locally; earlier native live CLI and desktop runs returned `HAI_OLLAMA_OK` and `HAI_NATIVE_LIVE_OK`. Current post-reboot BKeyStore status was `none` in the headless audit, so no new billed live call was made. | PARTIAL |
-| Ollama local/LAN/Tailscale | Configurable URL/model/no-key profiles and native keyless OpenAI-compatible SSE contract test pass. No reachable real LAN Ollama endpoint was available for this run. | PARTIAL |
-| Custom providers | `list/add/remove/default`, desktop Add bridge, validation, persistence, and isolation tests pass. Only local direct `openai` or `anthropic` dialects are accepted; the former external-server dialect is rejected. | PASS |
-| Native desktop build | Current Settings and worker revision compiled, linked, received resources, and installed on Haiku. | PASS |
-| Local desktop worker | Native smoke emitted `started`, `HAI_STANDALONE_WORKER_OK`, and `completed`; it launches no localhost or remote agent server. | PASS |
-| Install | Source installer built and installed CLI, BKeyStore helper, and desktop app on Haiku. HPKG packaging is not yet provided. | PARTIAL |
+| Standalone CLI on Haiku | Installed and used daily on all three machines; no Node, Bun, tunnel or external server. Deployment is git push to a bare repo on the box. | PASS |
+| Curses TUI + REPL engine | Driven end-to-end through a real pty on Haiku (`tests/render_tui.py`); slash commands, dialogs, queueing, steering and farewell flow covered by the suite. | PASS |
+| Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
+| Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
+| Sessions, undo, compaction | SQLite store with checkpoints and file snapshots; WAL guard rewritten after an adversarial model review and a real power-loss incident, both of whose reproductions are now tests. | PASS |
+| HPKG packaging | Built and installed on x86_gcc2 (architecture field verified against HaikuPorts convention) and x86_64; in-place upgrades get a commit-count package revision after a field report of silent same-version no-ops. | PASS |
+| 32-bit x86_gcc2 | Full suite at the documented baseline, native builds under `setarch x86`, live provider turn — all on the Aspire One. | PASS |
+| MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
+| Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
+| Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
+| Native desktop app | Builds, installs and runs its worker on Haiku; convergence on the current agent engine is tracked, not claimed. | PARTIAL |
 
 ## Automated checks
 
 ```sh
-python3 -m compileall -q hai tests
-HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -v
-sh -n scripts/install-on-haiku.sh scripts/hai-launcher
+python3 -m unittest discover -s tests -b
 ```
 
-The suite contains 20 tests. It covers provider/config isolation, custom
-providers, secret stdin transport, both local device OAuth flows, pending and
-refresh behavior, refresh-token rotation, private token-file permissions,
-ChatGPT account-ID extraction, ChatGPT Responses SSE, ChatGPT model-list
-shape, SuperGrok bearer chat, migration away from the former tunnel profile,
-keyless Ollama SSE, desktop framing and permission decisions, multi-turn
-reuse, and SQLite session metadata.
+The suite is 2300+ tests. It fails **exactly five** on purpose — the
+wiring-audit backlog documented in the README — and skips two. A sixth
+failure is a real regression.
 
-## Native acceptance performed
+## Acceptance shape
 
-One non-multiplexed SSH connection performed the complete deployment and
-acceptance chain on `shredder`; it closed after the final assertion. No reverse
-forward, ControlMaster, or background SSH process was created by the run.
-
-```sh
-cd /boot/home/hai
-python3 -m compileall -q hai tests
-HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -v
-sh scripts/install-on-haiku.sh
-hai doctor
-hai provider list
-```
-
-Results:
-
-- 20/20 Python tests passed natively.
-- `hai-keystore` and the BeAPI app compiled and installed.
-- The installed profile list contains local `chatgpt` and `supergrok`
-  dialects and no `opencode` server profile.
-- The old client module and `serve-for-haiku.sh` are absent.
-- Local desktop-worker and provider-class routing assertions passed.
-
-Remaining acceptance requiring user/external state: complete one real ChatGPT
-device login, complete one real SuperGrok device login, and test a reachable
-real Ollama LAN/Tailscale endpoint. These are not replaced by claims based only
-on mocked credentials.
-
+Acceptance runs happen over a single non-multiplexed SSH connection per
+machine and leave no processes behind (`ps` verified). The independent
+review on hrev59917 additionally rebuilt the package, compared installed
+trees against the checkout by hash, and audited the full git history for
+personal identifiers (zero findings).

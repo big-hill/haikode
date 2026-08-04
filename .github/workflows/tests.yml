@@ -1,0 +1,20 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      # The suite needs nothing beyond the standard library — that is a
+      # feature of the project (Haiku has no pip culture), and CI keeps it
+      # honest by not installing anything.
+      - name: Run the suite and assert the documented baseline
+        run: python3 scripts/ci_baseline.py

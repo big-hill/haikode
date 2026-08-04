@@ -39,8 +39,10 @@ haikode doctor                # what is configured and what is broken
 ## The test suite fails 5 tests on purpose
 
 Before you conclude the project is broken: `python3 -m unittest discover -s
-tests -t .` reports **5 failures, all in `tests/test_wiring_audit.py`**, and
-that is the expected result. Any other failure is a real one.
+tests -t . -b` reports **5 failures, all in `tests/test_wiring_audit.py`**,
+and that is the expected result. Any other failure is a real one. (`-b`
+buffers the deliberate canary noise some passing tests print; without it
+the clean summary is followed by output that looks like trouble.)
 
 Those 5 are executable bug reports. Each names a subsystem that exists, is
 tested in isolation and is reachable from nothing — MCP, LSP, the skill
@@ -1019,7 +1021,7 @@ and renaming them would break a mixed-age install in both directions.
 ```sh
 python3 -m compileall -q haikode
 sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
-HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py"
+HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
 2270 tests, stdlib `unittest`, no network. `HAI_DISABLE_KEYSTORE=1` skips the

@@ -39,6 +39,14 @@ ALLOWED_EMAIL_SUFFIXES = ("@users.noreply.github.com",)
 ALLOWED_ADDRESSES = {
     "127.0.0.1", "0.0.0.0", "255.255.255.255",
     "100.64.0.1",                    # the CGNAT range's first address
+    "169.254.169.254",               # the cloud metadata endpoint the SSRF
+                                     # guard exists to refuse, named in its
+                                     # docstring (tool/misc.py)
+    "172.16.0.1",                    # canonical private-range example in the
+                                     # hardening tests' refusal list
+    "10.1.2.3",                      # ditto, in historic revisions of the
+                                     # same test — blobs in history cannot
+                                     # be edited, only allowed
 }
 ALLOWED_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
     "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",   # RFC 5737
@@ -56,6 +64,7 @@ CANARY_PATHS = (
     "tests/test_redact.py",
     "tests/test_secrets.py",
     "tests/test_wiring_audit.py",
+    "tests/test_wiring_review.py",
     "benchmarks/",
 )
 
