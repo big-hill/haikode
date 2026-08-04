@@ -609,6 +609,21 @@ class CompactionTest(unittest.TestCase):
         self.assertIn("from the agent loop", joined)
         self.assertNotIn("dropped to fit the context window", joined)
 
+    def test_compaction_announces_itself_before_the_summariser_call(self):
+        # Field report: the summariser is its own provider call, and both
+        # front ends showed nothing while it ran — the pause read as a hang.
+        told = []
+        compact_history(self.tool_history(), 2000,
+                        provider=_StubProvider("## Objective\n- ok"),
+                        model="m", notify=lambda: told.append(True))
+        self.assertEqual([True], told)
+
+    def test_no_notification_when_nothing_needs_compacting(self):
+        told = []
+        compact_history(self.tool_history(), 10_000_000,
+                        notify=lambda: told.append(True))
+        self.assertEqual([], told)
+
     def test_compact_history_still_hands_back_a_plain_list(self):
         history = self.tool_history()
         kept = compact_history(history, window=2000)

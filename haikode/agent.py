@@ -778,8 +778,8 @@ class Agent:
         """Change reasoning effort for subsequent rounds in this live session."""
         return self.provider.set_reasoning_effort(effort, self.model)
 
-    def _messages_for_llm(self,
-                          reminder: Optional[str] = None) -> List[Msg]:
+    def _messages_for_llm(self, reminder: Optional[str] = None,
+                          on_event: Optional[Callable] = None) -> List[Msg]:
         # Paired before compaction so the token budget is computed over the
         # messages that will actually be sent.
         #
@@ -790,10 +790,14 @@ class Agent:
         # point the conversation got long enough to need it. With a provider it
         # writes a summary instead; if that call fails it still falls back to
         # dropping, so a summariser outage degrades rather than breaks.
+        notify = None
+        if on_event is not None:
+            notify = lambda: on_event(  # noqa: E731 - one-shot closure
+                "compaction", {"text": "compacting the conversation"})
         history = compact_history(pair_tool_messages(self.messages),
                                   self.input_window,
                                   provider=self.provider, model=self.model,
-                                  scale=self.token_scale)
+                                  scale=self.token_scale, notify=notify)
         messages = [self._system_message()] + history
         if reminder:
             messages.append(Msg(role="assistant", content=reminder))
@@ -831,7 +835,7 @@ class Agent:
         self._bind_abort()
         self.last_event_at = time.monotonic()
         messages = self._messages_for_llm(
-            MAX_STEPS_PROMPT if final_step else None)
+            MAX_STEPS_PROMPT if final_step else None, on_event=on_event)
         # What we think this prompt weighs; the response's usage says what it
         # actually weighed, and the ratio recalibrates the estimator.
         estimated_prompt = sum(message_tokens(m) for m in messages)

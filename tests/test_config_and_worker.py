@@ -576,6 +576,15 @@ class ConfigAndWorkerTests(unittest.TestCase):
             self.assertEqual("started", started["event"])
             self.assertTrue(started["session"])
 
+    def test_desktop_worker_reports_compaction_as_status(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            desktop_worker._emit_agent_event(
+                "compaction", {"text": "compacting the conversation"})
+        frames = worker_frames(output.getvalue())
+        self.assertEqual("status", frames[0]["event"])
+        self.assertIn("compacting", frames[0]["text"])
+
     def test_desktop_worker_maps_agent_events_onto_frames(self):
         """Every Agent.on_event kind has a frame; unknown kinds stay silent."""
         output = StringIO()

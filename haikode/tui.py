@@ -2835,6 +2835,13 @@ class TUI:
         self._dirty = True
 
     def _on_event(self, kind: str, payload):
+        if kind == "compaction":
+            # The summariser is a provider call of its own; without this
+            # hint the pause read as a hang in the field. Cleared by the
+            # done-handler with every other status hint.
+            self.status_hint = "compacting the conversation …"
+            self._dirty = True
+            return
         if kind == "attached":
             # @-mentions the controller expanded into the prompt.
             self.transcript.add(Entry("info", text="attached: %s"

@@ -241,6 +241,13 @@ def _emit_agent_event(kind: str, payload):
     if kind == "error":
         _emit_provider_error(payload)
         return
+    if kind == "compaction":
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text", ""))
+        emit("status", text=text or "Compacting the conversation"
+             + "\u2026")
+        return
 
     data = payload if isinstance(payload, dict) else {}
     name = str(data.get("name", ""))

@@ -892,7 +892,8 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
                      previous_summary: str = "", trigger: str = "auto",
                      force: bool = False, cache: bool = True,
                      max_tokens: int = SUMMARY_MAX_TOKENS,
-                     scale: float = 1.0) -> CompactionResult:
+                     scale: float = 1.0,
+                     notify: Any = None) -> CompactionResult:
     """
     Fold the old turns into one model-written summary.
 
@@ -916,6 +917,14 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
     if not force and not needs_compaction(history, window, reserve, scale):
         return CompactionResult(messages=history, kept=len(history),
                                 trigger=trigger)
+    if notify is not None:
+        # The summariser is its own provider call: seconds to minutes in
+        # the middle of the request path. Without this hook both front
+        # ends showed nothing and the pause read as a hang in the field.
+        try:
+            notify()
+        except Exception:
+            pass
 
     # The keep-budget is compared against local estimates inside the plan,
     # so it is expressed in estimator units: a scale saying "the estimator
@@ -959,7 +968,7 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
 def compact_history(messages: List[Msg], window: int,
                     reserve: float = DEFAULT_RESERVE, *,
                     provider: Any = None, model: str = "",
-                    scale: float = 1.0) -> List[Msg]:
+                    scale: float = 1.0, notify: Any = None) -> List[Msg]:
     """
     Compaction for callers that only want the new history back.
 
@@ -971,4 +980,4 @@ def compact_history(messages: List[Msg], window: int,
     """
     return compact_messages(messages, window, reserve=reserve,
                             provider=provider, model=model,
-                            scale=scale).messages
+                            scale=scale, notify=notify).messages
