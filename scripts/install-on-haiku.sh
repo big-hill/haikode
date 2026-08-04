@@ -100,6 +100,13 @@ ln -sf "$BIN_DIR/haikode" "$BIN_DIR/hai"
 ln -sf "$APP_DIR/haikode" "$BIN_DIR/haikode-desktop"
 ln -sf "$APP_DIR/haikode" "$BIN_DIR/hai-desktop"
 
+# The package's deskbar entry comes from its data/ directory; a source
+# install has to place its own, or the app exists on disk and nowhere a
+# user actually looks. The user deskbar menu is a plain directory of links.
+DESKBAR_DIR=/boot/home/config/settings/deskbar/menu/Applications
+mkdir -p "$DESKBAR_DIR"
+ln -sf "$APP_DIR/haikode" "$DESKBAR_DIR/haikode"
+
 if command -v mimeset >/dev/null 2>&1; then
 	mimeset -f "$APP_DIR/haikode" >/dev/null 2>&1 || true
 fi
