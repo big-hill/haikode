@@ -47,6 +47,14 @@ class TaskTool(Tool):
                                "subagents from .haikode/agent/ work too. "
                                "Defaults to a generic subagent with the "
                                "caller's tools."},
+            "model": {
+                "type": "string",
+                "description": "Optional model for this one call, as "
+                               "'provider/model-id' or a bare model id on "
+                               "the current provider. Overrides the "
+                               "subagent definition's own model; omit to "
+                               "use that, or inherit the session's. An "
+                               "unconfigured provider fails the call."},
         },
         "required": ["description", "prompt"],
     }
@@ -78,35 +86,42 @@ class TaskTool(Tool):
             if candidate is not None and candidate.mode in ("subagent", "all"):
                 defn = candidate
 
-        # An agent definition may pin its own model — `model: kimi/k3`,
-        # `model: gpt-5.6-sol`, any configured provider. Cross-provider needs
-        # a sibling client from the session's factory; failure is loud, never
-        # a silent fallback: a QA verdict from the wrong model masquerading
-        # as the requested one is worse than no verdict.
+        # Model resolution, most specific wins: the call's `model` argument,
+        # then the definition's pin (`model: kimi/k3`, any configured
+        # provider), then the parent's own. Cross-provider needs a sibling
+        # client from the session's factory; failure is loud, never a silent
+        # fallback: a QA verdict from the wrong model masquerading as the
+        # requested one is worse than no verdict.
         provider = parent.provider
         model = parent.model
-        if defn is not None:
-            want_provider, want_model = defn.model_parts()
-            if want_model:
-                current = str(getattr(provider, "name", "") or "")
-                if want_provider and want_provider != current:
-                    factory = getattr(parent, "provider_factory", None)
-                    if not callable(factory):
-                        raise RuntimeError(
-                            "subagent '%s' pins %s/%s, but this session "
-                            "cannot build other providers"
-                            % (defn.name, want_provider, want_model))
-                    try:
-                        provider = factory(want_provider)
-                    except Exception as exc:
-                        raise RuntimeError(
-                            "subagent '%s' pins provider '%s', which is not "
-                            "available: %s" % (defn.name, want_provider, exc))
-                    # The user's interrupt must reach the sibling client too.
-                    abort = getattr(parent.provider, "abort", None)
-                    if abort is not None and hasattr(provider, "abort"):
-                        provider.abort = abort
-                model = want_model
+        wanted = str(args.get("model", "") or "").strip()
+        source = "the task call"
+        if not wanted and defn is not None:
+            wanted = (defn.model or "").strip()
+            source = "subagent '%s'" % defn.name
+        if wanted:
+            head, sep, tail = wanted.partition("/")
+            want_provider, want_model = ((head.strip(), tail.strip())
+                                         if sep and tail else ("", wanted))
+            current = str(getattr(provider, "name", "") or "")
+            if want_provider and want_provider != current:
+                factory = getattr(parent, "provider_factory", None)
+                if not callable(factory):
+                    raise RuntimeError(
+                        "%s pins %s/%s, but this session cannot build "
+                        "other providers"
+                        % (source, want_provider, want_model))
+                try:
+                    provider = factory(want_provider)
+                except Exception as exc:
+                    raise RuntimeError(
+                        "%s pins provider '%s', which is not available: %s"
+                        % (source, want_provider, exc))
+                # The user's interrupt must reach the sibling client too.
+                abort = getattr(parent.provider, "abort", None)
+                if abort is not None and hasattr(provider, "abort"):
+                    provider.abort = abort
+            model = want_model
 
         sub = Agent(
             provider=provider,
@@ -119,6 +134,11 @@ class TaskTool(Tool):
             agent_name=defn.name if defn is not None else "",
             registry=registry if defn is not None else None,
         )
+        # Constructing with agent_name applies the definition, whose own
+        # `model:` would overwrite a per-call override. The resolution above
+        # already encoded the full precedence (call > definition > inherit),
+        # so it is re-asserted here.
+        sub.model = model
         sub.ctx.read_files = ctx.read_files
         sub.ctx.subagent_depth = depth + 1
         sub.ctx.aborted = ctx.aborted

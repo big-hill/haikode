@@ -716,6 +716,11 @@ You review the parent agent's conclusion adversarially. Attack it;
 do not extend it. Return findings only.
 ```
 
+The `task` tool also takes a per-call `model` ("provider/id", or a bare id
+on the current provider), so the orchestrating agent can pick a model for
+one delegation. Precedence is call > definition > inherit — the same order
+Claude Code resolves it in.
+
 If the pinned provider is not configured, the task call fails with a clear
 error — never a silent fallback to the parent's model, because a "second
 opinion" secretly rendered by the same model is worse than no opinion.

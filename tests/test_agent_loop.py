@@ -747,11 +747,12 @@ class TestCrossProviderSubagents(AgentTestCase):
         parent.provider_factory = factory
         return parent
 
-    def run_task(self, parent):
+    def run_task(self, parent, **extra):
         from haikode.tool.task import TaskTool
-        return TaskTool().execute(
-            {"description": "qa", "prompt": "review this",
-             "subagent_type": "qa"}, parent.ctx)
+        args = {"description": "qa", "prompt": "review this",
+                "subagent_type": "qa"}
+        args.update(extra)
+        return TaskTool().execute(args, parent.ctx)
 
     def test_a_pinned_provider_model_runs_on_the_sibling_client(self):
         sibling = self.Sibling([[CompletionChunk(text="verdict",
@@ -790,6 +791,36 @@ class TestCrossProviderSubagents(AgentTestCase):
         with self.assertRaises(RuntimeError) as caught:
             self.run_task(parent)
         self.assertIn("not available", str(caught.exception))
+
+    def test_the_calls_model_argument_beats_the_definition(self):
+        sibling = self.Sibling([[CompletionChunk(text="verdict",
+                                                 stop_reason="stop")]])
+        parent = self.parent_with("elsewhere/model-x", lambda name: sibling)
+        self.run_task(parent, model="elsewhere/model-call")
+        self.assertEqual(["model-call"], sibling.models)
+
+    def test_the_calls_model_needs_no_subagent_type(self):
+        sibling = self.Sibling([[CompletionChunk(text="ok",
+                                                 stop_reason="stop")]])
+        built = []
+
+        def factory(name):
+            built.append(name)
+            return sibling
+
+        parent = self.parent_with("", factory)
+        from haikode.tool.task import TaskTool
+        TaskTool().execute({"description": "qa", "prompt": "look",
+                            "model": "elsewhere/model-q"}, parent.ctx)
+        self.assertEqual(["elsewhere"], built)
+        self.assertEqual(["model-q"], sibling.models)
+
+    def test_a_bare_call_model_stays_on_the_parents_provider(self):
+        parent = self.parent_with("")
+        parent.provider.turns = [[CompletionChunk(text="ok",
+                                                  stop_reason="stop")]]
+        self.run_task(parent, model="model-bare")
+        self.assertEqual(["model-bare"], parent.provider.models)
 
 
 if __name__ == "__main__":
