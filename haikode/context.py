@@ -383,7 +383,10 @@ class ContextManager:
 # --- compaction ---------------------------------------------------------
 
 # opencode's DEFAULT_TAIL_TURNS / DEFAULT_KEEP_TOKENS / SUMMARY_OUTPUT_TOKENS.
-DEFAULT_TAIL_TURNS = 2
+# Raised from 2 after important context was summarised away in the field:
+# a fatter verbatim tail costs window but keeps the model's recent footing
+# out of the summariser's hands entirely.
+DEFAULT_TAIL_TURNS = 5
 MIN_KEEP_TOKENS = 2000
 # Fraction of the context window the history may occupy before it is folded,
 # and the room always left for the reply on top of it. opencode compacts at
@@ -433,8 +436,14 @@ section order unchanged. Do not include the <template> tags in your response.
 - [one or two brief sentences describing what the user is trying to accomplish]
 
 ## Important Details
-- [constraints/preferences, decisions and why, important facts/assumptions, \
-exact context needed to continue, or "(none)"]
+- [REQUIREMENTS THE USER STATED, verbatim where short — these outlive \
+everything else in this summary]
+- [decisions and why, important facts/assumptions, exact context needed to \
+continue, or "(none)"]
+
+## Rejected Approaches
+- [approaches tried or considered and turned down, with the reason, so they \
+are not proposed again; otherwise "(none)"]
 
 ## Work State
 ### Completed
@@ -484,7 +493,10 @@ def summary_message(text: str, folded: int) -> Msg:
     an assistant turn, and every provider accepts one that opens with a user
     turn.
     """
-    return Msg(role="user", content=text,
+    recovery = ("\n\n[%d earlier turns were folded into this summary. "
+                "Exact folded detail can be re-read on demand with the "
+                "session_history tool.]" % int(folded))
+    return Msg(role="user", content=text + recovery,
                display={"summary": True, "folded": int(folded)})
 
 

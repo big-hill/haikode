@@ -555,7 +555,14 @@ class GrepTool(Tool):
         include = args.get("include") or ""
 
         try:
-            regex = re.compile(pattern)
+            # The pattern is the model's (or the user's); a FutureWarning
+            # about its style — "[[" reads as a possible nested set — went
+            # to raw stderr and smeared itself across the curses screen in
+            # the field. Their pattern, their business: compile quietly.
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                regex = re.compile(pattern)
         except re.error as e:
             raise ValueError(f"Invalid regex {pattern!r}: {e}")
 

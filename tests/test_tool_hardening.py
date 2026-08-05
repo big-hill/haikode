@@ -189,6 +189,20 @@ class SearchHardeningTests(ToolCase):
         self.assertIsNone(box.get("error"))
         self.assertIn("real.py", box["value"].output)
 
+    def test_a_pattern_that_worries_python_stays_silent(self):
+        # Field screenshot: re.compile's FutureWarning ("possible nested
+        # set" for "[[") went to raw stderr and smeared itself across the
+        # curses frame. The pattern is the caller's business; no warning
+        # may escape.
+        import warnings
+        self.write("data.txt", "[[x]] marker\n")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = GrepTool().execute({"pattern": "[[x]]"}, self.ctx)
+        self.assertEqual([], [w for w in caught
+                              if issubclass(w.category, FutureWarning)])
+        self.assertIn("data.txt", result.output)
+
     def test_wall_clock_budget_stops_grep(self):
         for index in range(50):
             self.write(f"f{index}.txt", "needle\n")

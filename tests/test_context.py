@@ -438,8 +438,10 @@ class CompactionTest(unittest.TestCase):
         self.assertEqual(result.summary, "## Objective\n- port the parser to Haiku")
         self.assertEqual(result.notice(), "Compacted 5 messages into a summary.")
         # The summary is in the history the provider will actually see, and it
-        # is marked so a front end can render it as a summary.
-        self.assertEqual(result.messages[0].content, result.summary)
+        # is marked so a front end can render it as a summary. The recovery
+        # footer rides along, so the model knows session_history un-folds it.
+        self.assertTrue(result.messages[0].content.startswith(result.summary))
+        self.assertIn("session_history", result.messages[0].content)
         self.assertTrue(result.messages[0].display.get("summary"))
         self.assertEqual(result.messages[0].display.get("folded"), 5)
         self.assertNotIn("port the parser to Haiku",

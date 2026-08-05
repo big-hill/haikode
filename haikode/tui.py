@@ -15,6 +15,7 @@ the main thread through the same queue, and the worker blocks on a
 threading.Event until the main thread has drawn the modal and answered.
 """
 
+import io
 import locale
 import os
 import platform
@@ -2412,10 +2413,21 @@ class TUI:
         self._attach(stdscr)
         self._set_tab_title(status.short_label(self.cwd, 24))
         self._start_update_check()
+        # Anything a library prints to stderr while curses owns the screen
+        # smears itself across the frame (field screenshot: a FutureWarning
+        # over the footer). Spool it and hand it to the real stderr after
+        # endwin, so nothing is lost and nothing is painted.
+        spool = io.StringIO()
+        real_stderr = sys.stderr
+        sys.stderr = spool
         try:
             self._loop()
         finally:
+            sys.stderr = real_stderr
             self._shutdown()
+            leaked = spool.getvalue()
+            if leaked.strip():
+                print(leaked, file=real_stderr, end="")
 
     # A turn long enough that the user plausibly tabbed away earns a
     # native notification when it lands.
@@ -2930,9 +2942,13 @@ class TUI:
     def _on_event(self, kind: str, payload):
         if kind == "compaction":
             # The summariser is a provider call of its own; without this
-            # hint the pause read as a hang in the field. Cleared by the
-            # done-handler with every other status hint.
+            # hint the pause read as a hang in the field. The transcript
+            # line is the durable half: the user can see afterwards THAT a
+            # fold happened, and where.
             self.status_hint = "compacting the conversation …"
+            self.transcript.add(Entry(
+                "info", text="compacting: older turns fold into a summary "
+                             "(session_history recovers the detail)"))
             self._dirty = True
             return
         if kind == "attached":
