@@ -3961,6 +3961,13 @@ class TUI:
         """
         from .oauth import begin_claude_authorization, open_authorization_url
         pending = begin_claude_authorization()
+        # Into the transcript FIRST: on Haiku no browser is ever launched
+        # (a mid-login launch panicked the kernel — see oauth.py), so the
+        # visible, selectable URL is the whole sign-in path there.
+        self.transcript.add(Entry(
+            "info", text="Sign in to %s here:\n%s" % (provider,
+                                                      pending["url"])))
+        self._dirty = True
         open_authorization_url(pending["url"])
 
         def submit(form):

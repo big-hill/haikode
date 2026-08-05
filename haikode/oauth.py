@@ -573,6 +573,18 @@ def access_token(provider: str, store: OAuthStore,
 
 
 def open_authorization_url(url: str):
+    """Open the sign-in page — except on Haiku, where we only ever print it.
+
+    Auto-launching the default browser (Iceweasel) mid-login put the
+    reference machine in KDL: vm_page_fault in kernel space, thread
+    "IPC Launch", faulting inside enter_userspace as the new team's first
+    threads started (2026-08-05, hrev57937). The kernel bug is Haiku's,
+    not ours — but a login flow that can panic the machine it runs on is
+    not a login flow. Every caller already shows the URL; a browser that
+    is already running, on this machine or any other, does the job.
+    """
+    if sys.platform.startswith("haiku"):
+        return
     try:
         if webbrowser.open(url):
             return

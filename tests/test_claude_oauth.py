@@ -160,6 +160,34 @@ class TheProviderAuthenticatesAsASubscription(unittest.TestCase):
         self.assertIsNone(provider._auth)
 
 
+class NoBrowserIsEverLaunchedOnHaiku(unittest.TestCase):
+    """A browser launch mid-login put the reference machine in KDL.
+
+    vm_page_fault in kernel space, thread "IPC Launch", inside
+    enter_userspace — triggered the moment login spawned WebPositive.
+    The kernel bug is Haiku's; not stepping on it is ours.
+    """
+
+    def test_open_authorization_url_is_inert_on_haiku(self):
+        from unittest.mock import patch
+        from haikode import oauth as oauth_module
+        with patch.object(oauth_module.sys, "platform", "haiku1"), \
+                patch.object(oauth_module.webbrowser, "open") as browser, \
+                patch.object(oauth_module.subprocess, "Popen") as popen:
+            oauth_module.open_authorization_url("https://claude.ai/x")
+        browser.assert_not_called()
+        popen.assert_not_called()
+
+    def test_it_still_opens_elsewhere(self):
+        from unittest.mock import patch
+        from haikode import oauth as oauth_module
+        with patch.object(oauth_module.sys, "platform", "darwin"), \
+                patch.object(oauth_module.webbrowser, "open",
+                             return_value=True) as browser:
+            oauth_module.open_authorization_url("https://claude.ai/x")
+        browser.assert_called_once()
+
+
 class TheProfileIsWiredEverywhere(unittest.TestCase):
     def config(self, directory):
         return Config(os.path.join(directory, "config.json"))
