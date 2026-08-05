@@ -197,7 +197,21 @@ one notice on stderr.
 `zen` needs no personal key at all, which makes it the cheapest way to smoke
 test a fresh install: `haikode -p zen "hello"`.
 
-`haikode login claude` signs in with a Claude subscription. `/effort`
+`haikode login claude` signs in with a Claude subscription — but read
+this first. Anthropic bills third-party agent usage to a separate Agent
+SDK credit pool instead of the subscription's own limits, which is how
+tools like OpenClaw were reinstated in May 2026. The Agent SDK overview
+qualifies it: *"unless previously approved, Anthropic does not allow
+third party developers to offer claude.ai login or rate limits for their
+products"*. The named third-party apps are approved partners. haikode is
+not, and an unapproved client authenticates fine and is then refused —
+an immediate HTTP 429 with no rate-limit headers at all (measured on the
+reference machine, 6 August 2026), whether or not credits are enabled.
+
+The profile is kept because the path is real and approval is possible,
+not because it works today. **Use `anthropic` with an API key.**
+
+`/effort`
 works on the `claude` and `anthropic` profiles too, mapped onto extended
 thinking budgets (off/low/medium/high; off is the default). The model
 thinks at the turn opener and runs the tool loop without — mid-loop

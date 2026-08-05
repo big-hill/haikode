@@ -614,15 +614,23 @@ def login_interactive(provider: str, store: OAuthStore) -> Dict[str, Any]:
 def _login_claude_interactive(store: OAuthStore) -> Dict[str, Any]:
     """Claude's paste-code half of login_interactive.
 
-    The account must have extra usage enabled for external clients to be
-    authorized; without it the page refuses before any code is shown, so
-    saying it up front saves the round trip.
+    Signing in works for anyone; being *served* does not. Anthropic bills
+    third-party agent usage to a separate Agent SDK credit pool rather than
+    to the subscription's own limits — but the Agent SDK overview adds
+    "unless previously approved", and the named third-party apps are
+    approved partners. An unapproved client authenticates fine and is then
+    refused with an immediate HTTP 429 carrying no quota metadata at all
+    (measured, 6 Aug 2026). Saying so before the browser opens is cheaper
+    than letting the user discover it as a broken session.
     """
     pending = begin_claude_authorization()
     print(f"Open: {pending['url']}")
     print("Approve haikode there; the page then shows a code to copy.")
-    print("(Requires a Claude subscription with extra usage enabled — "
-          "that is what authorizes external clients.)")
+    print("NOTE: Anthropic serves subscription credentials only to")
+    print("approved third-party clients. haikode is not one, so requests")
+    print("are likely to be refused (HTTP 429) even with credits enabled.")
+    print("The supported path today is `haikode login anthropic` with an")
+    print("API key. See https://www.anthropic.com/contact-sales")
     open_authorization_url(pending["url"])
     try:
         code = input("Paste the code here: ")
