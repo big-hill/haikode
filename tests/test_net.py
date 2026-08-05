@@ -559,6 +559,24 @@ class TestHeaders(unittest.TestCase):
         self.assertEqual(seen.get("user-agent"), "custom/1")
 
 
+class TheSslContextIsSharedAcrossRequests(unittest.TestCase):
+    """Why haikode saw refusals where a keep-alive client saw none.
+
+    A context per request re-read the system CA store every time and threw
+    away the TLS session cache, so no handshake could be resumed. It is
+    built once now.
+    """
+
+    def test_one_context_for_the_process(self):
+        from haikode import net as net_module
+        self.assertIs(net_module._make_context(), net_module._make_context())
+
+    def test_the_retry_window_outlasts_a_link_reassociation(self):
+        from haikode.net import DEFAULT_RETRY
+        self.assertGreaterEqual(DEFAULT_RETRY.max_elapsed, 120.0)
+        self.assertGreaterEqual(DEFAULT_RETRY.max_attempts, 6)
+
+
 class HardCloseKeepsTheDescriptorOccupied(unittest.TestCase):
     """Field forensics: _hard_close used to free the descriptor NUMBER while
     a reader still sat inside OpenSSL; sqlite reused the number and a stray

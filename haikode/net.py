@@ -117,11 +117,15 @@ class RetryPolicy:
     ``max_elapsed`` is the important one: five attempts against a provider
     honouring a 60 s Retry-After would otherwise block a run for minutes.
     """
-    max_attempts: int = 4
+    max_attempts: int = 6
     initial_delay: float = 0.4
     factor: float = 2.0
     max_delay: float = 20.0
-    max_elapsed: float = 60.0
+    # A wifi link that drops and reassociates is down for tens of seconds,
+    # and every connect during that window is refused instantly — so the
+    # old 60s ceiling could be spent on six fast refusals and give up while
+    # the link was still coming back. Field reports on two machines.
+    max_elapsed: float = 120.0
     jitter: float = 0.25
     # A dropped TCP connection is worth retrying immediately; hammering a
     # rate limiter that did not send Retry-After is not.
@@ -200,9 +204,24 @@ def _sleep(seconds: float, abort: AbortLike):
 # Connection plumbing: a read timeout distinct from the connect timeout
 # --------------------------------------------------------------------------
 
+_CONTEXT_LOCK = threading.Lock()
+_SHARED_CONTEXT: Optional[ssl.SSLContext] = None
+
+
 def _make_context() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    return ctx
+    """One SSLContext for the process, built once.
+
+    It used to be built per request, which meant re-reading the system CA
+    store on every single call — measurable on Haiku — and, worse, threw
+    away the context's TLS session cache, so no handshake could ever be
+    resumed. Sharing it makes repeat connections to the same host cheaper
+    and, on a flaky link, likelier to succeed inside the window they have.
+    """
+    global _SHARED_CONTEXT
+    with _CONTEXT_LOCK:
+        if _SHARED_CONTEXT is None:
+            _SHARED_CONTEXT = ssl.create_default_context()
+        return _SHARED_CONTEXT
 
 
 def _with_ua(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
