@@ -52,11 +52,12 @@ PROVIDER_PRIORITY: Dict[str, int] = {
     "zen": 0,
     "openai": 1,
     "anthropic": 2,
-    "chatgpt": 3,
-    "supergrok": 4,
-    "xai": 5,
-    "ollama": 6,
-    "ollama-local": 7,
+    "claude": 3,
+    "chatgpt": 4,
+    "supergrok": 5,
+    "xai": 6,
+    "ollama": 7,
+    "ollama-local": 8,
 }
 UNRANKED = 99
 

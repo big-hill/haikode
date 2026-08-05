@@ -187,6 +187,7 @@ one notice on stderr.
 | `ollama` *(default)* | Ollama Cloud API key | `https://ollama.com/v1` |
 | `zen` | none — public free tier | OpenCode Zen |
 | `ollama-local` | none | local / LAN / Tailscale Ollama `/v1` |
+| `claude` | Claude Pro/Max subscription, PKCE OAuth | Anthropic API |
 | `chatgpt` | ChatGPT subscription, device OAuth | ChatGPT Codex backend |
 | `supergrok` | SuperGrok subscription, device OAuth | xAI API |
 | `xai` | xAI API key | xAI API billing |
@@ -196,8 +197,14 @@ one notice on stderr.
 `zen` needs no personal key at all, which makes it the cheapest way to smoke
 test a fresh install: `haikode -p zen "hello"`.
 
+`haikode login claude` signs in with a Claude subscription. It is not a
+device flow: the browser page shows a code to paste back into the prompt.
+The account needs **extra usage enabled** — that is what authorizes
+external clients against a subscription.
+
 API-key profiles and subscription profiles are deliberately separate: an OpenAI
-API key is not a ChatGPT subscription, and an xAI API key is not a SuperGrok
+API key is not a ChatGPT subscription, an Anthropic API key is not a Claude
+subscription, and an xAI API key is not a SuperGrok
 subscription. Access remains subject to each provider's terms. The ChatGPT and
 SuperGrok device flows follow the same public OAuth contracts opencode's
 built-in plugins use, reimplemented in stdlib Python. Tokens never leave the

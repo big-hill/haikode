@@ -10,6 +10,7 @@ to use Haiku BKeyStore through :mod:`haikode.config`.
 """
 import base64
 import errno
+import hashlib
 import json
 import resource
 import os
@@ -39,6 +40,19 @@ XAI_DEVICE_AUTHORIZATION_URL = f"{XAI_ISSUER}/oauth2/device/code"
 XAI_TOKEN_URL = f"{XAI_ISSUER}/oauth2/token"
 XAI_SCOPE = "openid profile email offline_access grok-cli:access api:access"
 XAI_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+# Public Claude Code OAuth client, the same one OpenCode's anthropic plugin
+# uses. Claude subscription sign-in is not a device flow: it is PKCE
+# authorization code where claude.ai displays the resulting code for the user
+# to carry back by hand (`code=true`), so there is nothing to poll.
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
+CLAUDE_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+CLAUDE_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+CLAUDE_SCOPE = "org:create_api_key user:profile user:inference"
+# Every API request made with a subscription token must carry this beta
+# header; without it the token is rejected as if it were a bad API key.
+CLAUDE_OAUTH_BETA = "oauth-2025-04-20"
 
 POLL_SAFETY_SECONDS = 3
 REFRESH_SKEW_SECONDS = 120
@@ -356,6 +370,57 @@ def begin_device_authorization(provider: str,
     raise OAuthError(f"Unsupported subscription OAuth provider: {provider}")
 
 
+def begin_claude_authorization() -> Dict[str, Any]:
+    """The Claude authorization URL and the PKCE verifier that unlocks it.
+
+    Purely local — the verifier is random, the challenge is its SHA-256, and
+    no network request happens until the user pastes the code back. The
+    verifier doubles as `state`, which is what claude.ai echoes after the
+    `#` in the code it shows.
+    """
+    verifier = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+    url = CLAUDE_AUTHORIZE_URL + "?" + urllib.parse.urlencode({
+        "code": "true",
+        "client_id": CLAUDE_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": CLAUDE_REDIRECT_URI,
+        "scope": CLAUDE_SCOPE,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": verifier,
+    })
+    return {"provider": "claude", "url": url, "verifier": verifier,
+            "expires_at": int(time.time()) + 600}
+
+
+def exchange_claude_code(code_input: str, verifier: str,
+                         opener: Callable = urllib.request.urlopen) -> Dict[str, Any]:
+    """Trade the pasted `code#state` for tokens.
+
+    The page shows one string with a `#` in the middle; users paste it whole,
+    with whitespace, or occasionally just the part before the `#`. All three
+    must work — the state half is recoverable because it is our verifier.
+    """
+    raw = (code_input or "").strip()
+    if not raw:
+        raise OAuthError("no authorization code was pasted")
+    code, _, state = raw.partition("#")
+    status, tokens = _post_json(CLAUDE_TOKEN_URL, {
+        "grant_type": "authorization_code",
+        "code": code.strip(),
+        "state": (state.strip() or verifier),
+        "client_id": CLAUDE_CLIENT_ID,
+        "redirect_uri": CLAUDE_REDIRECT_URI,
+        "code_verifier": verifier,
+    }, opener=opener)
+    if status // 100 != 2:
+        raise OAuthError(
+            f"Claude token exchange failed ({status}): {_error_detail(tokens)}")
+    return _normalize_tokens("claude", tokens)
+
+
 def _normalize_tokens(provider: str, tokens: Dict[str, Any],
                       previous_refresh: str = "") -> Dict[str, Any]:
     access = str(tokens.get("access_token", ""))
@@ -438,6 +503,17 @@ def refresh_tokens(provider: str, current: Dict[str, Any],
     refresh = str(current.get("refresh", ""))
     if not refresh:
         raise OAuthError(f"No refresh token stored for {provider}; run `haikode login {provider}`")
+    if provider == "claude":
+        # Anthropic's token endpoint takes JSON, not form encoding.
+        status, tokens = _post_json(CLAUDE_TOKEN_URL, {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": CLAUDE_CLIENT_ID,
+        }, opener=opener)
+        if status // 100 != 2:
+            raise OAuthError(
+                f"claude token refresh failed ({status}): {_error_detail(tokens)}")
+        return _normalize_tokens(provider, tokens, previous_refresh=refresh)
     if provider == "chatgpt":
         url = f"{CHATGPT_ISSUER}/oauth/token"
         client_id = CHATGPT_CLIENT_ID
@@ -510,6 +586,8 @@ def open_authorization_url(url: str):
 
 
 def login_interactive(provider: str, store: OAuthStore) -> Dict[str, Any]:
+    if provider == "claude":
+        return _login_claude_interactive(store)
     pending = begin_device_authorization(provider)
     print(f"Open: {pending['verification_uri']}")
     print(f"Code: {pending['user_code']}")
@@ -518,6 +596,29 @@ def login_interactive(provider: str, store: OAuthStore) -> Dict[str, Any]:
                                or pending["verification_uri"]))
     tokens = poll_device_authorization(provider, pending)
     store.set(provider, tokens)
+    return tokens
+
+
+def _login_claude_interactive(store: OAuthStore) -> Dict[str, Any]:
+    """Claude's paste-code half of login_interactive.
+
+    The account must have extra usage enabled for external clients to be
+    authorized; without it the page refuses before any code is shown, so
+    saying it up front saves the round trip.
+    """
+    pending = begin_claude_authorization()
+    print(f"Open: {pending['url']}")
+    print("Approve haikode there; the page then shows a code to copy.")
+    print("(Requires a Claude subscription with extra usage enabled — "
+          "that is what authorizes external clients.)")
+    open_authorization_url(pending["url"])
+    try:
+        code = input("Paste the code here: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise OAuthError("sign-in cancelled before a code was pasted")
+    tokens = exchange_claude_code(code, pending["verifier"])
+    store.set("claude", tokens)
     return tokens
 
 
