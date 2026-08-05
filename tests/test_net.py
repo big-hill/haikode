@@ -559,6 +559,43 @@ class TestHeaders(unittest.TestCase):
         self.assertEqual(seen.get("user-agent"), "custom/1")
 
 
+class DnsFailuresAreClassifiedByTheirErrno(unittest.TestCase):
+    """EAI_AGAIN is the resolver during a link flap; EAI_NONAME is a typo.
+
+    Retrying the first is the whole point of the ladder; retrying the second
+    just makes a misspelt base_url take a minute to report itself.
+    """
+
+    def classify(self, error):
+        import socket as socket_module
+        import urllib.error
+        from unittest.mock import patch as patch_fn
+        from haikode.net import NetError, post_json
+
+        def explode(*_args, **_kwargs):
+            raise urllib.error.URLError(error)
+
+        with patch_fn("haikode.net._opener") as opener:
+            opener.return_value.open.side_effect = explode
+            with self.assertRaises(NetError) as caught:
+                post_json("http://example.invalid/x", {}, retry=NO_RETRY)
+        return caught.exception
+
+    def test_eai_again_is_retryable(self):
+        import socket as socket_module
+        error = socket_module.gaierror(socket_module.EAI_AGAIN,
+                                       "Temporary failure in name resolution")
+        error.errno = socket_module.EAI_AGAIN
+        self.assertTrue(self.classify(error).retryable)
+
+    def test_unknown_host_stays_fatal(self):
+        import socket as socket_module
+        error = socket_module.gaierror(socket_module.EAI_NONAME,
+                                       "Name or service not known")
+        error.errno = socket_module.EAI_NONAME
+        self.assertFalse(self.classify(error).retryable)
+
+
 class TheSslContextIsSharedAcrossRequests(unittest.TestCase):
     """Why haikode saw refusals where a keep-alive client saw none.
 

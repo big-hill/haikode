@@ -440,8 +440,17 @@ def _open(url: str, data: Optional[bytes], headers: Optional[Dict[str, str]],
                        retryable=e.code in RETRYABLE_STATUS) from e
     except urllib.error.URLError as e:
         reason = e.reason
-        # A bad certificate or an unknown host will not fix itself.
-        fatal = isinstance(reason, (ssl.SSLCertVerificationError, socket.gaierror))
+        # A bad certificate or an unknown host will not fix itself — but
+        # EAI_AGAIN is the resolver saying literally "try again", and it is
+        # what DNS answers during the link-down window this ladder exists to
+        # ride out. Classifying it fatal meant the ladder never engaged on
+        # exactly the failure it was built for: haikode failed the turn on
+        # the first DNS miss while the wifi was still reassociating.
+        transient_dns = (isinstance(reason, socket.gaierror)
+                         and reason.errno == socket.EAI_AGAIN)
+        fatal = (isinstance(reason,
+                            (ssl.SSLCertVerificationError, socket.gaierror))
+                 and not transient_dns)
         raise NetError(f"Connection failed: {_reason_text(reason)}", url=url,
                        retryable=not fatal) from e
     except (socket.timeout, TimeoutError) as e:
