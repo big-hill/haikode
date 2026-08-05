@@ -29,6 +29,14 @@ MAX_OUTPUT_TOKENS = {
 CACHE_MIN_CHARS = 4000
 CACHE_CONTROL = {"type": "ephemeral"}
 
+# The effort dial, mapped onto extended thinking budgets. "off" sends no
+# thinking block at all — the API's own default, and this provider's: an
+# agent loop that suddenly starts spending thinking tokens because of an
+# upgrade would be a surprise bill for API-key users.
+THINKING_EFFORTS = ("off", "low", "medium", "high")
+THINKING_BUDGETS = {"low": 4096, "medium": 16384, "high": 65536}
+THINKING_HEADROOM = 1024  # the answer needs room after the thinking does
+
 
 def max_output_tokens(model: str) -> Optional[int]:
     best: Optional[int] = None
@@ -49,7 +57,7 @@ class AnthropicProvider(Provider):
                  connect_timeout: Optional[float] = None,
                  stall_timeout: Optional[float] = None,
                  cache: bool = True,
-                 abort=None):
+                 abort=None, reasoning_effort: str = "off"):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.name = "anthropic"
@@ -59,6 +67,61 @@ class AnthropicProvider(Provider):
         self.stall_timeout = stall_timeout
         self.cache = cache
         self.abort = abort
+        self.reasoning_effort = reasoning_effort
+
+    def reasoning_efforts(self, model: str):
+        """The effort choices for `model`; empty hides every effort picker.
+
+        Extended thinking exists from claude-3-7 up; the older 3.x families
+        reject the block outright.
+        """
+        normalized = (model or "").lower()
+        if (normalized.startswith("claude-3-")
+                and not normalized.startswith("claude-3-7")):
+            return ()
+        return THINKING_EFFORTS
+
+    def set_reasoning_effort(self, effort: str, model: str) -> str:
+        value = (effort or "").strip().lower()
+        allowed = self.reasoning_efforts(model)
+        if value not in allowed:
+            raise ValueError(
+                "reasoning effort must be one of " + ", ".join(allowed)
+                if allowed else
+                "%s does not support extended thinking" % (model or "model"))
+        self.reasoning_effort = value
+        return value
+
+    def _thinking(self, model: str, max_tokens: int, messages):
+        """The thinking block for this request, plus the max_tokens it needs.
+
+        Two rules decide when NOT to think, and both are the API's:
+
+        * Mid tool-loop (the last message is a tool result) the API demands
+          the previous assistant turn's signed thinking blocks be replayed,
+          and this client does not store them — enabling thinking there is
+          a guaranteed 400. So the model thinks at the turn opener, where
+          no replay obligation exists, and runs the tool loop without.
+        * budget_tokens must sit strictly inside max_tokens; the budget is
+          shrunk to the model's output ceiling when one is known, and if no
+          meaningful budget fits, thinking is skipped rather than sent bad.
+        """
+        if self.reasoning_effort in ("", "off"):
+            return None, max_tokens
+        if not self.reasoning_efforts(model):
+            return None, max_tokens
+        last = next((m for m in reversed(messages)
+                     if m.role != "system"), None)
+        if last is None or last.role == "tool":
+            return None, max_tokens
+        budget = THINKING_BUDGETS[self.reasoning_effort]
+        ceiling = max_output_tokens(model)
+        if ceiling is not None and budget + THINKING_HEADROOM > ceiling:
+            budget = ceiling - THINKING_HEADROOM
+            if budget < 1024:      # provider minimum for a thinking budget
+                return None, max_tokens
+        return ({"type": "enabled", "budget_tokens": budget},
+                max(max_tokens, budget + THINKING_HEADROOM))
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json",
@@ -131,9 +194,12 @@ class AnthropicProvider(Provider):
         ceiling = max_output_tokens(model)
         if ceiling is not None:
             max_tokens = max(1, min(max_tokens, ceiling))
+        thinking, max_tokens = self._thinking(model, max_tokens, messages)
 
         payload = {"model": model, "max_tokens": max_tokens,
                    "messages": encoded, "stream": True}
+        if thinking:
+            payload["thinking"] = thinking
         if system:
             payload["system"] = self._system_field(system)
         if tools:

@@ -197,7 +197,12 @@ one notice on stderr.
 `zen` needs no personal key at all, which makes it the cheapest way to smoke
 test a fresh install: `haikode -p zen "hello"`.
 
-`haikode login claude` signs in with a Claude subscription. It is not a
+`haikode login claude` signs in with a Claude subscription. `/effort`
+works on the `claude` and `anthropic` profiles too, mapped onto extended
+thinking budgets (off/low/medium/high; off is the default). The model
+thinks at the turn opener and runs the tool loop without — mid-loop
+thinking would require replaying signed thinking blocks the client does
+not store. It is not a
 device flow: the browser page shows a code to paste back into the prompt.
 The account needs **extra usage enabled** — that is what authorizes
 external clients against a subscription.

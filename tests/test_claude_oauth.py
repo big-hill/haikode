@@ -160,6 +160,84 @@ class TheProviderAuthenticatesAsASubscription(unittest.TestCase):
         self.assertIsNone(provider._auth)
 
 
+class EffortMapsToExtendedThinking(unittest.TestCase):
+    """The /effort dial on claude/anthropic profiles: thinking budgets.
+
+    The two skip rules are the API's own: no thinking mid tool-loop (the
+    signed blocks would have to be replayed, and they are not stored), and
+    no budget that does not fit inside the model's output ceiling.
+    """
+
+    def provider(self, effort="high"):
+        from haikode.providers.anthropic import AnthropicProvider
+        return AnthropicProvider(api_key="k", reasoning_effort=effort)
+
+    def payload_for(self, provider, messages, model="claude-sonnet-5"):
+        from unittest.mock import patch
+        from haikode.providers import anthropic as anthropic_module
+        captured = {}
+
+        def fake_stream(url, payload, **kwargs):
+            captured.update(payload)
+            return iter(())
+
+        with patch.object(anthropic_module, "stream_sse_events", fake_stream):
+            list(provider.stream(messages, [], model, 8000))
+        return captured
+
+    def msg(self, role, content="x"):
+        from haikode.schema import Msg
+        return Msg(role=role, content=content)
+
+    def test_efforts_exist_from_3_7_up_and_not_before(self):
+        provider = self.provider()
+        self.assertIn("high", provider.reasoning_efforts("claude-sonnet-5"))
+        self.assertIn("high", provider.reasoning_efforts("claude-3-7-sonnet"))
+        self.assertEqual(provider.reasoning_efforts("claude-3-5-sonnet"), ())
+
+    def test_rejects_an_unknown_effort(self):
+        with self.assertRaises(ValueError):
+            self.provider().set_reasoning_effort("ultra", "claude-sonnet-5")
+
+    def test_turn_opener_thinks_with_room_for_the_answer(self):
+        payload = self.payload_for(self.provider("high"),
+                                   [self.msg("user")])
+        self.assertEqual(payload["thinking"],
+                         {"type": "enabled", "budget_tokens": 65536})
+        self.assertGreaterEqual(payload["max_tokens"], 65536 + 1024)
+
+    def test_mid_tool_loop_never_thinks(self):
+        from haikode.schema import Msg
+        messages = [self.msg("user"), self.msg("assistant"),
+                    Msg(role="tool", content="out", tool_call_id="t1")]
+        payload = self.payload_for(self.provider("high"), messages)
+        self.assertNotIn("thinking", payload)
+
+    def test_off_is_off(self):
+        payload = self.payload_for(self.provider("off"), [self.msg("user")])
+        self.assertNotIn("thinking", payload)
+
+    def test_budget_shrinks_under_a_known_ceiling(self):
+        payload = self.payload_for(self.provider("high"), [self.msg("user")],
+                                   model="claude-3-7-sonnet")
+        self.assertEqual(payload["thinking"]["budget_tokens"],
+                         64000 - 1024)
+        self.assertLessEqual(payload["max_tokens"], 64000)
+
+    def test_the_subscription_provider_inherits_the_dial(self):
+        import os
+        import tempfile
+        from haikode.oauth import OAuthStore
+        from haikode.providers.subscription import ClaudeSubscriptionProvider
+        store = OAuthStore(os.path.join(tempfile.mkdtemp(), "oauth.json"))
+        provider = ClaudeSubscriptionProvider(store)
+        self.assertIn("medium",
+                      provider.reasoning_efforts("claude-sonnet-5"))
+        self.assertEqual(
+            provider.set_reasoning_effort("medium", "claude-sonnet-5"),
+            "medium")
+
+
 class NoBrowserIsEverLaunchedOnHaiku(unittest.TestCase):
     """A browser launch mid-login put the reference machine in KDL.
 
