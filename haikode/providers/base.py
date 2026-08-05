@@ -248,6 +248,30 @@ def classify_error(status: Optional[int] = None, body: str = "",
     return build("unknown", f"{text}" if not where else f"{text}{where}", False)
 
 
+def describe_transport(exc, provider: str = "") -> str:
+    """"connect to chatgpt.com refused after 4 attempts" — the facts a
+    transport failure already carries, spelled out instead of dropped."""
+    message = str(exc)
+    host = ""
+    url = getattr(exc, "url", "") or ""
+    if url:
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc or ""
+        except Exception:
+            host = ""
+    parts = [message]
+    if host and host not in message:
+        parts.append("(%s" % host)
+    attempts = int(getattr(exc, "attempts", 1) or 1)
+    if attempts > 1:
+        parts.append(("after %d attempts)" % attempts) if host and
+                      host not in message else "after %d attempts" % attempts)
+    elif host and host not in message:
+        parts[-1] = parts[-1] + ")"
+    return " ".join(parts)
+
+
 def error_from_exception(exc: BaseException, provider: str = "",
                          model: str = "") -> ProviderError:
     """Classify anything that escaped a stream, transport failures included."""
@@ -259,9 +283,13 @@ def error_from_exception(exc: BaseException, provider: str = "",
             return classify_error(status=exc.status, body=exc.body,
                                   provider=provider, model=model)
         # Transport-level: no body to read, but net already knows whether
-        # another attempt could have helped.
+        # another attempt could have helped — and which host, after how
+        # many tries. One printed line stands for an entire exhausted retry
+        # ladder; naming the host and the count is what makes it readable
+        # (independent field report, 5 Aug 2026).
         return ProviderError(kind="server" if exc.retryable else "unknown",
-                             message=str(exc), retryable=exc.retryable,
+                             message=describe_transport(exc, provider),
+                             retryable=exc.retryable,
                              provider=provider, model=model)
     return ProviderError(kind="unknown", message=str(exc) or exc.__class__.__name__,
                          provider=provider, model=model)

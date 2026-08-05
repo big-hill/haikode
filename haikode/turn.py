@@ -322,7 +322,22 @@ class TurnController:
                 pass
             result.interrupted = True
         except Exception as exc:
-            result.error = "%s: %s" % (type(exc).__name__, exc)
+            # Name the provider in the headline: "ProviderFailure" alone
+            # never said WHICH provider failed, and a session may use
+            # several (subagents can pin their own).
+            label = type(exc).__name__
+            source = str(getattr(exc, "error", {}).get("provider", "")
+                         if isinstance(getattr(exc, "error", None), dict)
+                         else "")
+            if source:
+                label = "%s(%s)" % (label, source)
+            result.error = "%s: %s" % (label, exc)
+            try:
+                from .failures import record_failure
+                record_failure(label, str(exc),
+                               getattr(exc, "error", None))
+            except Exception:
+                pass
         finally:
             self._persist(agent, original, result)
         if result.text and not result.error:

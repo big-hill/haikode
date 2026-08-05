@@ -28,6 +28,7 @@ import http.client
 import json
 import queue
 import random
+import errno
 import socket
 import ssl
 import threading
@@ -353,6 +354,38 @@ def _hard_close(response):
         pass
 
 
+def describe_errno(exc: BaseException) -> str:
+    """"ECONNREFUSED" for an OSError Haiku numbered -2147454944, else "".
+
+    Haiku's POSIX errnos are large negative numbers (B_POSIX_ERROR_BASE +
+    n), so the raw value in a message reads as a catastrophe when it means
+    "connection refused". The symbolic name is one lookup away and turns
+    the scariest part of the line into the most informative part.
+    """
+    number = getattr(exc, "errno", None)
+    if number is None:
+        return ""
+    try:
+        return errno.errorcode.get(int(number), "") or ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _reason_text(reason: Any) -> str:
+    """A URLError/OSError reason, with Haiku's errno spelled symbolically."""
+    text = str(reason)
+    name = describe_errno(reason) if isinstance(reason, BaseException) else ""
+    if name and name not in text:
+        # Replace the raw number rather than appending: the number is the
+        # part nobody can read.
+        number = getattr(reason, "errno", None)
+        if number is not None and str(number) in text:
+            text = text.replace("[Errno %s]" % number, "[%s]" % name)
+        else:
+            text = "%s (%s)" % (text, name)
+    return text
+
+
 def _describe_status(status: int, body: str) -> str:
     hint = FATAL_HINTS.get(status)
     snippet = (body or "").strip()[:300]
@@ -390,13 +423,14 @@ def _open(url: str, data: Optional[bytes], headers: Optional[Dict[str, str]],
         reason = e.reason
         # A bad certificate or an unknown host will not fix itself.
         fatal = isinstance(reason, (ssl.SSLCertVerificationError, socket.gaierror))
-        raise NetError(f"Connection failed: {reason}", url=url,
+        raise NetError(f"Connection failed: {_reason_text(reason)}", url=url,
                        retryable=not fatal) from e
     except (socket.timeout, TimeoutError) as e:
         raise NetError(f"Connection timed out after {connect_timeout:g}s",
                        url=url, retryable=True) from e
     except Exception as e:
-        raise NetError(f"Connection failed: {e}", url=url, retryable=True) from e
+        raise NetError(f"Connection failed: {_reason_text(e)}", url=url,
+                       retryable=True) from e
 
 
 # --------------------------------------------------------------------------

@@ -443,7 +443,14 @@ transcript.
 | `/plan` | switch to the read-only `plan` agent |
 | `/build` | leave plan mode |
 
-### Memory
+#Provider failures never enter the transcript (an error stored as
+something the model *said* gets argued with next turn), so they used to
+be printed once and gone. They are now also appended to
+`failures.log` in the config directory — capped, one JSON line each,
+readable with `/failures`. The message itself names the provider, the
+host and how many attempts stood behind the one red line.
+
+## Memory
 
 | Command | Does |
 |---|---|

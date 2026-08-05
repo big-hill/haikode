@@ -490,7 +490,10 @@ class REPL:
             return ""
         print()
         if result.error:
-            print(_c(f"[error] {result.error}", RED))
+            # flush: with stdout redirected to a file the block buffer
+            # held these until exit, so they printed AFTER the test summary
+            # and read like an extra failure (independent field report).
+            print(_c(f"[error] {result.error}", RED), flush=True)
         self._report_persistence()
         return result.text
 
@@ -575,6 +578,8 @@ class REPL:
             ("init", self._cmd_init, "write AGENTS.md and haikode.json"),
             ("update", self._cmd_update,
              "check for a newer haikode and fetch it"),
+            ("failures", self._cmd_failures,
+             "recent provider failures (they never enter the transcript)"),
         ]
 
     def _cmd_help(self, arg):
@@ -1237,6 +1242,10 @@ class REPL:
         except OSError as e:
             return f"[error] {e}"
         return f"Exported {len(text)} bytes to {path}"
+
+    def _cmd_failures(self, arg):
+        from .failures import report
+        print(report())
 
     def _cmd_update(self, arg):
         """Check the releases feed; apply what applies safely."""
