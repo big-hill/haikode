@@ -160,21 +160,23 @@ class TheProviderAuthenticatesAsASubscription(unittest.TestCase):
         self.assertIsNone(provider._auth)
 
 
-class EffortMapsToExtendedThinking(unittest.TestCase):
-    """The /effort dial on claude/anthropic profiles: thinking budgets.
+class EffortUsesTheMechanismEachModelAccepts(unittest.TestCase):
+    """Effort on Anthropic is output_config.effort — not a thinking budget.
 
-    The two skip rules are the API's own: no thinking mid tool-loop (the
-    signed blocks would have to be replayed, and they are not stored), and
-    no budget that does not fit inside the model's output ceiling.
+    `thinking: {"type": "enabled", budget_tokens}` is deprecated on the 4.6
+    generation and returns 400 on 4.7 and later, which includes
+    claude-sonnet-5 — the shipped profile's own default model. Sending it
+    there broke every turn.
     """
 
     def provider(self, effort="high"):
         from haikode.providers.anthropic import AnthropicProvider
         return AnthropicProvider(api_key="k", reasoning_effort=effort)
 
-    def payload_for(self, provider, messages, model="claude-sonnet-5"):
+    def payload_for(self, provider, model, messages=None):
         from unittest.mock import patch
         from haikode.providers import anthropic as anthropic_module
+        from haikode.schema import Msg
         captured = {}
 
         def fake_stream(url, payload, **kwargs):
@@ -182,47 +184,55 @@ class EffortMapsToExtendedThinking(unittest.TestCase):
             return iter(())
 
         with patch.object(anthropic_module, "stream_sse_events", fake_stream):
-            list(provider.stream(messages, [], model, 8000))
+            list(provider.stream(messages or [Msg(role="user", content="x")],
+                                 [], model, 8000))
         return captured
 
-    def msg(self, role, content="x"):
-        from haikode.schema import Msg
-        return Msg(role=role, content=content)
+    def test_modern_models_get_output_config_and_never_a_budget(self):
+        for model in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-7"):
+            payload = self.payload_for(self.provider("high"), model)
+            self.assertEqual(payload.get("output_config"), {"effort": "high"},
+                             model)
+            self.assertNotIn("thinking", payload, model)
 
-    def test_efforts_exist_from_3_7_up_and_not_before(self):
+    def test_older_families_still_get_a_thinking_budget(self):
+        payload = self.payload_for(self.provider("high"), "claude-3-7-sonnet")
+        self.assertEqual(payload["thinking"]["budget_tokens"], 64000 - 1024)
+        self.assertNotIn("output_config", payload)
+
+    def test_levels_differ_per_model(self):
         provider = self.provider()
-        self.assertIn("high", provider.reasoning_efforts("claude-sonnet-5"))
-        self.assertIn("high", provider.reasoning_efforts("claude-3-7-sonnet"))
+        self.assertIn("xhigh", provider.reasoning_efforts("claude-sonnet-5"))
+        self.assertNotIn("xhigh",
+                         provider.reasoning_efforts("claude-sonnet-4-6"))
+        self.assertIn("max", provider.reasoning_efforts("claude-sonnet-4-6"))
+        self.assertNotIn("max", provider.reasoning_efforts("claude-opus-4-5"))
         self.assertEqual(provider.reasoning_efforts("claude-3-5-sonnet"), ())
 
-    def test_rejects_an_unknown_effort(self):
+    def test_an_unsupported_level_is_refused_not_sent(self):
         with self.assertRaises(ValueError):
-            self.provider().set_reasoning_effort("ultra", "claude-sonnet-5")
+            self.provider().set_reasoning_effort("xhigh", "claude-sonnet-4-6")
 
-    def test_turn_opener_thinks_with_room_for_the_answer(self):
-        payload = self.payload_for(self.provider("high"),
-                                   [self.msg("user")])
-        self.assertEqual(payload["thinking"],
-                         {"type": "enabled", "budget_tokens": 65536})
-        self.assertGreaterEqual(payload["max_tokens"], 65536 + 1024)
+    def test_an_unlisted_model_gets_no_effort_rather_than_a_guess(self):
+        payload = self.payload_for(self.provider("high"), "claude-future-9")
+        self.assertNotIn("output_config", payload)
+        self.assertNotIn("thinking", payload)
 
-    def test_mid_tool_loop_never_thinks(self):
+    def test_the_tool_loop_keeps_its_effort(self):
+        # The old code suppressed thinking mid-loop; effort has no such
+        # rule and is exactly where an agent loop needs it.
         from haikode.schema import Msg
-        messages = [self.msg("user"), self.msg("assistant"),
+        messages = [Msg(role="user", content="x"),
+                    Msg(role="assistant", content="y"),
                     Msg(role="tool", content="out", tool_call_id="t1")]
-        payload = self.payload_for(self.provider("high"), messages)
-        self.assertNotIn("thinking", payload)
+        payload = self.payload_for(self.provider("high"), "claude-sonnet-5",
+                                   messages)
+        self.assertEqual(payload.get("output_config"), {"effort": "high"})
 
-    def test_off_is_off(self):
-        payload = self.payload_for(self.provider("off"), [self.msg("user")])
+    def test_off_sends_nothing(self):
+        payload = self.payload_for(self.provider("off"), "claude-sonnet-5")
+        self.assertNotIn("output_config", payload)
         self.assertNotIn("thinking", payload)
-
-    def test_budget_shrinks_under_a_known_ceiling(self):
-        payload = self.payload_for(self.provider("high"), [self.msg("user")],
-                                   model="claude-3-7-sonnet")
-        self.assertEqual(payload["thinking"]["budget_tokens"],
-                         64000 - 1024)
-        self.assertLessEqual(payload["max_tokens"], 64000)
 
     def test_the_subscription_provider_inherits_the_dial(self):
         import os
@@ -231,11 +241,9 @@ class EffortMapsToExtendedThinking(unittest.TestCase):
         from haikode.providers.subscription import ClaudeSubscriptionProvider
         store = OAuthStore(os.path.join(tempfile.mkdtemp(), "oauth.json"))
         provider = ClaudeSubscriptionProvider(store)
-        self.assertIn("medium",
-                      provider.reasoning_efforts("claude-sonnet-5"))
         self.assertEqual(
-            provider.set_reasoning_effort("medium", "claude-sonnet-5"),
-            "medium")
+            provider.set_reasoning_effort("xhigh", "claude-sonnet-5"),
+            "xhigh")
 
 
 class NoBrowserIsEverLaunchedOnHaiku(unittest.TestCase):

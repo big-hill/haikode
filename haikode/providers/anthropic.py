@@ -29,13 +29,49 @@ MAX_OUTPUT_TOKENS = {
 CACHE_MIN_CHARS = 4000
 CACHE_CONTROL = {"type": "ephemeral"}
 
-# The effort dial, mapped onto extended thinking budgets. "off" sends no
-# thinking block at all — the API's own default, and this provider's: an
-# agent loop that suddenly starts spending thinking tokens because of an
-# upgrade would be a surprise bill for API-key users.
-THINKING_EFFORTS = ("off", "low", "medium", "high")
+# Effort on Anthropic models is `output_config.effort`, not a thinking
+# budget. This matters more than it looks: `thinking: {"type": "enabled",
+# budget_tokens}` is deprecated on the 4.6 generation and REJECTED WITH 400
+# on 4.7 and later — which includes claude-sonnet-5, the default model of
+# the shipped profile. Effort also beats a budget on its own terms: it
+# shapes every token in the response, tool calls included, and needs no
+# thinking block at all.
+#
+# Longest matching prefix wins; an unlisted model gets no effort control
+# rather than a guess, because guessing wrong here is a 400 on every turn.
+_MAX = ("low", "medium", "high", "max")
+_XHIGH = ("low", "medium", "high", "xhigh", "max")
+EFFORT_SUPPORT = {
+    "claude-opus-4-5": ("low", "medium", "high"),
+    "claude-opus-4-6": _MAX,
+    "claude-sonnet-4-6": _MAX,
+    "claude-opus-4-7": _XHIGH,
+    "claude-opus-4-8": _XHIGH,
+    "claude-opus-5": _XHIGH,
+    "claude-sonnet-5": _XHIGH,
+    "claude-fable-5": _XHIGH,
+    "claude-mythos-5": _XHIGH,
+}
+
+# The older families where a token budget IS the mechanism — extended
+# thinking is the only mode they have. Opus 4.5 appears in both tables: it
+# takes effort *and* a budget, and the documentation says to set both.
 THINKING_BUDGETS = {"low": 4096, "medium": 16384, "high": 65536}
 THINKING_HEADROOM = 1024  # the answer needs room after the thinking does
+BUDGET_THINKING_MODELS = (
+    "claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-opus-4-1",
+    "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5",
+)
+
+
+def _longest_prefix(model: str, table) -> Optional[str]:
+    normalized = (model or "").lower()
+    best = None
+    for prefix in table:
+        if normalized.startswith(prefix) and (best is None
+                                              or len(prefix) > len(best)):
+            best = prefix
+    return best
 
 
 def max_output_tokens(model: str) -> Optional[int]:
@@ -70,51 +106,67 @@ class AnthropicProvider(Provider):
         self.reasoning_effort = reasoning_effort
 
     def reasoning_efforts(self, model: str):
-        """The effort choices for `model`; empty hides every effort picker.
+        """The effort levels `model` accepts; empty hides the picker.
 
-        Extended thinking exists from claude-3-7 up; the older 3.x families
-        reject the block outright.
+        The levels differ per model — xhigh and max are not everywhere —
+        and offering one the model rejects turns every turn into a 400.
         """
-        normalized = (model or "").lower()
-        if (normalized.startswith("claude-3-")
-                and not normalized.startswith("claude-3-7")):
-            return ()
-        return THINKING_EFFORTS
+        prefix = _longest_prefix(model, EFFORT_SUPPORT)
+        if prefix:
+            return EFFORT_SUPPORT[prefix]
+        if _longest_prefix(model, BUDGET_THINKING_MODELS):
+            # Budget-thinking families: our own scale, mapped to budgets.
+            return ("off", "low", "medium", "high")
+        return ()
 
     def set_reasoning_effort(self, effort: str, model: str) -> str:
         value = (effort or "").strip().lower()
         allowed = self.reasoning_efforts(model)
+        if not allowed:
+            raise ValueError("%s takes no reasoning effort"
+                             % (model or "this model"))
         if value not in allowed:
-            raise ValueError(
-                "reasoning effort must be one of " + ", ".join(allowed)
-                if allowed else
-                "%s does not support extended thinking" % (model or "model"))
+            raise ValueError("reasoning effort must be one of "
+                             + ", ".join(allowed))
         self.reasoning_effort = value
         return value
 
-    def _thinking(self, model: str, max_tokens: int, messages):
-        """The thinking block for this request, plus the max_tokens it needs.
+    def _effort_field(self, model: str):
+        """`output_config` for models that take effort natively."""
+        effort = self.reasoning_effort
+        if not effort or effort == "off":
+            return None
+        prefix = _longest_prefix(model, EFFORT_SUPPORT)
+        if not prefix or effort not in EFFORT_SUPPORT[prefix]:
+            return None
+        return {"effort": effort}
 
-        Two rules decide when NOT to think, and both are the API's:
+    def _thinking(self, model: str, max_tokens: int):
+        """A thinking budget, for the families where that is the mechanism.
 
-        * Mid tool-loop (the last message is a tool result) the API demands
-          the previous assistant turn's signed thinking blocks be replayed,
-          and this client does not store them — enabling thinking there is
-          a guaranteed 400. So the model thinks at the turn opener, where
-          no replay obligation exists, and runs the tool loop without.
-        * budget_tokens must sit strictly inside max_tokens; the budget is
-          shrunk to the model's output ceiling when one is known, and if no
-          meaningful budget fits, thinking is skipped rather than sent bad.
+        Only for those: `type: "enabled"` is deprecated on the 4.6
+        generation and returns 400 on 4.7 and later, so sending it by
+        default would break the shipped profile's own model. The budget
+        must also sit strictly inside max_tokens — it is shrunk to the
+        model's output ceiling when one is known, and skipped rather than
+        sent invalid if no meaningful budget fits.
         """
-        if self.reasoning_effort in ("", "off"):
+        effort = self.reasoning_effort
+        if not effort or effort == "off":
             return None, max_tokens
-        if not self.reasoning_efforts(model):
+        budget_prefix = _longest_prefix(model, BUDGET_THINKING_MODELS)
+        if not budget_prefix:
             return None, max_tokens
-        last = next((m for m in reversed(messages)
-                     if m.role != "system"), None)
-        if last is None or last.role == "tool":
+        # "claude-opus-4-7" also starts with "claude-opus-4". The more
+        # specific table wins, or a newer model would be handed the very
+        # block it rejects with a 400. Opus 4.5 is in both tables at equal
+        # length and legitimately takes both.
+        effort_prefix = _longest_prefix(model, EFFORT_SUPPORT)
+        if effort_prefix and len(effort_prefix) > len(budget_prefix):
             return None, max_tokens
-        budget = THINKING_BUDGETS[self.reasoning_effort]
+        budget = THINKING_BUDGETS.get(effort)
+        if budget is None:
+            return None, max_tokens
         ceiling = max_output_tokens(model)
         if ceiling is not None and budget + THINKING_HEADROOM > ceiling:
             budget = ceiling - THINKING_HEADROOM
@@ -194,12 +246,15 @@ class AnthropicProvider(Provider):
         ceiling = max_output_tokens(model)
         if ceiling is not None:
             max_tokens = max(1, min(max_tokens, ceiling))
-        thinking, max_tokens = self._thinking(model, max_tokens, messages)
+        thinking, max_tokens = self._thinking(model, max_tokens)
 
         payload = {"model": model, "max_tokens": max_tokens,
                    "messages": encoded, "stream": True}
         if thinking:
             payload["thinking"] = thinking
+        output_config = self._effort_field(model)
+        if output_config:
+            payload["output_config"] = output_config
         if system:
             payload["system"] = self._system_field(system)
         if tools:

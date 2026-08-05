@@ -212,11 +212,13 @@ The profile is kept because the path is real and approval is possible,
 not because it works today. **Use `anthropic` with an API key.**
 
 `/effort`
-works on the `claude` and `anthropic` profiles too, mapped onto extended
-thinking budgets (off/low/medium/high; off is the default). The model
-thinks at the turn opener and runs the tool loop without — mid-loop
-thinking would require replaying signed thinking blocks the client does
-not store. It is not a
+works on the `claude` and `anthropic` profiles too. On current models it
+is the API's own `output_config.effort` (low/medium/high/xhigh/max, and
+the levels genuinely differ per model — `xhigh` is not on Sonnet 4.6,
+`max` is not on Opus 4.5). Older families that only have extended
+thinking get a token budget instead. An unlisted model gets no effort
+control at all rather than a guess, because guessing wrong is a 400 on
+every turn. It is not a
 device flow: the browser page shows a code to paste back into the prompt.
 The account needs **extra usage enabled** — that is what authorizes
 external clients against a subscription.
