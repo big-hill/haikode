@@ -74,18 +74,6 @@ DEFAULT_CONFIG = {
             "model": "grok-4",
             "context": 131072,
         },
-        "claude": {
-            # Claude Pro/Max subscription via PKCE OAuth (paste-code, not a
-            # device flow). External clients are authorized for accounts with
-            # extra usage enabled; `anthropic` below is API-key billing and
-            # deliberately a separate profile, same as openai vs chatgpt.
-            "dialect": "claude",
-            "base_url": "https://api.anthropic.com",
-            "oauth_provider": "claude",
-            "requires_key": False,
-            "model": "claude-sonnet-5",
-            "context": 200000,
-        },
         "anthropic": {
             "dialect": "anthropic",
             "base_url": "https://api.anthropic.com",

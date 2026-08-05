@@ -3933,13 +3933,7 @@ class TUI:
 
     def _open_login(self, provider: str = ""):
         name = provider or self._provider_name()
-        oauth = self._provider_spec(name).get("oauth_provider")
-        if oauth == "claude":
-            # Not a device flow: claude.ai shows a code the user carries
-            # back by hand, so this needs a field, not a poll.
-            self._open_paste_login(name)
-            return
-        if oauth:
+        if self._provider_spec(name).get("oauth_provider"):
             # No key exists to type: these sign in with a device code.
             self._open_device_login(name)
             return
@@ -3950,62 +3944,6 @@ class TUI:
                        hint="never echoed; stored in the Haiku keystore when "
                             "one is installed")],
             payload={"submit": self._save_login}))
-
-    def _open_paste_login(self, provider: str):
-        """Claude's PKCE flow: open the page, take the pasted code.
-
-        There is nothing to poll — the browser page shows the code and the
-        user carries it back, so one form field is the whole dialog. The
-        browser is opened for them; the form's hint covers the case where
-        no browser came up (a bare Terminal over ssh).
-        """
-        from .oauth import begin_claude_authorization, open_authorization_url
-        pending = begin_claude_authorization()
-        # Into the transcript FIRST: on Haiku no browser is ever launched
-        # (a mid-login launch panicked the kernel — see oauth.py), so the
-        # visible, selectable URL is the whole sign-in path there.
-        self.transcript.add(Entry(
-            "info", text="Sign in to %s here:\n%s" % (provider,
-                                                      pending["url"])))
-        self._dirty = True
-        open_authorization_url(pending["url"])
-
-        def submit(form):
-            code = str(form.values().get("code", "")).strip()
-            if not code:
-                form.message = "paste the code the page showed"
-                self._dirty = True
-                return
-            self._close_dialog()
-
-            def exchange():
-                from .oauth import OAuthStore, exchange_claude_code
-                store = OAuthStore.for_config(self.config)
-                tokens = exchange_claude_code(code, pending["verifier"])
-                store.set(provider, tokens)
-                return "signed in to %s" % provider
-
-            def finished(message):
-                # Credentials changed: rebuild the agent, as /provider does.
-                self._adopt_agent()
-                self.transcript.add(Entry("info", text=message))
-                self._dirty = True
-
-            def failed(error):
-                self.transcript.add(Entry("error",
-                                          text="sign-in failed: %s" % error))
-                self._dirty = True
-
-            self._run_async("signing in", exchange, finished, on_error=failed)
-
-        self._open_dialog(FormDialog(
-            "login", "Sign in to %s" % provider,
-            [FormField("code", "Code", kind="secret",
-                       hint="approve haikode on the claude.ai page that just "
-                            "opened (needs extra usage enabled), then paste "
-                            "the code it shows; no browser? run `haikode "
-                            "login %s` in Terminal" % provider)],
-            payload={"submit": submit}))
 
     def _open_device_login(self, provider: str):
         """Start an RFC 8628 device flow and show its code while it polls.

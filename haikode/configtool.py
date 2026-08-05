@@ -23,7 +23,7 @@ import urllib.request
 
 from .config import Config
 from .net import USER_AGENT, _with_ua
-from .oauth import (CLAUDE_OAUTH_BETA, OAuthError, OAuthStore, access_token,
+from .oauth import (OAuthError, OAuthStore, access_token,
                     begin_device_authorization, spawn_background_completion)
 
 TEST_TIMEOUT = 8
@@ -82,11 +82,6 @@ def test_provider(config: Config, name: str, key_override: str = ""):
             })
             if auth.get("account_id"):
                 headers["ChatGPT-Account-Id"] = auth["account_id"]
-        elif dialect == "claude":
-            # Anthropic's listing, reached with the subscription token.
-            url = f"{base}/v1/models"
-            headers.update({"anthropic-version": "2023-06-01",
-                            "anthropic-beta": CLAUDE_OAUTH_BETA})
         else:
             url = f"{base}/models"
     elif dialect == "anthropic":
@@ -233,10 +228,6 @@ def list_model_entries(config: Config, name: str):
             headers["originator"] = CODEX_ORIGINATOR
             if auth.get("account_id"):
                 headers["ChatGPT-Account-Id"] = auth["account_id"]
-        elif dialect == "claude":
-            url = f"{base}/v1/models"
-            headers["anthropic-version"] = "2023-06-01"
-            headers["anthropic-beta"] = CLAUDE_OAUTH_BETA
         else:
             url = f"{base}/models"
 

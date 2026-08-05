@@ -187,7 +187,6 @@ one notice on stderr.
 | `ollama` *(default)* | Ollama Cloud API key | `https://ollama.com/v1` |
 | `zen` | none — public free tier | OpenCode Zen |
 | `ollama-local` | none | local / LAN / Tailscale Ollama `/v1` |
-| `claude` | Claude Pro/Max subscription, PKCE OAuth | Anthropic API |
 | `chatgpt` | ChatGPT subscription, device OAuth | ChatGPT Codex backend |
 | `supergrok` | SuperGrok subscription, device OAuth | xAI API |
 | `xai` | xAI API key | xAI API billing |
@@ -197,22 +196,7 @@ one notice on stderr.
 `zen` needs no personal key at all, which makes it the cheapest way to smoke
 test a fresh install: `haikode -p zen "hello"`.
 
-`haikode login claude` signs in with a Claude subscription — but read
-this first. Anthropic bills third-party agent usage to a separate Agent
-SDK credit pool instead of the subscription's own limits, which is how
-tools like OpenClaw were reinstated in May 2026. The Agent SDK overview
-qualifies it: *"unless previously approved, Anthropic does not allow
-third party developers to offer claude.ai login or rate limits for their
-products"*. The named third-party apps are approved partners. haikode is
-not, and an unapproved client authenticates fine and is then refused —
-an immediate HTTP 429 with no rate-limit headers at all (measured on the
-reference machine, 6 August 2026), whether or not credits are enabled.
-
-The profile is kept because the path is real and approval is possible,
-not because it works today. **Use `anthropic` with an API key.**
-
-`/effort`
-works on the `claude` and `anthropic` profiles too. On current models it
+`/effort` works on the `anthropic` profile too. On current models it
 is the API's own `output_config.effort` (low/medium/high/xhigh/max, and
 the levels genuinely differ per model — `xhigh` is not on Sonnet 4.6,
 `max` is not on Opus 4.5). Older families that only have extended
@@ -224,8 +208,7 @@ The account needs **extra usage enabled** — that is what authorizes
 external clients against a subscription.
 
 API-key profiles and subscription profiles are deliberately separate: an OpenAI
-API key is not a ChatGPT subscription, an Anthropic API key is not a Claude
-subscription, and an xAI API key is not a SuperGrok
+API key is not a ChatGPT subscription, and an xAI API key is not a SuperGrok
 subscription. Access remains subject to each provider's terms. The ChatGPT and
 SuperGrok device flows follow the same public OAuth contracts opencode's
 built-in plugins use, reimplemented in stdlib Python. Tokens never leave the

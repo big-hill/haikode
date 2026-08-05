@@ -1,4 +1,4 @@
-"""Local ChatGPT, SuperGrok and Claude subscription providers."""
+"""Local ChatGPT and SuperGrok subscription providers."""
 import json
 import time
 import uuid
@@ -6,10 +6,9 @@ from typing import Iterator, List, Optional
 
 from ..net import (DEFAULT_TIMEOUT, Aborted, RetryPolicy, USER_AGENT,
                    _sleep as net_sleep, sse_json_events)
-from ..oauth import (CHATGPT_API_BASE, CLAUDE_OAUTH_BETA, OAuthStore,
-                     _is_expired, access_token)
+from ..oauth import (CHATGPT_API_BASE, OAuthStore, _is_expired,
+                     access_token)
 from ..schema import CompletionChunk, Msg, ToolSpec
-from .anthropic import AnthropicProvider
 from .base import (Provider, classify_error, error_chunk, error_from_exception,
                    reasoning_from_delta)
 from .openai_compat import OpenAICompatProvider
@@ -318,46 +317,6 @@ class ChatGPTSubscriptionProvider(Provider):
         return {"error": {"message": message,
                           "code": error.get("code") or "",
                           "type": error.get("type") or ""}}
-
-
-class ClaudeSubscriptionProvider(AnthropicProvider):
-    """Anthropic /v1/messages using a Claude subscription OAuth token.
-
-    Everything about the wire format — content blocks, tool_use, prompt
-    caching, the output-token clamp — is inherited from AnthropicProvider;
-    only the authentication differs: a Bearer token plus the OAuth beta
-    header instead of x-api-key. Anthropic authorizes external clients for
-    subscription accounts that have extra usage enabled; an account without
-    it gets an auth error here, not a haikode bug.
-    """
-
-    def __init__(self, store: OAuthStore,
-                 base_url: str = "https://api.anthropic.com", **kwargs):
-        super().__init__(base_url=base_url or "https://api.anthropic.com",
-                         api_key=None, **kwargs)
-        self.store = store
-        self.name = "claude"
-        # Credentials for this turn; same per-turn cache and invalidation
-        # contract as ChatGPTSubscriptionProvider._headers — one disk read a
-        # turn, not one per request.
-        self._auth = None
-
-    def invalidate_auth(self) -> None:
-        self._auth = None
-
-    def _headers(self) -> dict:
-        auth = self._auth
-        if auth is None or _is_expired(auth):
-            auth = access_token("claude", self.store)
-            self._auth = auth
-        return {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": CLAUDE_OAUTH_BETA,
-            "Authorization": f"Bearer {auth['access']}",
-            "User-Agent": USER_AGENT,
-        }
 
 
 class SuperGrokSubscriptionProvider(OpenAICompatProvider):

@@ -240,15 +240,13 @@ def build_provider(config: Any, name: Optional[str] = None) -> Provider:
             f"unknown provider '{selected}' (configured: {known})")
     dialect = prov.get("dialect", "openai")
 
-    if dialect in ("chatgpt", "supergrok", "claude"):
+    if dialect in ("chatgpt", "supergrok"):
         from .oauth import OAuthStore
         from .providers.subscription import (ChatGPTSubscriptionProvider,
-                                             ClaudeSubscriptionProvider,
                                              SuperGrokSubscriptionProvider)
         store = OAuthStore.for_config(_credential_source(config))
-        cls = {"chatgpt": ChatGPTSubscriptionProvider,
-               "supergrok": SuperGrokSubscriptionProvider,
-               "claude": ClaudeSubscriptionProvider}[dialect]
+        cls = (ChatGPTSubscriptionProvider if dialect == "chatgpt"
+               else SuperGrokSubscriptionProvider)
         return cls(store, prov.get("base_url", ""),
                    stall_timeout=_stall(prov))
 
