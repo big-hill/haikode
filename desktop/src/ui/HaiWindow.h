@@ -72,7 +72,6 @@ private:
 			BString				fAgentProvider;
 			BString				fAgentModel;
 			BString				fCurrentEffort;
-			BStringList			fCatalogModels;
 			bool				fRunning;
 			bool				fStreamed;
 			int32				fGeneration;

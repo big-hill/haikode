@@ -563,7 +563,6 @@ HaiWindow::MessageReceived(BMessage* message)
 				delete fProviderMenu->RemoveItem((int32)0);
 			while (fModelPopup->CountItems() > 0)
 				delete fModelPopup->RemoveItem((int32)0);
-			fCatalogModels.MakeEmpty();
 			BStringList lines;
 			BString(message->GetString("output", "")).Split("\n", true,
 				lines);
@@ -587,7 +586,6 @@ HaiWindow::MessageReceived(BMessage* message)
 				fProviderMenu->AddItem(item);
 				// The composer popup gets the full catalogue per
 				// provider: field request, "chatgpt -> gpt-5.6 -> sol".
-				fCatalogModels.AddString(name);
 				spawn_history_task(BMessenger(this),
 					BString("models ") << name,
 					MSG_PROVIDER_MODELS, name);
