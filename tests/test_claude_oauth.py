@@ -291,6 +291,44 @@ class TheProfileIsWiredEverywhere(unittest.TestCase):
         with self.assertRaises(OAuthError):
             begin_device_authorization("claude")
 
+class A429WithoutQuotaMetadataIsNotRetried(unittest.TestCase):
+    """The refusal that arrives dressed as a rate limit.
+
+    Measured against api.anthropic.com with a valid subscription token:
+    HTTP 429 in 0.49s, org and workspace echoed back, body
+    {"type":"error","error":{"type":"rate_limit_error","message":"Error"}},
+    and not one anthropic-ratelimit-* header. A real limit says how much
+    of what is left; this one refuses the caller. Retrying it cannot
+    succeed and only hammers a credential already being refused.
+    """
+
+    def classify(self, headers):
+        from haikode.providers.base import classify_error
+        return classify_error(
+            status=429,
+            body=json.dumps({"type": "error", "error": {
+                "type": "rate_limit_error", "message": "Error"}}),
+            provider="claude", model="claude-sonnet-5", headers=headers)
+
+    def test_no_ratelimit_headers_means_terminal(self):
+        error = self.classify({"x-should-retry": "true",
+                               "anthropic-organization-id": "org-1"})
+        self.assertFalse(error.retryable)
+        self.assertEqual(error.kind, "auth")
+        self.assertIn("not entitled", error.message)
+
+    def test_a_real_rate_limit_is_still_retried(self):
+        error = self.classify({"anthropic-ratelimit-requests-remaining": "0",
+                               "retry-after": "30"})
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.kind, "rate_limit")
+
+    def test_retry_after_alone_is_enough_to_stay_a_rate_limit(self):
+        self.assertTrue(self.classify({"retry-after": "12"}).retryable)
+
+    def test_unknown_headers_do_not_guess(self):
+        # Nothing observed: keep the old, retrying behaviour.
+        self.assertTrue(self.classify(None).retryable)
 
 if __name__ == "__main__":
     unittest.main()

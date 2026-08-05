@@ -183,9 +183,31 @@ _TERMINAL_RATE_WORDS = ("insufficient_quota", "billing", "credit",
                         "exceeded your current quota")
 
 
+def rate_limit_is_entitlement(status: Optional[int],
+                              headers: Optional[Dict[str, str]]) -> bool:
+    """A 429 that carries no quota metadata is not a quota problem.
+
+    A real rate limit says how much of what is left: Anthropic sends
+    anthropic-ratelimit-*, OpenAI x-ratelimit-*, and either may send
+    Retry-After. A 429 with none of them — and, observed in the field, the
+    placeholder body {"message":"Error"} — is a refusal of the caller, not
+    of the pace. Retrying it cannot succeed, and hammering a credential
+    that is being refused is how a credential gets degraded further.
+    """
+    if status != 429:
+        return False
+    names = {name.lower() for name in (headers or {})}
+    if not names:
+        return False        # nothing observed; do not guess
+    return not any(name.startswith(("anthropic-ratelimit", "x-ratelimit",
+                                    "ratelimit"))
+                   or name == "retry-after" for name in names)
+
+
 def classify_error(status: Optional[int] = None, body: str = "",
                    message: str = "", provider: str = "", model: str = "",
-                   retryable: Optional[bool] = None) -> ProviderError:
+                   retryable: Optional[bool] = None,
+                   headers: Optional[Dict[str, str]] = None) -> ProviderError:
     """Fold a status code plus a provider body into one ProviderError."""
     parsed = parse_error_payload(body)
     detail = parsed["message"] or message or ""
@@ -221,6 +243,12 @@ def classify_error(status: Optional[int] = None, body: str = "",
                      f"{model or 'this model'}{tail}", False)
 
     if status == 429 or any(w in haystack for w in _RATE_WORDS):
+        if rate_limit_is_entitlement(status, headers):
+            return build("auth",
+                         f"Refused{where} (HTTP 429 with no rate-limit "
+                         f"headers). The credential authenticated but is not "
+                         f"entitled to use {model or 'this model'} from this "
+                         f"client; retrying cannot help{tail}", False)
         terminal = any(w in haystack for w in _TERMINAL_RATE_WORDS)
         return build("rate_limit",
                      f"Rate limited{where}"
@@ -281,7 +309,8 @@ def error_from_exception(exc: BaseException, provider: str = "",
             # is a hint this module wrote, and feeding it back in would let
             # our own phrasing decide the kind.
             return classify_error(status=exc.status, body=exc.body,
-                                  provider=provider, model=model)
+                                  provider=provider, model=model,
+                                  headers=exc.headers)
         # Transport-level: no body to read, but net already knows whether
         # another attempt could have helped — and which host, after how
         # many tries. One printed line stands for an entire exhausted retry
