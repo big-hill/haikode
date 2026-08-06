@@ -1632,5 +1632,47 @@ class CommandOutputTests(unittest.TestCase):
                          "plain\nProject files: /x")
 
 
+
+class CompactionHintIsTransient(unittest.TestCase):
+    """The fold is over when anything else arrives.
+
+    The hint used to survive until the whole turn ended, so a two-hour tool
+    loop sat under "compacting the conversation …" from its first fold
+    onwards — the footer claimed the agent was busy with something it had
+    finished in seconds, which is the exact misread the hint exists to
+    prevent. Observed in the field on shredder64: context at 4%, tools
+    running, footer still compacting.
+    """
+
+    def test_the_hint_appears_on_a_fold(self):
+        tui = make_tui()
+        tui._on_event("compaction", {})
+        self.assertEqual(tui.status_hint, tui.COMPACTING_HINT)
+
+    def test_the_next_event_clears_it(self):
+        for kind, payload in (("tool", {"name": "read", "args": {}}),
+                              ("reasoning", "thinking"),
+                              ("attached", ["file.py"])):
+            tui = make_tui()
+            tui._on_event("compaction", {})
+            tui._on_event(kind, payload)
+            self.assertEqual(tui.status_hint, "",
+                             "%s left the hint standing" % kind)
+
+    def test_a_second_fold_keeps_it(self):
+        tui = make_tui()
+        tui._on_event("compaction", {})
+        tui._on_event("compaction", {})
+        self.assertEqual(tui.status_hint, tui.COMPACTING_HINT)
+
+    def test_another_hint_is_not_stolen(self):
+        # Only the compaction hint is transient; whatever else the UI is
+        # saying belongs to whoever set it.
+        tui = make_tui()
+        tui.status_hint = "interrupting…"
+        tui._on_event("tool", {"name": "read", "args": {}})
+        self.assertEqual(tui.status_hint, "interrupting…")
+
+
 if __name__ == "__main__":
     unittest.main()

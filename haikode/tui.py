@@ -2939,13 +2939,25 @@ class TUI:
         self.transcript.invalidate()
         self._dirty = True
 
+    COMPACTING_HINT = "compacting the conversation …"
+
     def _on_event(self, kind: str, payload):
+        # The fold is over the moment anything else arrives: the summariser
+        # is one provider call, and the next event means it returned. The
+        # hint used to survive until the whole turn ended, so a two-hour
+        # tool loop sat under "compacting the conversation …" from its first
+        # fold onwards — the footer said the agent was busy with something
+        # it had finished in seconds, which is exactly the misread the hint
+        # was added to prevent.
+        if kind != "compaction" and self.status_hint == self.COMPACTING_HINT:
+            self.status_hint = ""
+            self._dirty = True
         if kind == "compaction":
             # The summariser is a provider call of its own; without this
             # hint the pause read as a hang in the field. The transcript
             # line is the durable half: the user can see afterwards THAT a
             # fold happened, and where.
-            self.status_hint = "compacting the conversation …"
+            self.status_hint = self.COMPACTING_HINT
             self.transcript.add(Entry(
                 "info", text="compacting: older turns fold into a summary "
                              "(session_history recovers the detail)"))
