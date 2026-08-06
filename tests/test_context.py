@@ -626,6 +626,31 @@ class CompactionTest(unittest.TestCase):
                         notify=lambda: told.append(True))
         self.assertEqual([], told)
 
+    def test_a_reused_summary_announces_nothing(self):
+        """One line per fold, not one per provider round.
+
+        This runs on every round, and the summary is cached precisely so a
+        ten-step run does not buy ten summaries of the same messages. The
+        announcement used to fire before that cache was consulted, so a
+        resumed session with a long history printed "compacting" at every
+        single step while reusing the summary it already had. Field report
+        from shredder64.
+        """
+        told = []
+        history = self.tool_history()
+        provider = _StubProvider("## Objective\n- ok")
+        for _ in range(4):
+            compact_history(history, 2000, provider=provider, model="m",
+                            notify=lambda: told.append(True))
+        self.assertEqual([True], told, "announced once per fold, not per round")
+
+    def test_a_mechanical_drop_announces_nothing(self):
+        # No provider, no summariser call, nothing to wait for.
+        told = []
+        compact_history(self.tool_history(), 2000,
+                        notify=lambda: told.append(True))
+        self.assertEqual([], told)
+
     def test_compact_history_still_hands_back_a_plain_list(self):
         history = self.tool_history()
         kept = compact_history(history, window=2000)

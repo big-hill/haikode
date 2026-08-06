@@ -936,15 +936,6 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
     if not force and not needs_compaction(history, window, reserve, scale):
         return CompactionResult(messages=history, kept=len(history),
                                 trigger=trigger)
-    if notify is not None:
-        # The summariser is its own provider call: seconds to minutes in
-        # the middle of the request path. Without this hook both front
-        # ends showed nothing and the pause read as a hang in the field.
-        try:
-            notify()
-        except Exception:
-            pass
-
     # The keep-budget is compared against local estimates inside the plan,
     # so it is expressed in estimator units: a scale saying "the estimator
     # runs low here" must shrink what is kept, not enlarge it.
@@ -965,6 +956,19 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
             summary, error = remembered
             reused = True
         else:
+            # Announced here and nowhere else. This is the only branch that
+            # spends anything: the summariser is its own provider call,
+            # seconds to minutes inside the request path, and without a
+            # hook the pause read as a hang in the field. Announcing before
+            # the cache lookup instead meant a line per provider round —
+            # this function runs on every one of them — so a resumed
+            # session with a long history printed "compacting" at each
+            # step while reusing the same summary it already had.
+            if notify is not None:
+                try:
+                    notify()
+                except Exception:
+                    pass
             summary, error = summarize_with_reason(
                 folded, provider, model, previous_summary=anchor,
                 max_tokens=max_tokens)
