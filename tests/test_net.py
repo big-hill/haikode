@@ -631,6 +631,21 @@ class AMissingTrustStoreSaysWhichPackageIsMissing(unittest.TestCase):
         from haikode.net import _certificate_hint
         self.assertEqual(_certificate_hint(OSError("boom")), "")
 
+    def test_a_verification_failure_rebuilds_the_shared_context(self):
+        """Installing the roots mid-session must not need a restart.
+
+        The context loads the trust store once, at creation, and is shared
+        for the life of the process — so without this a haikode started
+        before `pkgman install ca_root_certificates` would keep failing
+        forever, and the obvious fix would appear to do nothing.
+        """
+        from haikode import net as net_module
+        first = net_module._make_context()
+        net_module._forget_context()
+        second = net_module._make_context()
+        self.assertIsNot(first, second)
+        self.assertIs(net_module._make_context(), second)
+
 
 class TheSslContextIsSharedAcrossRequests(unittest.TestCase):
     """Why haikode saw refusals where a keep-alive client saw none.

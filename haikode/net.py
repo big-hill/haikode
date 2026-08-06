@@ -391,6 +391,22 @@ def describe_errno(exc: BaseException) -> str:
         return ""
 
 
+def _forget_context() -> None:
+    """Drop the shared SSLContext so the next request builds a fresh one.
+
+    The context loads the system trust store when it is created, and it is
+    created once per process — so a haikode started before
+    `pkgman install ca_root_certificates` would keep an empty trust store
+    for its whole life, and installing the roots mid-session would appear
+    to do nothing. Rebuilding after a verification failure costs one
+    context on a path that has already failed, and turns "restart haikode"
+    into "it works on the next turn".
+    """
+    global _SHARED_CONTEXT
+    with _CONTEXT_LOCK:
+        _SHARED_CONTEXT = None
+
+
 def _certificate_hint(reason: Any) -> str:
     """Name the missing package when TLS cannot find an issuer.
 
@@ -473,6 +489,8 @@ def _open(url: str, data: Optional[bytes], headers: Optional[Dict[str, str]],
         fatal = (isinstance(reason,
                             (ssl.SSLCertVerificationError, socket.gaierror))
                  and not transient_dns)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            _forget_context()
         raise NetError(f"Connection failed: {_reason_text(reason)}"
                        f"{_certificate_hint(reason)}", url=url,
                        retryable=not fatal) from e
