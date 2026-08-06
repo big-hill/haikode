@@ -31,6 +31,7 @@ import random
 import errno
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -390,6 +391,27 @@ def describe_errno(exc: BaseException) -> str:
         return ""
 
 
+def _certificate_hint(reason: Any) -> str:
+    """Name the missing package when TLS cannot find an issuer.
+
+    A fresh Haiku install has no root certificates, so the first request a
+    new user makes fails with "unable to get local issuer certificate" —
+    accurate, unactionable, and indistinguishable from a network fault. It
+    cost an agent on a third machine a debugging session that ended in the
+    wrong file. The requirement is documented; the error should not need
+    the documentation.
+    """
+    if not isinstance(reason, ssl.SSLCertVerificationError):
+        return ""
+    if getattr(reason, "verify_code", None) not in (2, 20, None):
+        return ""      # a real bad certificate, not an empty trust store
+    if sys.platform.startswith("haiku"):
+        return (". No trusted root certificates were found — install them "
+                "with `pkgman install ca_root_certificates`, then run "
+                "`haikode doctor` to confirm")
+    return ". No trusted root certificates were found on this machine"
+
+
 def _reason_text(reason: Any) -> str:
     """A URLError/OSError reason, with Haiku's errno spelled symbolically."""
     text = str(reason)
@@ -451,7 +473,8 @@ def _open(url: str, data: Optional[bytes], headers: Optional[Dict[str, str]],
         fatal = (isinstance(reason,
                             (ssl.SSLCertVerificationError, socket.gaierror))
                  and not transient_dns)
-        raise NetError(f"Connection failed: {_reason_text(reason)}", url=url,
+        raise NetError(f"Connection failed: {_reason_text(reason)}"
+                       f"{_certificate_hint(reason)}", url=url,
                        retryable=not fatal) from e
     except (socket.timeout, TimeoutError) as e:
         raise NetError(f"Connection timed out after {connect_timeout:g}s",

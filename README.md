@@ -61,7 +61,7 @@ The count is the same on macOS and on Haiku. See
 |---|---|
 | Haiku R1/beta5 or newer | hrev57937 is the reference machine |
 | Python 3.10+ | `pkgman install python3` |
-| TLS root certificates | `pkgman install ca_root_certificates` |
+| TLS root certificates | `pkgman install ca_root_certificates` — **not installed by default**; without it every request fails with `CERTIFICATE_VERIFY_FAILED` |
 | `sqlite3` module | ships with Haiku's python3; without it sessions are disabled |
 | `curses` module | ships with Haiku's python3; without it you get the REPL |
 

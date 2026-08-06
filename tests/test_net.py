@@ -596,6 +596,42 @@ class DnsFailuresAreClassifiedByTheirErrno(unittest.TestCase):
         self.assertFalse(self.classify(error).retryable)
 
 
+class AMissingTrustStoreSaysWhichPackageIsMissing(unittest.TestCase):
+    """A fresh Haiku install has no root certificates.
+
+    The first request then fails with "unable to get local issuer
+    certificate" — accurate, unactionable, and indistinguishable from a
+    network fault. It cost an agent on a third machine a debugging session
+    that ended in the wrong file.
+    """
+
+    def error(self, verify_code=20):
+        import ssl as ssl_module
+        exc = ssl_module.SSLCertVerificationError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate")
+        exc.verify_code = verify_code
+        return exc
+
+    def test_haiku_gets_the_pkgman_command(self):
+        import sys as sys_module
+        from unittest.mock import patch as patch_fn
+        from haikode.net import _certificate_hint
+        with patch_fn.object(sys_module, "platform", "haiku1"):
+            hint = _certificate_hint(self.error())
+        self.assertIn("pkgman install ca_root_certificates", hint)
+
+    def test_a_genuinely_bad_certificate_gets_no_package_advice(self):
+        # verify_code 10 is an expired certificate: installing roots would
+        # not help, and saying so would send the user the wrong way.
+        from haikode.net import _certificate_hint
+        self.assertEqual(_certificate_hint(self.error(verify_code=10)), "")
+
+    def test_other_failures_are_untouched(self):
+        from haikode.net import _certificate_hint
+        self.assertEqual(_certificate_hint(OSError("boom")), "")
+
+
 class TheSslContextIsSharedAcrossRequests(unittest.TestCase):
     """Why haikode saw refusals where a keep-alive client saw none.
 
