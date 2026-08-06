@@ -184,8 +184,50 @@ class AnthropicProvider(Provider):
         return headers
 
     @staticmethod
-    def _encode(messages: List[Msg]):
-        """Map the neutral schema onto Anthropic's content-block format."""
+    def _preserved_blocks(message: Msg, model: str) -> List[dict]:
+        """This turn's own thinking blocks, if they are ours to send back.
+
+        The dialect and model tags are checked, not trusted: a signature is
+        issued by one model on one dialect, and replaying it anywhere else
+        means posting an opaque blob to a provider that never signed it. A
+        session that switched provider or model mid-conversation therefore
+        drops them rather than carrying them across.
+        """
+        reasoning = getattr(message, "reasoning", None) or {}
+        if reasoning.get("dialect") != "anthropic":
+            return []
+        if str(reasoning.get("model") or "").lower() != (model or "").lower():
+            return []
+        blocks = reasoning.get("blocks")
+        if not blocks:
+            return []
+        kept = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            # An unsigned thinking block is refused rather than sent. The
+            # API validates the signature, and a rejected replay is not a
+            # one-off error: the block lives in the history, so the 400
+            # returns on every later request and the session is bricked
+            # with no way out from inside. Dropping it costs the model one
+            # turn's reasoning; sending it costs the session.
+            if block.get("type") == "thinking" and not block.get("signature"):
+                continue
+            kept.append(block)
+        return kept
+
+    @staticmethod
+    def _encode(messages: List[Msg], model: str):
+        """Map the neutral schema onto Anthropic's content-block format.
+
+        Thinking blocks go back first and unmodified. The API requires the
+        thinking blocks of an assistant turn to accompany the tool_use they
+        preceded, and rebuilding the turn without them — or filtering out a
+        redacted_thinking block — is an error rather than a degradation. It
+        is also what makes interleaved thinking worth anything: without the
+        replay the model cannot see its own reasoning from earlier steps of
+        the same tool loop.
+        """
         system = ""
         out: List[dict] = []
         for m in messages:
@@ -204,8 +246,15 @@ class AnthropicProvider(Provider):
                     out.append({"role": "user", "content": [block]})
                 continue
 
-            if m.role == "assistant" and m.tool_calls:
-                blocks = []
+            if m.role == "assistant":
+                thinking = AnthropicProvider._preserved_blocks(m, model)
+                if not (m.tool_calls or thinking):
+                    out.append({"role": m.role, "content": m.content or ""})
+                    continue
+                # Thinking first: the API reads the turn in order, and a
+                # thinking block that follows its own tool_use is not the
+                # turn the model produced.
+                blocks = list(thinking)
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:
@@ -241,7 +290,7 @@ class AnthropicProvider(Provider):
     def stream(self, messages: List[Msg], tools: List[ToolSpec], model: str,
                max_tokens: int) -> Iterator[CompletionChunk]:
         url = f"{self.base_url}/v1/messages"
-        system, encoded = self._encode(messages)
+        system, encoded = self._encode(messages, model)
 
         ceiling = max_output_tokens(model)
         if ceiling is not None:
@@ -263,6 +312,11 @@ class AnthropicProvider(Provider):
         index_map: Dict[Any, int] = {}   # content block index -> tool call index
         next_index = 0
         input_tokens: Optional[int] = None
+        # Thinking blocks under construction, by content block index. They
+        # are assembled here rather than by the agent because only this
+        # dialect knows that a signature arrives in its own delta type,
+        # after the text it signs.
+        pending_thinking: Dict[Any, dict] = {}
         try:
             for event in stream_sse_events(
                     url, payload, headers=self._headers(),
@@ -283,7 +337,20 @@ class AnthropicProvider(Provider):
 
                 elif etype == "content_block_start":
                     block = event.get("content_block") or {}
-                    if block.get("type") == "tool_use":
+                    kind = block.get("type")
+                    if kind == "thinking":
+                        pending_thinking[event.get("index")] = {
+                            "type": "thinking",
+                            "thinking": block.get("thinking") or "",
+                            "signature": block.get("signature") or ""}
+                    elif kind == "redacted_thinking":
+                        # Encrypted and unreadable to us. It must still go
+                        # back untouched: filtering one out is a 400, and
+                        # the model needs the reasoning it stands for.
+                        pending_thinking[event.get("index")] = {
+                            "type": "redacted_thinking",
+                            "data": block.get("data") or ""}
+                    elif kind == "tool_use":
                         index_map[event.get("index")] = next_index
                         yield CompletionChunk(tool_call_delta={
                             "index": next_index, "id": block.get("id"),
@@ -296,16 +363,30 @@ class AnthropicProvider(Provider):
                     if dtype == "text_delta" and delta.get("text"):
                         yield CompletionChunk(text=delta["text"])
                     elif dtype == "thinking_delta" and delta.get("thinking"):
+                        block = pending_thinking.get(event.get("index"))
+                        if block is not None:
+                            block["thinking"] = (block.get("thinking", "")
+                                                 + delta["thinking"])
                         yield CompletionChunk(reasoning=delta["thinking"])
                     elif dtype == "signature_delta":
-                        # Signs the thinking block; never answer text.
-                        continue
+                        # Signs the thinking block, and is never answer text.
+                        # Kept, not dropped: without it the block cannot be
+                        # handed back, and the API requires it back.
+                        block = pending_thinking.get(event.get("index"))
+                        if block is not None and delta.get("signature"):
+                            block["signature"] = (block.get("signature", "")
+                                                  + delta["signature"])
                     elif dtype == "input_json_delta":
                         call_index = index_map.get(event.get("index"))
                         if call_index is not None:
                             yield CompletionChunk(tool_call_delta={
                                 "index": call_index, "id": None, "name": None,
                                 "arguments": delta.get("partial_json") or ""})
+
+                elif etype == "content_block_stop":
+                    finished = pending_thinking.pop(event.get("index"), None)
+                    if finished is not None:
+                        yield CompletionChunk(reasoning_block=finished)
 
                 elif etype == "message_delta":
                     reason = (event.get("delta") or {}).get("stop_reason")

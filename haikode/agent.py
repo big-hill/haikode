@@ -826,10 +826,34 @@ class Agent:
             except AttributeError:      # a provider with no such slot
                 pass
 
+    _REASONING_REJECTED = ("thinking", "signature", "redacted_thinking")
+
+    def _forget_reasoning(self, failure: "ProviderFailure") -> bool:
+        """Strip stored reasoning blocks if that is what the provider refused.
+
+        Returns whether anything was dropped, so the caller only retries on a
+        failure this can actually fix. Deliberately narrow: a provider outage
+        must not be mistaken for a poisoned block and cost a second request.
+        """
+        error = getattr(failure, "error", None) or {}
+        haystack = " ".join(str(error.get(key) or "")
+                            for key in ("message", "body")).lower()
+        if error.get("status") != 400:
+            return False
+        if not any(word in haystack for word in self._REASONING_REJECTED):
+            return False
+        dropped = False
+        for message in self.messages:
+            if getattr(message, "reasoning", None):
+                message.reasoning = {}
+                dropped = True
+        return dropped
+
     def _step(self, on_text: Optional[Callable], on_event: Optional[Callable],
               final_step: bool = False):
         accumulator = _CallAccumulator()
         text_parts: List[str] = []
+        reasoning_blocks: List[dict] = []
         stop_reason = None
 
         self._bind_abort()
@@ -865,6 +889,11 @@ class Agent:
                         on_text(chunk.text)
                 if chunk.reasoning and on_event:
                     on_event("reasoning", chunk.reasoning)
+                if chunk.reasoning_block:
+                    # Opaque and never shown: the screen already had the
+                    # readable copy through `reasoning`. This is the one the
+                    # provider needs handed back next request.
+                    reasoning_blocks.append(chunk.reasoning_block)
                 if chunk.tool_call_delta:
                     accumulator.add(chunk.tool_call_delta)
                 if chunk.usage:
@@ -899,7 +928,14 @@ class Agent:
         # endpoint may still replay a tool call. Never persist an unanswered call
         # in the handoff turn: it would poison every later request in the session.
         calls = [] if final_step else accumulator.finish()
-        self.messages.append(Msg(role="assistant", content=text, tool_calls=calls))
+        # Tagged with what produced them: a signature is only valid to the
+        # dialect and model that issued it, so a later provider or model
+        # switch can tell these are not its own to replay.
+        reasoning = {"dialect": getattr(self.provider, "name", ""),
+                     "model": self.model,
+                     "blocks": reasoning_blocks} if reasoning_blocks else {}
+        self.messages.append(Msg(role="assistant", content=text,
+                                 tool_calls=calls, reasoning=reasoning))
         return text, calls, stop_reason
 
     # --- tool execution -------------------------------------------------
@@ -1099,8 +1135,24 @@ class Agent:
             final_step = (self.max_steps is not None
                           and self.steps_used >= self.max_steps)
             try:
-                text, calls, stop_reason = self._step(
-                    on_text, on_event, final_step=final_step)
+                try:
+                    text, calls, stop_reason = self._step(
+                        on_text, on_event, final_step=final_step)
+                except ProviderFailure as failure:
+                    # The one failure the session can repair itself. A
+                    # replayed reasoning block the provider refuses lives in
+                    # the history, so the same 400 comes back on every later
+                    # request — the session is bricked from the inside, which
+                    # is exactly the shape pair_tool_messages exists to
+                    # prevent for tool calls. Drop the blocks and try once.
+                    if not self._forget_reasoning(failure):
+                        raise
+                    if on_event:
+                        on_event("info", "provider refused the stored "
+                                         "reasoning blocks; dropped them and "
+                                         "retried")
+                    text, calls, stop_reason = self._step(
+                        on_text, on_event, final_step=final_step)
             except ToolAborted:
                 self.messages.append(Msg(role="user", content="[interrupted by user]"))
                 return final

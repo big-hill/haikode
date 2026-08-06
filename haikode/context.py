@@ -86,6 +86,13 @@ def message_tokens(message: Msg) -> int:
     total = estimate_tokens(message.content or "")
     for call in message.tool_calls:
         total += estimate_tokens(call.name) + estimate_tokens(str(call.arguments))
+    # Preserved reasoning blocks are uploaded with the turn, so a meter that
+    # ignores them under-reads exactly on the long high-effort loops where
+    # the estimate matters most, and compaction triggers late.
+    for block in ((getattr(message, "reasoning", None) or {}).get("blocks")
+                  or []):
+        if isinstance(block, dict):
+            total += estimate_tokens(str(block.get("thinking") or ""))
     return total + 4
 
 

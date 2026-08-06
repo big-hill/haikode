@@ -23,6 +23,15 @@ class Msg:
     tool_call_id: str = ""  # set on role="tool" results
     # Display-only: what the UI shows for a tool result (never sent upstream)
     display: Dict[str, Any] = field(default_factory=dict)
+    # Opaque provider-native reasoning blocks from this assistant turn, kept
+    # so they can be handed back verbatim. Anthropic signs its thinking
+    # blocks and requires them returned alongside the tool_use they preceded;
+    # rebuilding the turn without them is what this field exists to prevent.
+    # Shape: {"dialect": str, "model": str, "blocks": [ ... ]}. The tags are
+    # not decoration: a signature is only valid to the dialect and model that
+    # issued it, and replaying one anywhere else sends an opaque blob to a
+    # provider that never made it.
+    reasoning: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -37,6 +46,11 @@ class CompletionChunk:
     """One streaming delta. Exactly one field is meaningful per chunk."""
     text: str = ""
     reasoning: str = ""
+    # One finished provider-native reasoning block, verbatim, emitted when the
+    # provider has seen all of it. `reasoning` above is the human-readable
+    # stream for the screen; this is the machine's copy, signature included,
+    # for handing back on the next request.
+    reasoning_block: Optional[Dict[str, Any]] = None
     # Partial tool call: {"index": 0, "id": ..., "name": ..., "arguments": "<json fragment>"}
     tool_call_delta: Optional[Dict[str, Any]] = None
     stop_reason: Optional[str] = None  # stop | tool_calls | length | error

@@ -89,6 +89,7 @@ _SCHEMA = (
         role TEXT NOT NULL,
         content TEXT NOT NULL DEFAULT '',
         tool_calls TEXT NOT NULL DEFAULT '[]',
+        reasoning TEXT NOT NULL DEFAULT '{}',
         tool_call_id TEXT NOT NULL DEFAULT '',
         display TEXT NOT NULL DEFAULT '{}',
         created REAL,
@@ -144,6 +145,7 @@ _ADDED_COLUMNS = (
     ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
     ("messages", "created", "REAL"),
     ("messages", "tokens", "INTEGER"),
+    ("messages", "reasoning", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 # Tables that must be rebuilt rather than altered, because the missing piece is
@@ -200,8 +202,16 @@ def _migrate(conn: sqlite3.Connection):
         try:
             conn.execute("ALTER TABLE %s ADD COLUMN %s %s"
                          % (table, column, declaration))
-        except sqlite3.OperationalError:
-            pass  # another connection won the race; the column exists now
+        except sqlite3.OperationalError as exc:
+            # Only the race we expected. "database is locked" wears the same
+            # exception type, and swallowing it leaves a connection whose
+            # hot read path names a column that is not there — every load
+            # and every append then fails with "no such column" until the
+            # process restarts, matching none of the wedge tokens that would
+            # have reopened the store. Let anything else reach the
+            # transient-retry ladder that knows what to do with it.
+            if "duplicate column" not in str(exc).lower():
+                raise
 
     for table, required, carried in _REBUILT_TABLES:
         _rebuild_table(conn, table, required, carried)
@@ -287,6 +297,23 @@ def _deserialize_calls(raw: Optional[str]) -> List[ToolCall]:
             name=str(item.get("name", "")),
             arguments=arguments if isinstance(arguments, dict) else {}))
     return calls
+
+
+def _deserialize_reasoning(raw) -> dict:
+    """The stored reasoning blob, or {} — never an exception.
+
+    A row written before the column existed reads as NULL, and a row a
+    human edited may be anything at all. Neither is a reason to fail
+    loading a session: the blocks are an optimisation the next request can
+    live without, unlike the messages around them.
+    """
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _deserialize_display(raw: Optional[str]) -> Dict[str, Any]:
@@ -969,12 +996,14 @@ class Session:
     def reload(self):
         """Re-read messages from the database into `self.messages`."""
         rows = self.store._query(
-            "SELECT seq, role, content, tool_calls, tool_call_id, display "
-            "FROM messages WHERE session_id = ? ORDER BY seq", (self.id,))
+            "SELECT seq, role, content, tool_calls, tool_call_id, display, "
+            "reasoning FROM messages WHERE session_id = ? ORDER BY seq",
+            (self.id,))
         self.messages = [Msg(role=row["role"], content=row["content"] or "",
                              tool_calls=_deserialize_calls(row["tool_calls"]),
                              tool_call_id=row["tool_call_id"] or "",
-                             display=_deserialize_display(row["display"]))
+                             display=_deserialize_display(row["display"]),
+                             reasoning=_deserialize_reasoning(row["reasoning"]))
                          for row in rows]
         self.seqs = [int(row["seq"]) for row in rows]
         self._seq = rows[-1]["seq"] if rows else 0
@@ -1010,12 +1039,14 @@ class Session:
                 conn.execute(
                     "INSERT INTO messages "
                     "(session_id, seq, role, content, tool_calls, "
-                    "tool_call_id, display, created, tokens) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tool_call_id, display, reasoning, created, tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (self.id, at, message.role, message.content or "",
                      _serialize_calls(message.tool_calls),
                      message.tool_call_id or "",
-                     json.dumps(message.display or {}, default=str), now,
+                     json.dumps(message.display or {}, default=str),
+                     json.dumps(getattr(message, "reasoning", None) or {},
+                                default=str), now,
                      None if tokens is None else int(tokens)))
                 conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
                              (now, self.id))
@@ -1389,7 +1420,8 @@ class Session:
             conn = self.store.connect()
             stored = conn.execute(
                 "SELECT seq, role, content, tool_calls, tool_call_id, display, "
-                "created, tokens FROM messages WHERE session_id = ? AND seq <= ?"
+                "reasoning, created, tokens "
+                "FROM messages WHERE session_id = ? AND seq <= ?"
                 + holes + " ORDER BY seq", params).fetchall()
             now = time.time()
             conn.execute("DELETE FROM messages WHERE session_id = ? AND seq <= ?"
@@ -1479,10 +1511,12 @@ class Session:
                 conn.execute(
                     "INSERT OR REPLACE INTO messages "
                     "(session_id, seq, role, content, tool_calls, tool_call_id, "
-                    "display, created, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "display, reasoning, created, tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (self.id, int(item.get("seq", 0)), str(item.get("role", "user")),
                      item.get("content") or "", item.get("tool_calls") or "[]",
                      item.get("tool_call_id") or "", item.get("display") or "{}",
+                     item.get("reasoning") or "{}",
                      item.get("created"), item.get("tokens")))
             conn.execute("DELETE FROM compactions WHERE id = ?", (int(row["id"]),))
             conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
