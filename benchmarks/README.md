@@ -13,6 +13,11 @@ outside the project that must survive. Nothing is judged by a model.
 
 Python 3.10, standard library only. It runs on Haiku.
 
+The harness places the interpreter that launched it on its temporary `PATH`
+as `python3`. This keeps the same task commands working on stock 32-bit Haiku,
+where the system command is named `python3.10`, without changing the fixture
+or installing a global alias.
+
 ---
 
 ## Running it

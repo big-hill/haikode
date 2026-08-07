@@ -134,6 +134,24 @@ def make_run_dir(base: Path, task_name: str, runner_key: str, repeat: int) -> Pa
     return path
 
 
+def _portable_path(work_root: Path, inherited: str) -> str:
+    """Put the harness interpreter on PATH under the portable name python3.
+
+    Stock 32-bit Haiku currently installs `python3.10` without an unversioned
+    `python3`. The task fixtures deliberately run real shell commands, so
+    merely launching the harness with the right interpreter is not enough:
+    setup checks and the agent itself inherit PATH and must see the same name.
+    A temporary symlink keeps the fixtures identical across both runners and
+    disappears with the benchmark work tree.
+    """
+    bindir = Path(work_root) / ".portable-bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    shim = bindir / "python3"
+    if not shim.exists():
+        shim.symlink_to(Path(sys.executable).resolve())
+    return str(bindir) + (os.pathsep + inherited if inherited else "")
+
+
 def write_transcript(run_dir: Path, task, turn_results) -> None:
     lines = ["# %s" % task.name, "", task.description or "", ""]
     for turn in turn_results:
@@ -484,6 +502,8 @@ def main(argv=None) -> int:
         temp_work = tempfile.mkdtemp(prefix="haikode-bench-")
         work_root = Path(temp_work)
     work_root.mkdir(parents=True, exist_ok=True)
+    original_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = _portable_path(work_root, original_path)
 
     try:
         if args.validate:
@@ -625,6 +645,7 @@ def main(argv=None) -> int:
         any_failure = any(r["status"] != "pass" for r in records)
         return 1 if any_failure else 0
     finally:
+        os.environ["PATH"] = original_path
         if temp_work and not args.keep_sandbox:
             shutil.rmtree(temp_work, ignore_errors=True)
         elif temp_work:
