@@ -380,7 +380,7 @@ a hypothesis rather than a verified latency defect.
 Mac acceptance:
 
 ```text
-2427 tests in 46.790 s
+2427 tests in 46.934 s
 4 expected failures, all tests/test_wiring_audit.py
 4 skips
 0 unexpected failures, 0 errors
@@ -390,23 +390,30 @@ performance_audit.py: exit 0
 compileall, shell syntax and git diff --check: exit 0
 ```
 
-One non-multiplexed SSH session was used on `shredder32`; no GUI was launched.
-The temp archive accidentally omitted `README.md` and
-`scripts/hooks/prepush_scan.py`, so two tests failed to load their fixture files.
-This makes that full-suite attempt harness-inconclusive rather than green:
+The same code candidate then passed on both real Haiku architectures. SSH was
+strictly sequential and no GUI was launched:
 
-```text
-2413 tests in 191.153 s
-4 expected wiring failures
-2 missing-file harness errors
-0 other loaded-test failures
-compileall: exit 0
-performance_audit.py: exit 0
-leftover worker/MCP/audit processes: 0
-```
+| Gate | x86_gcc2 | x86_64 |
+|---|---:|---:|
+| Full suite | 2427 in 196.235 s | 2427 in 122.314 s |
+| Expected wiring failures | 4 | 4 |
+| Unexpected failures / errors | 0 / 0 | 0 / 0 |
+| Fixture validator | all 13 | all 13 |
+| Stateless / latched / restored summary calls | 13 / 1 / 0 | 13 / 1 / 0 |
+| Leftover audit/worker/MCP processes | 0 | 0 |
 
-The one-SSH rule prevented a corrective rerun. The missing files and exact
-tracebacks are recorded here rather than misreported as Haiku regressions.
+The first x86_gcc2 validator attempt also found a real harness portability bug:
+some fixture commands assumed an unversioned `python3`, while stock 32-bit
+Haiku provides `python3.10`. The harness now places its own interpreter on a
+temporary PATH under the portable name; the corrective run passed every
+fixture without installing or changing a system command.
+
+The live release gate used the current keyless Zen catalogue over real
+HTTPS/SSE. Mac and both Haiku machines returned the exact smoke response. On
+x86_64 a second live run made a real `read` tool call, returned its result to
+the model in a second provider round, and finished with the exact requested
+answer. Both native C++ applications and both HPKG architectures also built
+from one candidate commit before the final package pass.
 
 ## Commands
 
@@ -428,6 +435,3 @@ git diff --check
    material and non-idempotent replay remains impossible.
 3. Add an explicit optional compaction provider/model setting before changing
    summariser quality or price.
-4. On the next permitted Haiku session, include the complete repository test
-   resources and repeat `scripts/ci_baseline.py`; do not launch the desktop GUI
-   over SSH.

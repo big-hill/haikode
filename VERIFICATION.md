@@ -16,8 +16,8 @@ reviewer.
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
-| HPKG packaging | Built and installed on x86_gcc2 (architecture field verified against HaikuPorts convention) and x86_64; in-place upgrades get a commit-count package revision after a field report of silent same-version no-ops. | PASS |
-| 32-bit x86_gcc2 | Full suite at the documented baseline, native builds under `setarch x86`, live provider turn — all on the Aspire One. | PASS |
+| HPKG packaging | Native C++ and HPKG builds pass on x86_gcc2 and x86_64 from the same commit; architecture fields follow HaikuPorts convention, and in-place upgrades get a commit-count package revision. | PASS |
+| Real Haiku release gate | The 2427-test baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE pass on x86_gcc2 and x86_64. A two-round live read-tool flow also passes on x86_64. | PASS |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
