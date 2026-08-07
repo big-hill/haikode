@@ -501,8 +501,9 @@ def summary_message(text: str, folded: int) -> Msg:
     turn.
     """
     recovery = ("\n\n[%d earlier turns were folded into this summary. "
-                "Exact folded detail can be re-read on demand with the "
-                "session_history tool.]" % int(folded))
+                "session_history can show a shortened transcript; the raw "
+                "turns remain in session storage and a manual fold can be "
+                "restored with /compact undo.]" % int(folded))
     return Msg(role="user", content=text + recovery,
                display={"summary": True, "folded": int(folded)})
 
@@ -586,7 +587,8 @@ def build_summary_prompt(previous_summary: str = "",
 def summarize_with_reason(messages: Sequence[Msg], provider: Any, model: str, *,
                           previous_summary: str = "",
                           max_tokens: int = SUMMARY_MAX_TOKENS,
-                          max_chars: int = MAX_SUMMARY_INPUT_CHARS
+                          max_chars: int = MAX_SUMMARY_INPUT_CHARS,
+                          on_usage: Any = None,
                           ) -> Tuple[str, str]:
     """(summary, reason it is empty). Never raises.
 
@@ -603,6 +605,14 @@ def summarize_with_reason(messages: Sequence[Msg], provider: Any, model: str, *,
     parts: List[str] = []
     try:
         for chunk in provider.stream(request, [], model, int(max_tokens)):
+            usage = getattr(chunk, "usage", None)
+            if usage and on_usage is not None:
+                try:
+                    on_usage(usage)
+                except Exception:
+                    # Accounting is observational. A broken meter must never
+                    # turn a successful summary into a failed compaction.
+                    pass
             if getattr(chunk, "stop_reason", None) == "error":
                 # Providers report failure as a terminal chunk whose text is
                 # the error message; collecting it would file the outage as
@@ -625,7 +635,8 @@ def summarize_with_reason(messages: Sequence[Msg], provider: Any, model: str, *,
 def summarize(messages: Sequence[Msg], provider: Any, model: str, *,
               previous_summary: str = "",
               max_tokens: int = SUMMARY_MAX_TOKENS,
-              max_chars: int = MAX_SUMMARY_INPUT_CHARS) -> str:
+              max_chars: int = MAX_SUMMARY_INPUT_CHARS,
+              on_usage: Any = None) -> str:
     """Ask `model` for an anchored summary of `messages`; "" when it fails.
 
     `previous_summary` is the summary an earlier compaction wrote: passing it
@@ -634,16 +645,18 @@ def summarize(messages: Sequence[Msg], provider: Any, model: str, *,
     """
     return summarize_with_reason(messages, provider, model,
                                  previous_summary=previous_summary,
-                                 max_tokens=max_tokens, max_chars=max_chars)[0]
+                                 max_tokens=max_tokens, max_chars=max_chars,
+                                 on_usage=on_usage)[0]
 
 
 # Summaries already written, keyed by exactly which messages were folded. The
-# request-assembly path re-runs compaction on every provider round, and without
-# this every round of a long run would pay for another summarising call — and a
-# provider that is down would be dialled once per step. Bounded, because a run
-# that keeps growing its history keeps producing new folds.
+# latched provider-facing history normally avoids revisiting a completed fold.
+# This small cache is the retry/fallback layer: it prevents a failed summary
+# from being paid for again inside one logical agent, and supports direct
+# helper callers that do not carry an Agent latch. Bounded, because a run that
+# keeps growing its history keeps producing new folds.
 SUMMARY_CACHE_SIZE = 8
-_SUMMARY_CACHE: "OrderedDict[str, Tuple[str, str]]" = OrderedDict()
+_SUMMARY_CACHE: "OrderedDict[Any, Tuple[str, str]]" = OrderedDict()
 _SUMMARY_CACHE_LOCK = threading.Lock()
 
 
@@ -660,7 +673,7 @@ def _fold_fingerprint(folded: Sequence[Msg], model: str,
     return digest.hexdigest()
 
 
-def _remember_summary(key: str, value: Tuple[str, str]) -> None:
+def _remember_summary(key: Any, value: Tuple[str, str]) -> None:
     with _SUMMARY_CACHE_LOCK:
         _SUMMARY_CACHE[key] = value
         _SUMMARY_CACHE.move_to_end(key)
@@ -668,7 +681,7 @@ def _remember_summary(key: str, value: Tuple[str, str]) -> None:
             _SUMMARY_CACHE.popitem(last=False)
 
 
-def _recall_summary(key: str) -> Optional[Tuple[str, str]]:
+def _recall_summary(key: Any) -> Optional[Tuple[str, str]]:
     with _SUMMARY_CACHE_LOCK:
         value = _SUMMARY_CACHE.get(key)
         if value is not None:
@@ -912,7 +925,9 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
                      force: bool = False, cache: bool = True,
                      max_tokens: int = SUMMARY_MAX_TOKENS,
                      scale: float = 1.0,
-                     notify: Any = None) -> CompactionResult:
+                     notify: Any = None,
+                     on_usage: Any = None,
+                     cache_namespace: Any = None) -> CompactionResult:
     """
     Fold the old turns into one model-written summary.
 
@@ -927,10 +942,10 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
     `CompactionResult.error` says which one happened so a front end can tell
     the user.
 
-    `cache` reuses a summary already written for the same fold. The request
-    path calls this on every provider round, and a fold only changes when the
-    conversation does, so without it a ten-step run would buy ten summaries of
-    almost the same messages.
+    `cache` reuses a summary already written for the same fold. Agents also
+    latch a successful result, so this cache mainly protects failed-summary
+    retries and direct helper callers that do not carry that provider-facing
+    history.
     """
     history = list(messages)
     if not force and not needs_compaction(history, window, reserve, scale):
@@ -950,7 +965,15 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
     summary, error, reused = "", "no summariser available", False
     if provider is not None:
         anchor = previous_summary or last_summary(folded)
-        key = _fold_fingerprint(folded, model, anchor) if cache else ""
+        # Automatic compaction supplies an agent-local namespace.  The old
+        # process-global key contained only model + message text, so two live
+        # agents with the same model id could silently reuse a summary written
+        # by different provider objects.  Besides being the wrong provider
+        # boundary, that made this run's hidden usage disappear.  The generic
+        # helper keeps its historical shared namespace for callers that do not
+        # opt in; Agent scopes it to its own lifetime.
+        fingerprint = _fold_fingerprint(folded, model, anchor) if cache else ""
+        key = ((cache_namespace, fingerprint) if fingerprint else "")
         remembered = _recall_summary(key) if key else None
         if remembered is not None:
             summary, error = remembered
@@ -960,10 +983,8 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
             # spends anything: the summariser is its own provider call,
             # seconds to minutes inside the request path, and without a
             # hook the pause read as a hang in the field. Announcing before
-            # the cache lookup instead meant a line per provider round —
-            # this function runs on every one of them — so a resumed
-            # session with a long history printed "compacting" at each
-            # step while reusing the same summary it already had.
+            # the cache lookup instead meant repeated lines for direct callers
+            # and failed-summary retries even when no new call was made.
             if notify is not None:
                 try:
                     notify()
@@ -971,7 +992,7 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
                     pass
             summary, error = summarize_with_reason(
                 folded, provider, model, previous_summary=anchor,
-                max_tokens=max_tokens)
+                max_tokens=max_tokens, on_usage=on_usage)
             if key:
                 # Failures are remembered too: a provider that is down must be
                 # dialled once, not once per step for the rest of the run.
@@ -991,7 +1012,8 @@ def compact_messages(messages: Sequence[Msg], window: int, *,
 def compact_history(messages: List[Msg], window: int,
                     reserve: float = DEFAULT_RESERVE, *,
                     provider: Any = None, model: str = "",
-                    scale: float = 1.0, notify: Any = None) -> List[Msg]:
+                    scale: float = 1.0, notify: Any = None,
+                    on_usage: Any = None) -> List[Msg]:
     """
     Compaction for callers that only want the new history back.
 
@@ -1003,4 +1025,5 @@ def compact_history(messages: List[Msg], window: int,
     """
     return compact_messages(messages, window, reserve=reserve,
                             provider=provider, model=model,
-                            scale=scale, notify=notify).messages
+                            scale=scale, notify=notify,
+                            on_usage=on_usage).messages

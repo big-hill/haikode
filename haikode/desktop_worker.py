@@ -326,15 +326,23 @@ def _emit_usage(agent, state: ContextState):
          cost=round(float(getattr(agent, "cost", 0.0) or 0.0), 6))
 
 
-def _check_auth(config: Config, provider_name: str, provider_config: dict):
-    """Turn a missing credential into a sentence the GUI user can act on."""
+def _check_auth(config: Config, provider_name: str, provider_config: dict,
+                provider: Any = None):
+    """Turn a missing credential into a sentence the GUI user can act on.
+
+    API keys are checked only after build_provider() has resolved one.  Calling
+    Config.get_api_key() here first launched the Haiku keystore helper twice
+    on every desktop Send -- this preflight and then the real provider build.
+    OAuth has no key field on the client, so its store-status check remains
+    here and is performed before construction.
+    """
     if (provider_config.get("oauth_provider")
             and config.key_source(provider_name) != "oauth"):
         raise RuntimeError(
             f"Not signed in to '{provider_name}'. Open Settings or run "
             f"`haikode login {provider_name}`.")
-    if (provider_config.get("requires_key", True)
-            and not config.get_api_key(provider_name)):
+    if (provider is not None and provider_config.get("requires_key", True)
+            and not str(getattr(provider, "api_key", "") or "")):
         raise RuntimeError(
             f"No API key for '{provider_name}'. Open Settings or run "
             f"`haikode login {provider_name}`.")
@@ -419,6 +427,8 @@ def _turn(controller: TurnController, config: Config, provider_name: str,
         permissions = Permissions(config=config, asker=DesktopAsker())
         agent = runtime.build_agent(config, provider_name, cwd,
                                     permissions=permissions)
+        _check_auth(config, provider_name, provider_config,
+                    getattr(agent, "provider", None))
         if model_override:
             agent.model = model_override
         # Replaying the durable transcript keeps tool calls paired with their

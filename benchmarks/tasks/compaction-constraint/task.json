@@ -4,7 +4,7 @@
   "description": "A five-turn conversation in one resumed session. Turn 1 states three unguessable ground rules and says they will not be repeated; turns 2-4 read three build logs of roughly 10 KB each, which is what pushes the history past the compaction threshold; turn 5 asks for work that only passes if all three rules survived.",
   "proves": "that history management does not throw away the instructions. The context window is pinned to 12000 tokens for both runners — through `providers.<name>.context` for haikode and `provider.<id>.models.<id>.limit.context` for opencode — so the conversation certainly crosses each engine's compaction threshold instead of merely being long. A pass means the summary carried the constraint; a fail means the engine forgot an instruction the user gave it four turns ago.",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,
   "command_timeout": 120,
   "conversation": true,

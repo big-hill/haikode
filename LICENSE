@@ -25,9 +25,9 @@ SOFTWARE.
 ## Attribution
 
 haikode is an independent reimplementation of opencode, written in Python for
-Haiku OS. It contains no opencode source code, but its behaviour, prompts,
-tool surface and much of its design were derived from studying opencode, and
-several prompt texts are adapted from it.
+Haiku OS. It contains no opencode program source code, but its behaviour,
+prompts, tool surface and much of its design were derived from studying
+opencode, and several prompt texts are adapted from it.
 
 opencode is Copyright (c) SST and is distributed under the MIT License:
 https://github.com/sst/opencode

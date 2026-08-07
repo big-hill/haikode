@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
             "dialect": "openai",
             "base_url": "https://opencode.ai/zen/v1",
             "api_key": "public",
-            "model": "north-mini-code-free",
+            "model": "deepseek-v4-flash-free",
             "context": 190000,
         },
         "ollama-local": {

@@ -142,18 +142,15 @@ class TurnController:
         self.model = model
         self.session = None
         self._farewell_started = False
-        # The model-written exit haiku and who wrote it, composed in the
-        # background after the first successful turn; None/"" means the
-        # curated collection answers instead.
+        # The model-written exit haiku and who wrote it. It is only composed
+        # when the user explicitly asks with /farewell (or enables that exit
+        # action); ordinary turns never spend a provider request on it.
         self.farewell_poem = None
         self.farewell_poet = ""
-        # Model-written 3-5 word display title for the session, for the
-        # terminal tab and the session list. Composed with the poem.
+        # Short local display title for the terminal tab and session list.
         self.display_title = ""
         # Only an interactive front end turns this on (REPL loop, TUI).
-        # A one-shot, a piped run or a test must never spend a provider
-        # call on a display title — and a scripted stub's next response is
-        # the next TURN's answer, not the composer's to eat.
+        # It controls local title preparation only; it never calls a model.
         self.compose_farewell = False
         # Sticky: set by any failure that means this conversation is not on
         # disk, cleared only by a turn that persisted cleanly.
@@ -298,6 +295,8 @@ class TurnController:
             result.persistence_error = self.persistence_error
             return result
 
+        self._restore_context_checkpoint(agent)
+
         original = message
         if expand_mentions:
             message, result.attached = self.expand(message)
@@ -344,16 +343,41 @@ class TurnController:
             self._prepare_farewell(agent)
         return result
 
-    def _prepare_farewell(self, agent) -> None:
-        """Have the model name this session, in the background.
+    def _restore_context_checkpoint(self, agent) -> None:
+        """Hydrate one agent from the session's latched provider projection.
 
-        Only the 3-5 word display title is composed here (terminal tab,
-        session list) — after the first successful turn, when the session
-        has a subject and the provider is proven. The exit poem moved to
-        compose_farewell_now(): the user triggers it with /farewell, at
-        the prompt, when no turn is running — which gives it the whole
-        session as material and removes the concurrent-stream hazard by
-        design.
+        This is shared by REPL, TUI and desktop.  In particular, the desktop
+        starts a fresh Python process for every Send, so an in-memory-only
+        compaction latch would still buy a new summary on every user turn.
+        Failure is deliberately non-fatal: the raw transcript remains the
+        source of truth and can always be compacted again.
+        """
+        session = self.session
+        session_id = str(getattr(session, "id", "") or "")
+        if not session_id:
+            return
+        if str(getattr(agent, "_context_session_id", "") or "") == session_id:
+            return
+        try:
+            checkpoint = session.load_context_checkpoint()
+            if checkpoint is not None:
+                history, raw_count = checkpoint
+                agent.restore_context_checkpoint(history, raw_count)
+        except Exception:
+            return
+        try:
+            agent._context_session_id = session_id
+        except Exception:
+            pass
+
+    def _prepare_farewell(self, agent) -> None:
+        """Derive the interactive display title locally after the first turn.
+
+        This used to launch a hidden main-model request for a cosmetic 3-5
+        word title. A one-turn interactive session therefore made two provider
+        calls, the second was absent from usage accounting, and it could race
+        the user's next turn. Session.auto_title already has the subject; a
+        deterministic local shortening is enough for a tab label.
         """
         if not self.compose_farewell:
             return
@@ -364,48 +388,15 @@ class TurnController:
         session = self.session
         if session is not None:
             subject = str(getattr(session, "title", "") or "")
-
-        # The composer must not ride the live turn's pipe. A shallow copy
-        # shares credentials and endpoint but gets its own backend session
-        # id and no abort handle: two streams multiplexed onto the same
-        # Codex session-id is exactly the kind of thing that wedges, and
-        # the user's next turn must never be able to abort — or be aborted
-        # by — a poem.
-        import copy as copy_mod
-        import uuid as uuid_mod
-        client = copy_mod.copy(agent.provider)
-        try:
-            client.abort = None
-        except Exception:
-            pass
-        if hasattr(client, "session_id"):
-            client.session_id = str(uuid_mod.uuid4())
-
-        def ask(prompt, max_tokens):
-            from .schema import Msg
-            parts = []
-            for chunk in client.stream(
-                    [Msg(role="user", content=prompt)], [],
-                    agent.model, max_tokens):
-                if getattr(chunk, "text", ""):
-                    parts.append(chunk.text)
-            return "".join(parts)
-
-        def compose():
-            from .status import validated_title
-            try:
-                title = validated_title(ask(
-                    "Give this coding session a display title of three to "
-                    "five words, based on: %s. Reply with the title only — "
-                    "no quotes, no punctuation at the end." % subject[:160], 24))
-                if title:
-                    self.display_title = title
-                    self._auto_rename(title)
-            except Exception:
-                pass
-
-        threading.Thread(target=compose, daemon=True,
-                         name="haikode-farewell").start()
+        if not subject:
+            for message in list(getattr(agent, "messages", None) or []):
+                if getattr(message, "role", "") == "user":
+                    subject = str(getattr(message, "content", "") or "")
+                    break
+        words = " ".join(subject.split()).split()[:5]
+        title = " ".join(words).strip(" \t\r\n.,:;!?\"'")[:48]
+        if title:
+            self.display_title = title
 
     def compose_farewell_now(self, agent) -> bool:
         """Write this session's exit haiku, on demand, with full context.
@@ -440,6 +431,11 @@ class TurnController:
             for chunk in agent.provider.stream(
                     [Msg(role="user", content=prompt)], [],
                     agent.model, 96):
+                if getattr(chunk, "usage", None):
+                    try:
+                        agent._record_hidden_usage(chunk.usage)
+                    except Exception:
+                        pass
                 if getattr(chunk, "text", ""):
                     parts.append(chunk.text)
             poem = validated_haiku("".join(parts))
@@ -479,7 +475,13 @@ class TurnController:
         nothing (a front end handing us a stub agent, a run that died before
         the first message) leaves no empty session behind.
         """
-        messages = list(getattr(agent, "messages", None) or [])
+        # Agent.messages is a stable list once run() returns. Copying the whole
+        # lossless transcript here made persistence O(total history) before it
+        # wrote only the small new tail; keep the sequence and index that tail
+        # directly. Non-list test doubles still degrade safely to a tuple.
+        messages = getattr(agent, "messages", None) or ()
+        if not hasattr(messages, "__getitem__"):
+            messages = tuple(messages)
         modified = dict(getattr(getattr(agent, "ctx", None), "modified_files",
                                 None) or {})
         session = self.session
@@ -501,14 +503,28 @@ class TurnController:
         except Exception as exc:
             trouble = "checkpoint failed: %s" % exc
         try:
-            for message in messages[baseline:]:
-                session.append(message)
+            for index in range(baseline, len(messages)):
+                session.append(messages[index])
             from .session import capture_modified
             capture_modified(session, getattr(agent, "ctx", None))
         except Exception as exc:
             trouble = trouble or "session not saved: %s" % exc
         else:
             result.persisted = not trouble
+
+        # A context checkpoint is an optimisation, not the transcript.  A
+        # failed checkpoint write must not claim the raw turn or undo data was
+        # lost; leave it dirty so a later clean turn can retry the small upsert.
+        if not trouble:
+            try:
+                checkpoint = agent.context_checkpoint()
+                if checkpoint is not None:
+                    history, raw_count = checkpoint
+                    if session.save_context_checkpoint(history, raw_count):
+                        agent._llm_checkpoint_dirty = False
+                agent._context_session_id = str(getattr(session, "id", "") or "")
+            except Exception:
+                pass
 
         result.session_id = getattr(session, "id", "") or ""
         # Sticky until a turn writes cleanly: a front end must keep warning

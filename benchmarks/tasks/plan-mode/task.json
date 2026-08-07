@@ -4,7 +4,7 @@
   "description": "Ask for a plan to add per-client rate limiting to the router, with the plan agent selected. The plan must name the real dispatch point and the real handler modules; nothing on disk may change.",
   "proves": "that a read-only planning mode exists, can be selected, produces a concrete plan grounded in the actual files, and cannot write",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "agent": "plan",
   "timeout": 600,
   "prompt": "Plan how to add per-client rate limiting to this service: at most N requests per client id per minute, applied to every route, returning HTTP 429 when the limit is exceeded.\n\nGive me the plan only — which files you would create or change and what each change does, as numbered steps. Do not implement anything.",

@@ -982,18 +982,21 @@ class TestGeminiDialect(unittest.TestCase):
             received["generationConfig"]["thinkingConfig"]["includeThoughts"])
         self.assertEqual(received["generationConfig"]["maxOutputTokens"], 256)
 
-    def test_usage_sums_thoughts_into_output_and_is_reported_once(self):
+    def test_usage_keeps_provider_counters_disjoint_and_is_reported_once(self):
         usage = {"promptTokenCount": 10, "candidatesTokenCount": 4,
-                 "thoughtsTokenCount": 7, "cachedContentTokenCount": 6}
+                 "thoughtsTokenCount": 7, "cachedContentTokenCount": 6,
+                 "toolUsePromptTokenCount": 3, "totalTokenCount": 24}
         chunks, _ = self.collect([gemini_frame([{"text": "a"}], usage=usage),
                                   gemini_frame([{"text": "b"}], finish="STOP",
                                                usage=usage)])
         reported = [c.usage for c in chunks if c.usage]
         self.assertEqual(len(reported), 1)
-        self.assertEqual(reported[0]["input"], 10)
-        self.assertEqual(reported[0]["output"], 11)
+        self.assertEqual(reported[0]["input"], 7)  # 10 - 6 cached + 3 tool
+        self.assertEqual(reported[0]["output"], 4)
         self.assertEqual(reported[0]["reasoning"], 7)
         self.assertEqual(reported[0]["cache_read"], 6)
+        # Mirrors totalTokenCount exactly: no cached/thinking double count.
+        self.assertEqual(sum(reported[0].values()), 24)
 
     def test_max_tokens_finish_becomes_length(self):
         chunks, _ = self.collect([gemini_frame([{"text": "x"}],
@@ -1088,4 +1091,3 @@ class TestGeminiSchemaProjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

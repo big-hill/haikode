@@ -1,5 +1,5 @@
 """
-The agent loop — native tool calling, parallel calls, proper tool-role messages.
+The agent loop — native tool calling and proper tool-role messages.
 
 This replaces the old markdown-``` tool`` convention. The model now receives
 real tool schemas and emits real function calls, which is what modern models
@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .agents import (BUILTIN, DEFAULT_AGENT, AgentDef, AgentPermissions,
                      AgentRegistry, enter_plan_text, exit_plan_text,
                      is_readonly)
-from .context import ContextManager, compact_history, message_tokens
+from .context import ContextManager, compact_messages, message_tokens
 from .memory import MemoryStore
 from .permission import DENY, Permissions
 from .prompt import build_system_prompt, select_variant
@@ -40,7 +40,8 @@ from .redact import redact
 from .schema import CompletionChunk, Msg, PermissionDenied, ToolAborted, ToolCall
 from .tool import REGISTRY, ToolContext, get_tools, tool_specs
 from .tool.base import Tool, prompts_for_itself
-from .usage import ContextState, UsageTracker, measure_context
+from .usage import (ContextState, UsageTracker, measure_context,
+                    tool_specs_tokens)
 
 DEFAULT_MAX_TOKENS = 8192
 
@@ -317,7 +318,23 @@ class Agent:
         # conversation: >1 means the estimator runs low here. Applied to the
         # compaction trigger so it fires on the model's arithmetic, not ours.
         self.token_scale = 1.0
-        self.messages: List[Msg] = []
+        # Raw transcript and the provider-facing view are deliberately
+        # separate. The former is the persistence/undo source of truth; the
+        # latter may contain a latched summary. Replacing ``messages`` (resume,
+        # undo, manual compact) goes through the property below and resets the
+        # view, while ordinary appends are synced incrementally.
+        self._messages: List[Msg] = []
+        self._llm_history: List[Msg] = []
+        self._llm_raw_cursor = 0
+        self._llm_pending_raw: List[Msg] = []
+        self._llm_checkpoint_dirty = False
+        self._context_session_id = ""
+        self._last_compaction_changed = False
+        self._spec_token_cache: Optional[Tuple[Any, int]] = None
+        # Keep the compaction retry cache inside this logical agent.  A unique
+        # object is hashable and cannot be confused with a later Agent even if
+        # CPython eventually reuses an object id.
+        self._compaction_cache_namespace = object()
         self.steps_used = 0
         self.cost = 0.0
         self.tokens = {"input": 0, "output": 0}
@@ -378,6 +395,100 @@ class Agent:
         # agent table per sub-agent would be paid for nothing.
         self._apply_agent(None if registry is None and not agent_name
                           else self.registry.get(self.agent_name))
+
+    # --- transcript views ----------------------------------------------
+
+    @property
+    def messages(self) -> List[Msg]:
+        """The lossless transcript used by persistence, resume and undo."""
+        return self._messages
+
+    @messages.setter
+    def messages(self, value: Any) -> None:
+        try:
+            self._messages = list(value or [])
+        except Exception:
+            self._messages = []
+        self._reset_llm_history()
+
+    def _reset_llm_history(self) -> None:
+        """Invalidate a summary latch after transcript replacement."""
+        raw = list(getattr(self, "_messages", []) or [])
+        self._llm_history = raw
+        self._llm_raw_cursor = len(raw)
+        self._llm_pending_raw = list(raw)
+        self._llm_checkpoint_dirty = False
+        self._context_session_id = ""
+
+    def _sync_llm_history(self) -> None:
+        """Append raw messages added since the provider view was last used.
+
+        A failed provider round removes its trailing user message with
+        ``pop()``. Preserve an earlier summary latch in that common shrink
+        case; arbitrary in-place rewrites fail safe by rebuilding from raw.
+        Production resume/undo paths assign ``messages`` and are caught by the
+        property setter before this fallback is needed.
+        """
+        raw = self._messages
+        cursor = self._llm_raw_cursor
+        if len(raw) < cursor:
+            removed = cursor - len(raw)
+            pending = self._llm_pending_raw
+            llm_tail = self._llm_history[-removed:] if removed else []
+            pending_tail = pending[-removed:] if removed <= len(pending) else []
+            if (removed <= len(pending)
+                    and len(llm_tail) == removed
+                    and all(left is right for left, right in
+                            zip(llm_tail, pending_tail))):
+                del self._llm_history[-removed:]
+                del pending[-removed:]
+                self._llm_raw_cursor = len(raw)
+                return
+            self._reset_llm_history()
+            return
+        if len(raw) > cursor:
+            fresh = raw[cursor:]
+            self._llm_history.extend(fresh)
+            self._llm_pending_raw.extend(fresh)
+            self._llm_raw_cursor = len(raw)
+
+    def _context_messages(self) -> List[Msg]:
+        """Current provider-facing history without triggering compaction."""
+        self._sync_llm_history()
+        return pair_tool_messages(self._llm_history)
+
+    def restore_context_checkpoint(self, history: Sequence[Msg],
+                                   raw_count: int) -> bool:
+        """Restore a session-validated provider view and append its raw tail."""
+        try:
+            raw_count = int(raw_count)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        snapshot = list(history or [])
+        if (raw_count < 0 or raw_count > len(self._messages)
+                or not any(bool((message.display or {}).get("summary"))
+                           for message in snapshot)):
+            return False
+        self._llm_history = snapshot
+        self._llm_raw_cursor = raw_count
+        self._llm_pending_raw = []
+        self._llm_checkpoint_dirty = False
+        self._sync_llm_history()
+        return True
+
+    def context_checkpoint(self) -> Optional[Tuple[List[Msg], int]]:
+        """A newly compacted view for durable reuse, or None when unchanged.
+
+        Do not sync ordinary new appends here: the checkpoint is allowed to
+        cover an older raw prefix, and the next worker will append the rest.
+        A shrink, however, means a failed round popped material the summary may
+        have covered, so fail safe by validating it before export.
+        """
+        if len(self._messages) < self._llm_raw_cursor:
+            self._sync_llm_history()
+        if not self._llm_checkpoint_dirty:
+            return None
+        return list(self._llm_history), int(self._llm_raw_cursor)
 
     # --- agents ---------------------------------------------------------
 
@@ -511,6 +622,7 @@ class Agent:
         self.ctx.mcp = manager
         self._merge_mcp_tools()
         self.specs = tool_specs(self.tools)
+        self._prompt_cache = None
 
     def _merge_mcp_tools(self) -> None:
         """Fold the MCP manager's current offering into self.tools.
@@ -546,6 +658,10 @@ class Agent:
         self._merge_mcp_tools()
         if self._mcp_tool_names != before:
             self.specs = tool_specs(self.tools)
+            # Tool names are advertised in the system prompt. Keeping the old
+            # cached prefix here made newly connected MCP tools invisible to
+            # the model even though their schemas were sent.
+            self._prompt_cache = None
 
     def switch_agent(self, name: str) -> str:
         """Swap prompt, tools and permissions mid-session.
@@ -779,7 +895,8 @@ class Agent:
         return self.provider.set_reasoning_effort(effort, self.model)
 
     def _messages_for_llm(self, reminder: Optional[str] = None,
-                          on_event: Optional[Callable] = None) -> List[Msg]:
+                          on_event: Optional[Callable] = None,
+                          force_compaction: bool = False) -> List[Msg]:
         # Paired before compaction so the token budget is computed over the
         # messages that will actually be sent.
         #
@@ -794,10 +911,27 @@ class Agent:
         if on_event is not None:
             notify = lambda: on_event(  # noqa: E731 - one-shot closure
                 "compaction", {"text": "compacting the conversation"})
-        history = compact_history(pair_tool_messages(self.messages),
-                                  self.input_window,
-                                  provider=self.provider, model=self.model,
-                                  scale=self.token_scale, notify=notify)
+        self._sync_llm_history()
+        paired = pair_tool_messages(self._llm_history)
+        result = compact_messages(
+            paired, self.input_window,
+            provider=self.provider, model=self.model,
+            scale=self.token_scale, notify=notify,
+            on_usage=self._record_hidden_usage,
+            cache_namespace=self._compaction_cache_namespace,
+            force=force_compaction)
+        self._last_compaction_changed = result.changed
+        history = result.messages
+        # Only a real summary is safe to latch. A drop notice produced by a
+        # failed summariser is a transient request fallback: the raw material
+        # remains in both the transcript and _llm_history so a later fold can
+        # try again. Once successful, later tool rounds append only their new
+        # messages and do not buy another near-identical summary.
+        if result.changed and result.summarized:
+            self._llm_history = list(history)
+            self._llm_raw_cursor = len(self._messages)
+            self._llm_pending_raw = []
+            self._llm_checkpoint_dirty = True
         messages = [self._system_message()] + history
         if reminder:
             messages.append(Msg(role="assistant", content=reminder))
@@ -805,9 +939,26 @@ class Agent:
 
     # --- usage -----------------------------------------------------------
 
+    def _tool_schema_tokens(self) -> int:
+        """Price the stable schema bundle once, not once per provider round."""
+        specs = self.specs
+        cached = self._spec_token_cache
+        if cached is not None and cached[0] is specs:
+            return cached[1]
+        total = tool_specs_tokens(specs)
+        self._spec_token_cache = (specs, total)
+        return total
+
     def context_state(self) -> ContextState:
         """What the next request would cost, for the front-ends' context meter."""
         return measure_context(self)
+
+    def _record_hidden_usage(self, payload: Dict[str, Any]) -> None:
+        """Count summariser/provider work without changing context ``latest``."""
+        delta = self.usage.record_hidden(payload)
+        self.tokens["input"] += delta.input_tokens + delta.cache_read
+        self.tokens["output"] += delta.output_tokens
+        self.cost += delta.cost
 
     # --- one provider round -------------------------------------------
 
@@ -843,27 +994,47 @@ class Agent:
         if not any(word in haystack for word in self._REASONING_REJECTED):
             return False
         dropped = False
-        for message in self.messages:
+        seen = set()
+        # A restored context checkpoint owns copies of its compacted tail.
+        # Clear rejected provider-native blocks in both views or the retry can
+        # resend the checkpoint copy even though the raw transcript was fixed.
+        for message in list(self.messages) + list(self._llm_history):
+            identity = id(message)
+            if identity in seen:
+                continue
+            seen.add(identity)
             if getattr(message, "reasoning", None):
                 message.reasoning = {}
                 dropped = True
+        if dropped and any(bool((message.display or {}).get("summary"))
+                           for message in self._llm_history):
+            self._llm_checkpoint_dirty = True
         return dropped
 
     def _step(self, on_text: Optional[Callable], on_event: Optional[Callable],
-              final_step: bool = False):
+              final_step: bool = False, force_compaction: bool = False,
+              defer_overflow_error: bool = False):
         accumulator = _CallAccumulator()
         text_parts: List[str] = []
         reasoning_blocks: List[dict] = []
         stop_reason = None
+        delivered = False
+        usage_seen = False
 
         self._bind_abort()
         self.last_event_at = time.monotonic()
         messages = self._messages_for_llm(
-            MAX_STEPS_PROMPT if final_step else None, on_event=on_event)
+            MAX_STEPS_PROMPT if final_step else None, on_event=on_event,
+            force_compaction=force_compaction)
         # What we think this prompt weighs; the response's usage says what it
         # actually weighed, and the ratio recalibrates the estimator.
-        estimated_prompt = sum(message_tokens(m) for m in messages)
         specs = [] if final_step else self.specs
+        # Provider input usage includes the tool definitions serialized beside
+        # the messages. Omitting them made a tool-rich but short prompt look
+        # undercounted by up to 2x, and token_scale then triggered compaction
+        # far earlier than the model's actual window required.
+        estimated_prompt = (sum(message_tokens(m) for m in messages)
+                            + (0 if final_step else self._tool_schema_tokens()))
         stream = self.provider.stream(messages, specs,
                                       self.model, self.max_tokens)
         try:
@@ -874,40 +1045,57 @@ class Agent:
                 # thinking. Now the screen can say how long the line has
                 # been quiet.
                 self.last_event_at = time.monotonic()
+                if chunk.usage:
+                    # Error frames sometimes carry the failed request's real
+                    # token counts. Account for those before raising, but do
+                    # not replace ``latest`` with an error-only zero payload.
+                    delta = self.usage.record(
+                        chunk.usage, continue_request=usage_seen) if (
+                        any(key in chunk.usage for key in (
+                            "input", "output", "input_tokens", "output_tokens",
+                            "prompt_tokens", "completion_tokens", "cache_read",
+                            "reasoning"))
+                    ) else None
+                    if delta is not None:
+                        usage_seen = True
+                        self.tokens["input"] += (delta.input_tokens
+                                                 + delta.cache_read)
+                        self.tokens["output"] += delta.output_tokens
+                        self.cost += delta.cost
+                        self._observe_reported_usage(chunk.usage,
+                                                     estimated_prompt)
                 failure = provider_failure(chunk)
                 if failure is not None:
                     # Before on_text and before the history append, both
                     # deliberately: a provider error rendered as an answer is
                     # one the model is told it wrote, and it argues with it
                     # next turn.
-                    if on_event:
+                    exception = ProviderFailure(failure)
+                    exception.delivered = delivered
+                    if (on_event and not (
+                            defer_overflow_error
+                            and exception.kind == "context_overflow"
+                            and not delivered)):
                         on_event("error", failure)
-                    raise ProviderFailure(failure)
+                    raise exception
                 if chunk.text:
+                    delivered = True
                     text_parts.append(chunk.text)
                     if on_text:
                         on_text(chunk.text)
-                if chunk.reasoning and on_event:
-                    on_event("reasoning", chunk.reasoning)
+                if chunk.reasoning:
+                    delivered = True
+                    if on_event:
+                        on_event("reasoning", chunk.reasoning)
                 if chunk.reasoning_block:
+                    delivered = True
                     # Opaque and never shown: the screen already had the
                     # readable copy through `reasoning`. This is the one the
                     # provider needs handed back next request.
                     reasoning_blocks.append(chunk.reasoning_block)
                 if chunk.tool_call_delta:
+                    delivered = True
                     accumulator.add(chunk.tool_call_delta)
-                if chunk.usage:
-                    # One parse for both counters: the tracker knows every
-                    # spelling of a usage payload, self.tokens is the flat pair
-                    # the UIs read.
-                    delta = self.usage.record(chunk.usage)
-                    # Cache reads count: they are tokens the model actually
-                    # consumed. Excluding them made the footer plateau at the
-                    # first prompt's size on a well-cached backend, which a
-                    # user read — twice — as the session having stopped.
-                    self.tokens["input"] += delta.input_tokens + delta.cache_read
-                    self.tokens["output"] += delta.output_tokens
-                    self._observe_reported_usage(chunk.usage, estimated_prompt)
                 if chunk.stop_reason:
                     stop_reason = chunk.stop_reason
         finally:
@@ -1137,22 +1325,35 @@ class Agent:
             try:
                 try:
                     text, calls, stop_reason = self._step(
-                        on_text, on_event, final_step=final_step)
+                        on_text, on_event, final_step=final_step,
+                        defer_overflow_error=True)
                 except ProviderFailure as failure:
-                    # The one failure the session can repair itself. A
-                    # replayed reasoning block the provider refuses lives in
-                    # the history, so the same 400 comes back on every later
-                    # request — the session is bricked from the inside, which
-                    # is exactly the shape pair_tool_messages exists to
-                    # prevent for tool calls. Drop the blocks and try once.
-                    if not self._forget_reasoning(failure):
-                        raise
-                    if on_event:
-                        on_event("info", "provider refused the stored "
-                                         "reasoning blocks; dropped them and "
-                                         "retried")
-                    text, calls, stop_reason = self._step(
-                        on_text, on_event, final_step=final_step)
+                    # A provider's own context arithmetic outranks our
+                    # estimator. If it rejects the request before emitting any
+                    # content, force one fold and retry exactly once. This is
+                    # not a generic retry: the second failure escapes, and a
+                    # partially delivered response is never replayed.
+                    if (failure.kind == "context_overflow"
+                            and not getattr(failure, "delivered", False)):
+                        if on_event:
+                            on_event("info", "provider rejected the context; "
+                                             "compacting once and retrying")
+                        text, calls, stop_reason = self._step(
+                            on_text, on_event, final_step=final_step,
+                            force_compaction=True)
+                    else:
+                        # The other failure the session can repair itself. A
+                        # replayed reasoning block the provider refuses lives
+                        # in the history and otherwise bricks every later
+                        # request. Drop those blocks and try once.
+                        if not self._forget_reasoning(failure):
+                            raise
+                        if on_event:
+                            on_event("info", "provider refused the stored "
+                                             "reasoning blocks; dropped them "
+                                             "and retried")
+                        text, calls, stop_reason = self._step(
+                            on_text, on_event, final_step=final_step)
             except ToolAborted:
                 self.messages.append(Msg(role="user", content="[interrupted by user]"))
                 return final
@@ -1169,6 +1370,12 @@ class Agent:
                 # already how partially streamed text is treated.
                 if self.messages and self.messages[-1].role == "user":
                     self.messages.pop()
+                    # Apply the shrink while object identity still tells us
+                    # exactly which provider-tail message was removed. If the
+                    # next turn appends one first, the raw list returns to the
+                    # same length and a stale failed prompt could otherwise be
+                    # mistaken for that new user message.
+                    self._sync_llm_history()
                 raise
 
             if text:

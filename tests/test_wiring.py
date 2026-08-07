@@ -612,10 +612,14 @@ class TestREPLSessionCommands(REPLTestCase):
         self.assertIn("the parser drops commas", target.read_text())
 
     def test_compact_uses_the_session(self):
+        from haikode.context import CompactionResult
         session = self._seed()
         self.run_command("/resume " + session.id)
-        with patch.object(session_mod.Session, "compact",
-                          return_value=1, autospec=True) as spy:
+        result = CompactionResult(messages=list(session.messages), folded=1,
+                                  kept=1, summary="summary", summarized=True,
+                                  trigger="manual")
+        with patch.object(session_mod.Session, "compact_now",
+                          return_value=result, autospec=True) as spy:
             output = self.run_command("/compact 1")
         spy.assert_called_once()
         self.assertEqual(spy.call_args.kwargs["keep_last"], 1)
@@ -629,6 +633,31 @@ class TestREPLSessionCommands(REPLTestCase):
         output = self.run_command("/compact")
         self.assertIn("Compacted in memory", output)
         self.assertLess(len(self.repl.agent.messages), 40)
+
+    def test_in_memory_compact_honours_the_keep_count(self):
+        from haikode.schema import Msg
+        self.repl.agent.messages = [Msg(role="user", content="turn-%d" % index)
+                                    for index in range(12)]
+        output = self.run_command("/compact 3")
+        self.assertIn("Compacted in memory", output)
+        self.assertEqual(["turn-9", "turn-10", "turn-11"],
+                         [message.content for message in
+                          self.repl.agent.messages[-3:]])
+
+    def test_compact_undo_restores_the_exact_stored_fold(self):
+        from haikode.schema import Msg
+        store = session_mod.SessionStore()
+        session = store.new_session(self.dir, "ollama", "m", "Long work")
+        for index in range(8):
+            session.append(Msg(role="user", content="turn-%d" % index))
+        session.compact_now(keep_last=2, summary="anchored summary")
+        self.run_command("/resume " + session.id)
+
+        output = self.run_command("/compact undo")
+
+        self.assertIn("Restored 6 folded messages", output)
+        self.assertEqual(["turn-%d" % index for index in range(8)],
+                         [message.content for message in self.repl.agent.messages])
 
     def test_sessions_are_scoped_to_this_directory(self):
         other = tempfile.mkdtemp(prefix="haikode-other-")

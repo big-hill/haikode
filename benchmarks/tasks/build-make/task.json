@@ -4,7 +4,7 @@
   "description": "A C program that does not compile: main.c calls clamp() with two arguments where the header declares three. Build, read the compiler error, fix the source, rebuild.",
   "proves": "the shell tool round trip — run a build, parse a real compiler diagnostic, edit the right file, verify by rebuilding and running the binary",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 900,
   "command_timeout": 120,
   "requires_commands": ["make", "cc"],

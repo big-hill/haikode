@@ -1262,6 +1262,20 @@ class REPL:
         print(update.apply_update(state))
 
     def _cmd_compact(self, arg):
+        action = arg.strip().lower()
+        if action in ("undo", "restore"):
+            session = self.session
+            if session is None:
+                return "No session compaction to restore."
+            try:
+                restored = session.restore_compaction()
+            except Exception as e:
+                return f"[error] {e}"
+            if not restored:
+                return "No session compaction to restore."
+            self.agent.messages = list(session.messages)
+            return f"Restored {restored} folded messages."
+
         keep = COMPACT_KEEP
         if arg.strip().isdigit():
             keep = max(1, int(arg.strip()))
@@ -1270,25 +1284,36 @@ class REPL:
             # No durable session to fold into, so trim in place instead. The
             # reserve is deliberately far below the request-time default: the
             # user asked for room, not for the usual margin.
-            from .context import compact_history
+            from .context import compact_messages
             before = len(self.agent.messages)
-            self.agent.messages = compact_history(
-                self.agent.messages, self.agent.context_window, reserve=0.25,
-                provider=self.agent.provider, model=self.agent.model)
-            return f"Compacted in memory: {before} → {len(self.agent.messages)} messages."
+            result = compact_messages(
+                self.agent.messages, self.agent.input_window, reserve=0.25,
+                provider=self.agent.provider, model=self.agent.model,
+                keep_last=keep, force=True, trigger="manual",
+                on_usage=self.agent._record_hidden_usage)
+            if not result.changed:
+                return "Nothing to compact."
+            self.agent.messages = result.messages
+            return (f"Compacted in memory: {before} → "
+                    f"{len(self.agent.messages)} messages. {result.notice()}")
         try:
             # Without a provider this folds the turns away behind a notice
             # instead of summarising them, which is the opposite of what
             # someone typing /compact is asking for.
-            folded = session.compact(keep_last=keep,
-                                     provider=self.agent.provider,
-                                     model=self.agent.model)
+            result = session.compact_now(
+                keep_last=keep, provider=self.agent.provider,
+                model=self.agent.model,
+                on_usage=self.agent._record_hidden_usage)
         except Exception as e:
             return f"[error] {e}"
-        if not folded:
+        if not result.folded:
             return "Nothing to compact."
         self.agent.messages = list(session.messages)
-        return f"Folded {folded} messages into a summary."
+        if result.summarized:
+            return f"Folded {result.folded} messages into a summary."
+        reason = f": {result.error}" if result.error else ""
+        return (f"Folded {result.folded} messages into a local digest; "
+                f"the model summary failed{reason}.")
 
     def _cmd_undo(self, arg):
         session = self.session

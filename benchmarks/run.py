@@ -3,7 +3,7 @@
 haikode parity benchmark.
 
     python3 benchmarks/run.py --runner haikode --provider zen \
-        --model north-mini-code-free --repeat 3
+        --model deepseek-v4-flash-free --repeat 3
     python3 benchmarks/run.py --compare --task fix-failing-test
     python3 benchmarks/run.py --validate      # fixtures only, no model calls
     python3 benchmarks/run.py --list

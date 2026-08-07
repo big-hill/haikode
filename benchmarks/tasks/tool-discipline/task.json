@@ -4,7 +4,7 @@
   "description": "A 50-file project defines X7_SENTINEL_KEY once, five directories deep, and imports it from two other files. Report the value and the defining file.",
   "proves": "that the agent searches instead of guessing: the answer is unguessable, the definition site is not the first grep hit, and the checks assert that a search tool (grep/glob, or grep/find through bash) was actually called",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,
   "prompt": "This project defines a constant named `X7_SENTINEL_KEY` exactly once. Two other files import it.\n\nReport two things:\n1. the constant's exact value\n2. the path of the file that *defines* it, relative to the project root\n\nDo not guess the value and do not change anything.",
   "pre_checks": [

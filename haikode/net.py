@@ -50,6 +50,15 @@ USER_AGENT = "haikode/1.0 (Haiku OS)"
 #   529 is Anthropic's "Overloaded" — outside the 500..504 block.
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524, 529})
 
+# A 429 is overloaded: it may mean a real, temporary pace limit, a depleted
+# account, or a credential/client entitlement refusal. The transport owns the
+# retry loop, so this distinction must be made here rather than only after the
+# provider adapter finally receives an exhausted NetError.
+_RATE_LIMIT_HEADER_PREFIXES = ("anthropic-ratelimit", "x-ratelimit",
+                               "ratelimit")
+_TERMINAL_RATE_MARKERS = ("insufficient_quota", "billing", "credit",
+                          "exceeded your current quota")
+
 # Fatal: retrying cannot help, and a traceback is a terrible way to learn why.
 FATAL_HINTS = {
     400: "the provider rejected the request body (bad parameter or model id)",
@@ -188,6 +197,61 @@ def retry_after_seconds(headers: Optional[Dict[str, str]]) -> Optional[float]:
     except (OverflowError, OSError, ValueError):
         return None
     return max(0.0, delta)
+
+
+def rate_limit_has_metadata(headers: Optional[Dict[str, str]]) -> bool:
+    """Whether headers identify a real pace limit rather than a bare refusal."""
+    names = {str(name).lower() for name in (headers or {})}
+    return any(name.startswith(_RATE_LIMIT_HEADER_PREFIXES)
+               or name in ("retry-after", "retry-after-ms")
+               for name in names)
+
+
+def rate_limit_body_is_terminal(body: str) -> bool:
+    text = str(body or "").lower()
+    return any(marker in text for marker in _TERMINAL_RATE_MARKERS)
+
+
+def rate_limit_is_entitlement_response(
+        body: str, headers: Optional[Dict[str, str]]) -> bool:
+    """Recognise the one measured refusal-shaped Anthropic 429.
+
+    Merely lacking rate-limit headers is not enough: many gateways emit a
+    perfectly ordinary transient 429 with only generic HTTP headers.  The
+    field incident was narrower -- an Anthropic organisation/workspace echo
+    plus the exact placeholder ``rate_limit_error: Error`` envelope.  Keep
+    the early terminal classification inside that evidence boundary.
+    """
+    if not headers or rate_limit_has_metadata(headers):
+        return False
+    names = {str(name).lower() for name in headers}
+    if not any(name.startswith(("anthropic-organization",
+                                "anthropic-workspace"))
+               for name in names):
+        return False
+    try:
+        payload = json.loads(body or "{}")
+        error = payload.get("error") if isinstance(payload, dict) else None
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(error, dict):
+        return False
+    return (str(error.get("type") or "").lower() == "rate_limit_error"
+            and str(error.get("message") or "").strip().lower() == "error")
+
+
+def retryable_http_status(status: int, body: str = "",
+                          headers: Optional[Dict[str, str]] = None) -> bool:
+    """Classify an HTTP status before the generic retry ladder acts on it."""
+    if status not in RETRYABLE_STATUS:
+        return False
+    if status != 429:
+        return True
+    if rate_limit_body_is_terminal(body):
+        return False
+    if rate_limit_is_entitlement_response(body, headers):
+        return False
+    return True
 
 
 def _sleep(seconds: float, abort: AbortLike):
@@ -475,7 +539,8 @@ def _open(url: str, data: Optional[bytes], headers: Optional[Dict[str, str]],
             head = {}
         raise NetError(_describe_status(e.code, body), status=e.code, body=body,
                        headers=head, url=url,
-                       retryable=e.code in RETRYABLE_STATUS) from e
+                       retryable=retryable_http_status(e.code, body,
+                                                       head)) from e
     except urllib.error.URLError as e:
         reason = e.reason
         # A bad certificate or an unknown host will not fix itself — but
@@ -673,21 +738,23 @@ def post_json(
             raise
         except NetError as e:
             e.attempts = attempt
-            if not _should_retry(e, attempt, policy, deadline):
+            wait = _retry_delay(e, attempt, policy, deadline)
+            if wait is None:
                 raise
-            _sleep(policy.delay(attempt, e.headers, e.status), abort)
+            _sleep(wait, abort)
         except Exception as e:
             raise NetError(str(e), url=url) from e
         finally:
             _hard_close(response)
 
 
-def _should_retry(error: NetError, attempt: int, policy: RetryPolicy,
-                  deadline: float) -> bool:
+def _retry_delay(error: NetError, attempt: int, policy: RetryPolicy,
+                 deadline: float) -> Optional[float]:
+    """One jitter sample for both the deadline decision and the actual wait."""
     if not error.retryable or attempt >= policy.max_attempts:
-        return False
+        return None
     wait = policy.delay(attempt, error.headers, error.status)
-    return time.monotonic() + wait <= deadline
+    return wait if time.monotonic() + wait <= deadline else None
 
 
 def sse_json_events(
@@ -736,9 +803,11 @@ def sse_json_events(
             raise
         except NetError as e:
             e.attempts = attempt
-            if committed or not _should_retry(e, attempt, policy, deadline):
+            wait = None if committed else _retry_delay(
+                e, attempt, policy, deadline)
+            if wait is None:
                 raise
-            _sleep(policy.delay(attempt, e.headers, e.status), abort)
+            _sleep(wait, abort)
         finally:
             # Close the generators explicitly: _iter_lines' finally is what
             # stops the pump thread and tears the socket down, and waiting for

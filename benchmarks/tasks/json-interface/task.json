@@ -4,7 +4,7 @@
   "description": "An ordinary small job — bump a version constant, then run the suite — driven through each engine's machine-readable interface instead of its human one: `haikode --json` and `opencode run --format json`.",
   "proves": "that a script can drive the agent. Every non-blank line of stdout has to parse as a JSON object with a type, the tool calls have to be recoverable from that stream by name, and the final answer has to be readable from it — one line of banner or progress text and `while read line; do … | jq; done` is broken. The filesystem checks are there so this measures a real turn and not an empty well-formed stream.",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,
   "interface": "json",
   "notes": "The runner is driven through its scripted interface for this task regardless of --haikode-mode: the driver's own JSONL would be measuring the harness rather than haikode.",

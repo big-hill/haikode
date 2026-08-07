@@ -17,6 +17,7 @@
 #   lib/python3.10/vendor-packages/haikode/           the Python package tree
 #   data/deskbar/menu/Applications/haikode -> ...     Deskbar entry
 #   documentation/packages/haikode/README.md
+#   documentation/packages/haikode/LICENSE
 #
 # vendor-packages is already on the stock python3.10 sys.path, so the packaged
 # launcher needs no PYTHONPATH at all.
@@ -164,6 +165,7 @@ chmod 755 "$STAGE/apps/haikode/haikode"
 cp "$KEYSTORE_BIN" "$STAGE/bin/hai-keystore"
 chmod 755 "$STAGE/bin/hai-keystore"
 cp "$PROJECT_DIR/README.md" "$STAGE/documentation/packages/haikode/README.md"
+cp "$PROJECT_DIR/LICENSE" "$STAGE/documentation/packages/haikode/LICENSE"
 
 # The packaged launcher differs from scripts/haikode-launcher on purpose: a
 # packaged install imports haikode from vendor-packages, so setting PYTHONPATH

@@ -1,5 +1,10 @@
 # Compaction review: latch the LLM history
 
+> **Status:** implemented by the 2026-08-06 performance audit, including the
+> separate raw/provider views, successful-summary latch, hidden usage and
+> durable cross-process checkpoint. The review below is retained as design
+> evidence and uses pre-implementation line numbers.
+
 Reviewer: gpt-5.6-sol at max effort, 6 August 2026, reading the code and
 running read-only experiments against `plan_compaction`. Kept verbatim from
 the answer section onward. The brief is beside this file.
@@ -92,5 +97,4 @@ So the placement is right; the event should continue to say “compacting,” no
 Measurement is still useful for attributing the specific field report, but it should not block the change: the code and 8k sliding-tail arithmetic already prove a steady state with one synchronous summariser call per provider step. The current design also hides those calls from usage accounting.
 
 Six focused cache, notification, non-mutation and automatic-compaction tests passed read-only; no files were modified.
-
 

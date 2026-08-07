@@ -10,6 +10,18 @@ from .base import Provider, classify_error, error_chunk, error_from_exception
 # nothing. Clamp instead. Longest prefix wins; an unlisted model is left
 # alone so a newer one is never capped by a stale table.
 MAX_OUTPUT_TOKENS = {
+    "claude-fable-5": 128000,
+    "claude-mythos-5": 128000,
+    "claude-mythos-preview": 128000,
+    "claude-opus-5": 128000,
+    "claude-opus-4-8": 128000,
+    "claude-opus-4-7": 128000,
+    "claude-opus-4-6": 128000,
+    "claude-sonnet-5": 128000,
+    "claude-sonnet-4-6": 128000,
+    "claude-haiku-4-5": 64000,
+    "claude-sonnet-4-5": 64000,
+    "claude-opus-4-5": 64000,
     "claude-3-haiku": 4096,
     "claude-3-opus": 4096,
     "claude-3-sonnet": 4096,
@@ -33,9 +45,9 @@ CACHE_CONTROL = {"type": "ephemeral"}
 # budget. This matters more than it looks: `thinking: {"type": "enabled",
 # budget_tokens}` is deprecated on the 4.6 generation and REJECTED WITH 400
 # on 4.7 and later — which includes claude-sonnet-5, the default model of
-# the shipped profile. Effort also beats a budget on its own terms: it
-# shapes every token in the response, tool calls included, and needs no
-# thinking block at all.
+# the shipped profile. Effort shapes every token in the response, tool calls
+# included; on adaptive families it is sent alongside the separate adaptive
+# thinking switch.
 #
 # Longest matching prefix wins; an unlisted model gets no effort control
 # rather than a guess, because guessing wrong here is a 400 on every turn.
@@ -51,7 +63,18 @@ EFFORT_SUPPORT = {
     "claude-sonnet-5": _XHIGH,
     "claude-fable-5": _XHIGH,
     "claude-mythos-5": _XHIGH,
+    "claude-mythos-preview": _MAX,
 }
+
+# These families accept adaptive thinking. It must be requested separately
+# from output_config.effort: effort controls depth, while the thinking field
+# controls whether signed thinking blocks are produced. Asking for summarized
+# display also avoids the newest models' default empty thinking text.
+ADAPTIVE_THINKING_MODELS = (
+    "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+    "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5",
+    "claude-fable-5", "claude-mythos-5", "claude-mythos-preview",
+)
 
 # The older families where a token budget IS the mechanism — extended
 # thinking is the only mode they have. Opus 4.5 appears in both tables: it
@@ -142,18 +165,20 @@ class AnthropicProvider(Provider):
         return {"effort": effort}
 
     def _thinking(self, model: str, max_tokens: int):
-        """A thinking budget, for the families where that is the mechanism.
+        """The thinking mode this model and selected effort require.
 
-        Only for those: `type: "enabled"` is deprecated on the 4.6
-        generation and returns 400 on 4.7 and later, so sending it by
-        default would break the shipped profile's own model. The budget
-        must also sit strictly inside max_tokens — it is shrunk to the
-        model's output ceiling when one is known, and skipped rather than
-        sent invalid if no meaningful budget fits.
+        Current families use adaptive thinking alongside output_config.effort.
+        Older families use a manual token budget. `type: "enabled"` is
+        deprecated on the 4.6 generation and rejected on 4.7 and later, so the
+        two paths must never be guessed from a broad family prefix.
         """
         effort = self.reasoning_effort
         if not effort or effort == "off":
             return None, max_tokens
+        adaptive_prefix = _longest_prefix(model, ADAPTIVE_THINKING_MODELS)
+        if adaptive_prefix:
+            return ({"type": "adaptive", "display": "summarized"},
+                    max_tokens)
         budget_prefix = _longest_prefix(model, BUDGET_THINKING_MODELS)
         if not budget_prefix:
             return None, max_tokens

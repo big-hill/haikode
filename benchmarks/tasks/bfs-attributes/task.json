@@ -4,7 +4,7 @@
   "description": "A text file on BFS that carries three typed extended attributes (a string, an int32 and a MIME type). The agent is asked to make an ordinary two-line edit to its contents.",
   "proves": "that editing a file preserves its BFS attributes. A write that goes through a temporary file and a rename — the usual way to make a write atomic — drops every attribute unless they are carried across deliberately, and on Haiku that silently breaks packaging, indexing and Tracker.",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,
   "requires_commands": ["addattr", "catattr", "listattr"],
   "notes": "Haiku only. Off Haiku there is no addattr/catattr/listattr and the task reports n/a — a filesystem this machine does not have is not a failure of either agent. The attributes are set by setup_commands because a fixture directory in git cannot carry them.",

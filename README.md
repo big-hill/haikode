@@ -196,16 +196,13 @@ one notice on stderr.
 `zen` needs no personal key at all, which makes it the cheapest way to smoke
 test a fresh install: `haikode -p zen "hello"`.
 
-`/effort` works on the `anthropic` profile too. On current models it
-is the API's own `output_config.effort` (low/medium/high/xhigh/max, and
-the levels genuinely differ per model — `xhigh` is not on Sonnet 4.6,
-`max` is not on Opus 4.5). Older families that only have extended
-thinking get a token budget instead. An unlisted model gets no effort
-control at all rather than a guess, because guessing wrong is a 400 on
-every turn. It is not a
-device flow: the browser page shows a code to paste back into the prompt.
-The account needs **extra usage enabled** — that is what authorizes
-external clients against a subscription.
+`/effort` works on the `anthropic` profile too. On current models it sends
+the API's own `output_config.effort` together with adaptive thinking
+(low/medium/high/xhigh/max; the accepted levels differ by model). Older
+families that only support manual extended thinking get a token budget
+instead. An unlisted model gets no effort control rather than a guess, because
+an unsupported thinking field makes every turn fail. The `anthropic` profile
+uses an Anthropic API key; it is not a subscription or browser-login flow.
 
 API-key profiles and subscription profiles are deliberately separate: an OpenAI
 API key is not a ChatGPT subscription, and an xAI API key is not a SuperGrok
@@ -426,7 +423,7 @@ transcript.
 | `/rename <title>` | rename the current session |
 | `/archive` | archive the current session |
 | `/export [path] [markdown\|text\|json]` | render or write the transcript |
-| `/compact [keep]` | fold old messages into a summary |
+| `/compact [keep\|undo]` | fold old messages into a summary, or restore the latest manual fold |
 | `/undo` | revert the file changes made by the last run |
 | `/todos` | show the agent's current task list |
 | `/farewell [on\|off]` | exit with a model-written haiku; `on` makes every exit do it |
@@ -652,7 +649,7 @@ up in `/status` and `doctor`.
 
 `/init` scaffolds one, then asks the model to write `AGENTS.md`.
 
-> `theme`, `username` and `mcp` are accepted and validated but not yet acted on.
+> `theme` and `username` are accepted and validated but not yet acted on.
 
 ### `AGENTS.md`
 
@@ -942,10 +939,9 @@ plain exit then composes too (persisted as `farewell_on_exit`, default off;
 `/farewell off` reverts, and `/farewell` alone still works either way). It
 runs from the prompt, so no turn is in flight and the stream has the pipe to
 itself; a quit that doubles as an interrupt stays instant regardless. If
-composition fails, the collection covers the goodbye. The only background
-call is the session's 3-5 word display title for the terminal tab and the
-session list, composed once after the first successful turn, in interactive
-sessions only.
+composition fails, the collection covers the goodbye. The terminal-tab display
+title is derived locally from the session subject after the first successful
+turn. It does not open a second model stream or add hidden usage.
 
 The resume line always prints the full session id: the ids are
 time-prefixed, so every id from the same era shares its first eight
@@ -982,14 +978,12 @@ haikode session list                # the same list, without the TUI
 /sessions sqlite     full-text search, including message bodies
 /undo                revert the last run's file changes
 /compact 10          fold everything but the last 10 messages into a summary
+/compact undo        restore the most recent manual compaction
 /export notes.md     write the transcript
 ```
 
-> **Known gap.** Session persistence is wired into the REPL and the desktop app
-> but **not** into the curses TUI. A TUI conversation can browse, search, rename,
-> delete and resume sessions, but does not write new turns back to the database,
-> so `/undo` has nothing to revert. Use `--no-tui` when you need the safety net.
-> Tracked in [docs/PARITY.md](docs/PARITY.md).
+REPL, TUI and desktop all use the same `TurnController` lifecycle, so turns,
+checkpoints and undo data are persisted through every front-end.
 
 ## Context and cost
 
@@ -1001,10 +995,13 @@ a local estimate. `/context` names the source of the model's window and breaks
 usage down (system prompt, instructions, memory, tool schemas, history);
 `/usage` and `/cost` report what the session has spent.
 
-When the history no longer fits its budget, the old turns are folded into a
-model-written summary automatically at request time (falling back to dropping
-with a notice if the summariser fails); `/compact` does the same thing on
-demand.
+When the history no longer fits its budget, the provider-facing view folds old
+turns into a model-written summary while the lossless raw transcript remains in
+session storage. The successful summary is latched across provider rounds and
+checkpointed for a later desktop worker, so tool loops and resumed turns do not
+re-summarise the same history. A failed summariser only produces a transient
+drop notice and can be retried later. `/compact` performs a durable manual fold;
+`/compact undo` restores it.
 
 The window is per model, not per provider. A profile's `context` is the
 fallback; where the endpoint states a window of its own in `/models` — xAI and
@@ -1080,8 +1077,18 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2270 tests, stdlib `unittest`, no network. `HAI_DISABLE_KEYSTORE=1` skips the
-native helper so the suite never blocks on Haiku's keyring approval dialog.
+2427 tests as of the 2026-08-07 release audit, stdlib `unittest`, no network. Four
+documented wiring-audit failures and four skips are expected.
+`HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
+Haiku's keyring approval dialog.
+
+The deterministic performance/architecture probes use only loopback and fake
+providers, emit synthetic monotonic request ids, and never read credentials or
+prompts:
+
+```sh
+HAI_DISABLE_KEYSTORE=1 python3 benchmarks/performance_audit.py --pretty
+```
 
 To **look** at the TUI rather than guess at it, `tests/render_tui.py` is a pty +
 ECMA-48 screen reconstructor with a CLI. It imports nothing from haikode, so it
@@ -1140,7 +1147,7 @@ record of how much was already found that way.
 ## Licence
 
 MIT — see [LICENSE](LICENSE). haikode is an independent reimplementation of
-[opencode](https://github.com/sst/opencode) (MIT) and contains none of its
-source, but its behaviour, tool surface, prompt texts and keybinding tables
-are derived from that project. The same licence is used so that what was
-derived carries the terms it was given.
+[opencode](https://github.com/sst/opencode) (MIT). It contains no opencode
+program source code, but its behaviour, tool surface, several prompt texts and
+keybinding tables are derived from that project. The same licence is used so
+that what was derived carries the terms it was given.

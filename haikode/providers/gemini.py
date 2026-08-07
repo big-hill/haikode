@@ -264,12 +264,23 @@ class GeminiProvider(Provider):
     def _usage(raw: Optional[dict]) -> Optional[dict]:
         if not raw:
             return None
-        # candidatesTokenCount excludes thoughts, so the two must be summed or
-        # every thinking turn under-reports its output.
-        output = raw.get("candidatesTokenCount", 0) + raw.get("thoughtsTokenCount", 0)
-        usage = {"input": raw.get("promptTokenCount", 0), "output": output}
-        if raw.get("thoughtsTokenCount"):
-            usage["reasoning"] = raw["thoughtsTokenCount"]
-        if raw.get("cachedContentTokenCount"):
-            usage["cache_read"] = raw["cachedContentTokenCount"]
+        # Gemini publishes disjoint counters: totalTokenCount is prompt +
+        # tool-use prompt + candidates + thoughts.  promptTokenCount itself
+        # includes cachedContentTokenCount.  The old adapter added thoughts to
+        # output *and* reported them as reasoning, then added cached tokens to
+        # input *and* cache_read -- double-counting both in the context meter
+        # and cost estimate.  Keep the neutral Usage fields disjoint, like the
+        # OpenAI adapters do.
+        cached = max(0, raw.get("cachedContentTokenCount", 0))
+        prompt = max(0, raw.get("promptTokenCount", 0))
+        tool_input = max(0, raw.get("toolUsePromptTokenCount", 0))
+        thoughts = max(0, raw.get("thoughtsTokenCount", 0))
+        usage = {
+            "input": max(0, prompt - cached) + tool_input,
+            "output": max(0, raw.get("candidatesTokenCount", 0)),
+        }
+        if thoughts:
+            usage["reasoning"] = thoughts
+        if cached:
+            usage["cache_read"] = cached
         return usage

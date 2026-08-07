@@ -19,11 +19,11 @@ from haikode import agents as agents_mod  # noqa: E402
 from haikode import context as context_mod  # noqa: E402
 from haikode import memory as memory_mod  # noqa: E402
 from haikode import prompt as prompt_mod  # noqa: E402
-from haikode.agent import Agent, _CallAccumulator  # noqa: E402
+from haikode.agent import Agent, ProviderFailure, _CallAccumulator  # noqa: E402
 from haikode.agents import AgentRegistry  # noqa: E402
 from haikode.permission import PermissionRequest, Permissions  # noqa: E402
-from haikode.providers.base import Provider  # noqa: E402
-from haikode.schema import CompletionChunk, PermissionDenied  # noqa: E402
+from haikode.providers.base import Provider, ProviderError  # noqa: E402
+from haikode.schema import CompletionChunk, Msg, PermissionDenied  # noqa: E402
 
 
 class ScriptedProvider(Provider):
@@ -272,6 +272,212 @@ class TestLoop(AgentTestCase):
         agent.clear()
         self.assertEqual(agent.messages, [])
         self.assertEqual(agent.ctx.read_files, set())
+
+
+class CompactionLatchAndAccounting(AgentTestCase):
+    @staticmethod
+    def _overflow_chunk(input_tokens=11):
+        error = ProviderError(
+            kind="context_overflow", message="prompt is too long",
+            status=400, provider="scripted", model="m").as_dict()
+        return CompletionChunk(stop_reason="error",
+                               usage={"input": input_tokens, "output": 0,
+                                      "error": error})
+
+    def test_a_tool_loop_reuses_one_successful_summary(self):
+        class SummaryProvider(Provider):
+            name = "summary-count"
+
+            def __init__(self):
+                self.calls = 0
+
+            def stream(self, messages, tools, model, max_tokens):
+                self.calls += 1
+                yield CompletionChunk(text="## Objective\n- keep the invariant")
+                yield CompletionChunk(stop_reason="stop",
+                                      usage={"input": 101, "output": 7})
+
+        provider = SummaryProvider()
+        agent = Agent(provider, "m", cwd=self.dir, context_window=20_000,
+                      permissions=Permissions(auto_approve=True))
+        original = [Msg(role="user" if index % 2 == 0 else "assistant",
+                        content=("x" * 1200) + str(index))
+                    for index in range(80)]
+        agent.messages = original
+
+        first = agent._messages_for_llm()
+        for index in range(12):
+            agent.messages.extend([
+                Msg(role="user", content="new question %d" % index),
+                Msg(role="assistant", content="new answer %d" % index),
+            ])
+            agent._messages_for_llm()
+
+        self.assertEqual(1, provider.calls,
+                         "new tail messages must not re-summarise the old fold")
+        self.assertTrue(any((message.display or {}).get("summary")
+                            for message in first))
+        self.assertEqual(104, len(agent.messages),
+                         "the raw transcript is the persistence source")
+        self.assertEqual(101, agent.usage.hidden_session.input_tokens)
+        self.assertEqual(7, agent.usage.hidden_session.output_tokens)
+        self.assertEqual(108, agent.usage.session.total)
+        self.assertEqual(0, agent.usage.latest.total,
+                         "summary usage is not the next-request context size")
+
+    def test_two_agents_never_share_a_cached_summary_or_its_usage(self):
+        class SummaryProvider(Provider):
+            name = "same-name"
+
+            def __init__(self, text):
+                self.text = text
+                self.calls = 0
+
+            def stream(self, messages, tools, model, max_tokens):
+                self.calls += 1
+                yield CompletionChunk(text=self.text)
+                yield CompletionChunk(stop_reason="stop",
+                                      usage={"input": 9, "output": 2})
+
+        raw = [Msg(role="user" if index % 2 == 0 else "assistant",
+                   content=("same" * 300) + str(index))
+               for index in range(80)]
+        first_provider = SummaryProvider("summary from first")
+        first = Agent(first_provider, "m", cwd=self.dir,
+                      context_window=20_000, tool_names=[])
+        first.messages = raw
+        first_view = first._messages_for_llm()
+
+        second_provider = SummaryProvider("summary from second")
+        second = Agent(second_provider, "m", cwd=self.dir,
+                       context_window=20_000, tool_names=[])
+        second.messages = raw
+        second_view = second._messages_for_llm()
+
+        self.assertEqual((first_provider.calls, second_provider.calls), (1, 1))
+        self.assertIn("summary from first", first_view[1].content)
+        self.assertIn("summary from second", second_view[1].content)
+        self.assertEqual(second.usage.hidden_session.total, 11)
+
+    def test_tool_schemas_do_not_inflate_the_token_scale(self):
+        from haikode.context import message_tokens
+        from haikode.usage import tool_specs_tokens
+
+        class MeasuringProvider(Provider):
+            name = "measuring"
+
+            def stream(self, messages, tools, model, max_tokens):
+                prompt = (sum(message_tokens(message) for message in messages)
+                          + tool_specs_tokens(tools))
+                yield CompletionChunk(text="done", stop_reason="stop",
+                                      usage={"input": prompt, "output": 1})
+
+        agent = Agent(MeasuringProvider(), "m", cwd=self.dir,
+                      permissions=Permissions(auto_approve=True))
+        agent.run("hello")
+        self.assertAlmostEqual(1.0, agent.token_scale)
+
+    def test_unchanged_tool_schemas_are_estimated_once(self):
+        from haikode import agent as agent_mod
+
+        agent = self.build([], tool_names=["read", "list"])
+        with patch.object(agent_mod, "tool_specs_tokens",
+                          wraps=agent_mod.tool_specs_tokens) as estimate:
+            first = agent._tool_schema_tokens()
+            self.assertEqual(agent._tool_schema_tokens(), first)
+            self.assertEqual(estimate.call_count, 1)
+            # Replacing the bundle (MCP refresh/agent switch) invalidates by
+            # object identity without every caller having to remember a flag.
+            agent.specs = list(agent.specs)
+            self.assertEqual(agent._tool_schema_tokens(), first)
+            self.assertEqual(estimate.call_count, 2)
+
+    def test_context_overflow_forces_one_fold_and_one_retry(self):
+        provider = ScriptedProvider([
+            [self._overflow_chunk()],
+            [CompletionChunk(text="## Objective\n- retain the constraint"),
+             CompletionChunk(stop_reason="stop",
+                             usage={"input": 5, "output": 2})],
+            [CompletionChunk(text="recovered", stop_reason="stop",
+                             usage={"input": 7, "output": 1})],
+        ])
+        agent = Agent(provider, "m", cwd=self.dir, context_window=1_000_000,
+                      tool_names=[],
+                      permissions=Permissions(auto_approve=True))
+        agent.messages = [
+            Msg(role="user" if index % 2 == 0 else "assistant",
+                content="history %d" % index)
+            for index in range(10)
+        ]
+        events = []
+        streamed = []
+
+        self.assertEqual(agent.run(
+            "continue", on_text=streamed.append,
+            on_event=lambda kind, payload: events.append((kind, payload))),
+            "recovered")
+
+        self.assertEqual(len(provider.seen), 3)  # failed main, summary, main
+        self.assertEqual(streamed, ["recovered"])
+        self.assertNotIn("error", [kind for kind, _ in events])
+        self.assertIn("compaction", [kind for kind, _ in events])
+        self.assertTrue(any((message.display or {}).get("summary")
+                            for message in provider.seen[-1]))
+        self.assertEqual(agent.tokens, {"input": 23, "output": 3})
+        self.assertEqual(agent.usage.hidden_run.input_tokens, 5)
+        self.assertEqual(agent.usage.hidden_run.output_tokens, 2)
+        self.assertEqual(agent.usage.latest.input_tokens, 7)
+
+    def test_context_overflow_after_partial_output_is_never_replayed(self):
+        provider = ScriptedProvider([[
+            CompletionChunk(text="partial"), self._overflow_chunk()]])
+        agent = Agent(provider, "m", cwd=self.dir, context_window=1_000_000,
+                      tool_names=[],
+                      permissions=Permissions(auto_approve=True))
+        events = []
+        streamed = []
+
+        with self.assertRaises(ProviderFailure):
+            agent.run("continue", on_text=streamed.append,
+                      on_event=lambda kind, payload:
+                      events.append((kind, payload)))
+
+        self.assertEqual(len(provider.seen), 1)
+        self.assertEqual(streamed, ["partial"])
+        self.assertEqual(events[-1][0], "error")
+
+    def test_a_failed_turn_cannot_survive_in_the_latched_provider_tail(self):
+        class SummaryProvider(Provider):
+            name = "summary"
+
+            def stream(self, messages, tools, model, max_tokens):
+                yield CompletionChunk(text="## Objective\n- keep history")
+                yield CompletionChunk(stop_reason="stop")
+
+        agent = Agent(SummaryProvider(), "m", cwd=self.dir,
+                      context_window=20_000, tool_names=[],
+                      permissions=Permissions(auto_approve=True))
+        agent.messages = [
+            Msg(role="user" if index % 2 == 0 else "assistant",
+                content="x" * 1200 + str(index))
+            for index in range(80)
+        ]
+        agent._messages_for_llm()  # establish the separate summary latch
+
+        failure = ProviderError(kind="auth", message="refused",
+                                status=401).as_dict()
+        agent.provider = ScriptedProvider([[
+            CompletionChunk(stop_reason="error", usage={"error": failure})]])
+        with self.assertRaises(ProviderFailure):
+            agent.run("failed question")
+
+        next_provider = ScriptedProvider([[
+            CompletionChunk(text="ok", stop_reason="stop")]])
+        agent.provider = next_provider
+        self.assertEqual(agent.run("fresh question"), "ok")
+        replay = "\n".join(message.content for message in next_provider.seen[0])
+        self.assertNotIn("failed question", replay)
+        self.assertIn("fresh question", replay)
 
 
 class TestSubsetTools(AgentTestCase):

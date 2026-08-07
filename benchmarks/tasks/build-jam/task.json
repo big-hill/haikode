@@ -4,7 +4,7 @@
   "description": "The build-make fixture, built with jam(1) — the native Haiku build tool — so the shell/build category is exercised with the toolchain haikode actually ships next to.",
   "proves": "the same build round trip as build-make, but against jam, whose diagnostics and output layout differ from make's. Requires jam on PATH; the harness reports it as unavailable rather than as a failure when jam is missing.",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 900,
   "command_timeout": 120,
   "requires_commands": ["jam"],

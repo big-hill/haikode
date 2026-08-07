@@ -44,12 +44,14 @@ class EffortUsesTheMechanismEachModelAccepts(unittest.TestCase):
                                  [], model, 8000))
         return captured
 
-    def test_modern_models_get_output_config_and_never_a_budget(self):
+    def test_modern_models_get_effort_and_adaptive_thinking(self):
         for model in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-7"):
             payload = self.payload_for(self.provider("high"), model)
             self.assertEqual(payload.get("output_config"), {"effort": "high"},
                              model)
-            self.assertNotIn("thinking", payload, model)
+            self.assertEqual(payload.get("thinking"),
+                             {"type": "adaptive", "display": "summarized"},
+                             model)
 
     def test_older_families_still_get_a_thinking_budget(self):
         payload = self.payload_for(self.provider("high"), "claude-3-7-sonnet")
@@ -89,6 +91,12 @@ class EffortUsesTheMechanismEachModelAccepts(unittest.TestCase):
         payload = self.payload_for(self.provider("off"), "claude-sonnet-5")
         self.assertNotIn("output_config", payload)
         self.assertNotIn("thinking", payload)
+
+    def test_current_output_limits_are_not_clamped_to_legacy_caps(self):
+        from haikode.providers.anthropic import max_output_tokens
+        self.assertEqual(max_output_tokens("claude-sonnet-5"), 128000)
+        self.assertEqual(max_output_tokens("claude-opus-4-7"), 128000)
+        self.assertEqual(max_output_tokens("claude-opus-4-5"), 64000)
 
 
 class NoBrowserIsEverLaunchedOnHaiku(unittest.TestCase):

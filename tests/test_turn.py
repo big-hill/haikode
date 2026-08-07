@@ -29,8 +29,11 @@ from haikode import repl as repl_mod  # noqa: E402
 from haikode import session as session_mod  # noqa: E402
 from haikode import tui as tui_module  # noqa: E402
 from haikode import turn as turn_mod  # noqa: E402
+from haikode.agent import Agent  # noqa: E402
 from haikode.config import Config  # noqa: E402
-from haikode.schema import Msg  # noqa: E402
+from haikode.context import clear_summary_cache  # noqa: E402
+from haikode.permission import Permissions  # noqa: E402
+from haikode.schema import CompletionChunk, Msg  # noqa: E402
 from haikode.turn import ASYNC, MODAL, SYNC, TURN, TurnController  # noqa: E402
 
 
@@ -79,6 +82,21 @@ class StubAgent:
 
     def refresh_memory(self):
         pass
+
+
+class SummaryCountingProvider:
+    """One deterministic summariser; a main response is not needed here."""
+
+    name = "summary-counter"
+
+    def __init__(self):
+        self.calls = 0
+
+    def stream(self, messages, tools, model, max_tokens):
+        self.calls += 1
+        yield CompletionChunk(text="## Objective\n- preserve the raw session")
+        yield CompletionChunk(stop_reason="stop",
+                              usage={"input": 101, "output": 7})
 
 
 class TurnTestCase(unittest.TestCase):
@@ -196,6 +214,47 @@ class BothFrontEndsPersistATurn(TurnTestCase):
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual([m.content for m in self.only_session().messages],
                          ["one", "done", "two", "done"])
+
+    def test_a_fresh_desktop_style_worker_reuses_the_compaction_checkpoint(self):
+        clear_summary_cache()
+        self.addCleanup(clear_summary_cache)
+        controller = self.controller()
+        session = controller.open_session()
+        for index in range(80):
+            session.append(Msg(
+                role="user" if index % 2 == 0 else "assistant",
+                content=("long-%s-" % self.dir) + "x" * 1200 + str(index)))
+
+        first_provider = SummaryCountingProvider()
+        first = Agent(first_provider, "m", cwd=self.dir,
+                      context_window=20_000, tool_names=[],
+                      permissions=Permissions(auto_approve=True))
+        first.messages = list(session.messages)
+        first._messages_for_llm()
+        self.assertEqual(first_provider.calls, 1)
+
+        result = turn_mod.TurnResult()
+        controller._persist(first, "long session", result)
+        self.assertTrue(result.persisted)
+        self.assertIsNotNone(session.load_context_checkpoint())
+
+        # A new process has no in-memory summary LRU.  The durable projection,
+        # not that process-local cache, is what must prevent a second call.
+        clear_summary_cache()
+        resumed = controller.store().load(session.id)
+        controller.adopt(resumed)
+        second_provider = SummaryCountingProvider()
+        second = Agent(second_provider, "m", cwd=self.dir,
+                       context_window=20_000, tool_names=[],
+                       permissions=Permissions(auto_approve=True))
+        second.messages = list(resumed.messages)
+        controller._restore_context_checkpoint(second)
+        sent = second._messages_for_llm()
+
+        self.assertEqual(second_provider.calls, 0)
+        self.assertEqual(len(second.messages), 80)  # lossless raw transcript
+        self.assertTrue(any((message.display or {}).get("summary")
+                            for message in sent))
 
     def test_mentions_are_expanded_and_reported_once(self):
         Path(self.dir, "notes.md").write_text("the parser drops commas")

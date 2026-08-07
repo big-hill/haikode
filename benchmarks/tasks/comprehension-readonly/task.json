@@ -4,7 +4,7 @@
   "description": "One of six functions slices one element too few. Name it, change nothing.",
   "proves": "reading and reasoning about code without touching it — and that a read-only instruction actually suppresses edits",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 480,
   "prompt": "Exactly one function in the `series/` package has an off-by-one error: it reduces over one element fewer than its docstring promises. Which function is it?\n\nAnswer with the function's name and nothing else. This is a read-only question: do not create, modify or delete any file, and do not run any command that changes the project.",
   "pre_checks": [

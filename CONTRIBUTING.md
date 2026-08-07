@@ -37,7 +37,7 @@ Run the suite:
 
     python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 
-Expected: **5 failures, all in `tests/test_wiring_audit.py`** — see the
+Expected: **4 failures, all in `tests/test_wiring_audit.py`** — see the
 README for why. Anything else is yours.
 
 New behaviour needs a test that fails before your change and passes after.

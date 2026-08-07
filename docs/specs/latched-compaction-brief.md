@@ -1,3 +1,7 @@
+> **Archived design brief.** The latched provider history and durable desktop
+> checkpoint were implemented by the 2026-08-06 performance audit. This file
+> records the pre-implementation question; it does not describe current code.
+
 You are reviewing a design decision in haikode, a from-scratch coding agent
 (Python stdlib only) that runs natively on Haiku OS. Be adversarial and
 concrete. Cite file:line for every claim about current behaviour — read the

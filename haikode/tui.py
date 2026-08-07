@@ -2960,7 +2960,8 @@ class TUI:
             self.status_hint = self.COMPACTING_HINT
             self.transcript.add(Entry(
                 "info", text="compacting: older turns fold into a summary "
-                             "(session_history recovers the detail)"))
+                             "(raw turns stay in session storage; "
+                             "session_history is shortened)"))
             self._dirty = True
             return
         if kind == "attached":

@@ -4,7 +4,7 @@
   "description": "Turn 1 asks the agent to record a project fact so that a future session picks it up. Turn 2 is a separate process with a fresh session and asks for that fact back.",
   "proves": "durable project memory across sessions — that the agent writes the fact into the instruction file the context engine loads (AGENTS.md / CLAUDE.md), and that a cold session actually reads it back. Two separate processes, so nothing survives in memory.",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,
   "turns": [
     {"prompt": "Remember this for every future session in this project: the release command is `./ship.sh --channel beta`, and it must be run from the repository root, never from a subdirectory.\n\nWrite it down in the file this project's coding agent reads automatically on startup, so a session that has never seen this conversation still knows it."},

@@ -432,7 +432,7 @@ class CompactionIsAutomatic(SandboxCase):
         sent = agent._messages_for_llm()
         self.assertLess(
             len(sent), len(agent.messages),
-            "compact_history() never ran: the whole history went to the provider")
+            "compaction never ran: the whole history went to the provider")
         self.assertTrue(any("dropped to fit the context window" in (m.content or "")
                             for m in sent),
                         "no compaction notice was inserted for the model")
@@ -443,10 +443,10 @@ class CompactionIsAutomatic(SandboxCase):
         for relative, tree in package_sources():
             if relative.name in ("context.py",):
                 continue
-            if "compact_history" in referenced_names(tree):
+            if {"compact_history", "compact_messages"} & referenced_names(tree):
                 callers.append(relative.as_posix())
         self.assertIn("haikode/agent.py", callers,
-                      "the agent loop never calls compact_history(); compaction "
+                      "the agent loop never calls compact_messages(); compaction "
                       "would only happen when the user types /compact")
 
 

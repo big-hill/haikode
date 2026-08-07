@@ -224,7 +224,7 @@ def _system_tokens(agent: Any) -> int:
     return estimate_tokens(prompt) if isinstance(prompt, str) and prompt else 0
 
 
-def _spec_tokens(spec: Any) -> int:
+def spec_tokens(spec: Any) -> int:
     """Tool schemas are resent on every request, so they are not free."""
     name = _attr(spec, "name", "") or ""
     description = _attr(spec, "description", "") or ""
@@ -234,6 +234,29 @@ def _spec_tokens(spec: Any) -> int:
     except (TypeError, ValueError):
         rendered = str(parameters)
     return estimate_tokens("%s%s%s" % (name, description, rendered))
+
+
+# Kept as an internal alias for older callers and tests. New code should use
+# the public spelling: prompt calibration needs the exact same estimator as
+# the context meter, otherwise tool schemas get mistaken for tokenizer error.
+_spec_tokens = spec_tokens
+
+
+def tool_specs_tokens(specs: Any) -> int:
+    """Estimated tokens for an iterable (or mapping) of tool schemas."""
+    if isinstance(specs, dict):
+        specs = specs.values()
+    try:
+        iterator = list(specs or [])
+    except Exception:
+        return 0
+    total = 0
+    for spec in iterator:
+        try:
+            total += spec_tokens(spec)
+        except Exception:
+            continue
+    return total
 
 
 def _tool_specs(agent: Any) -> List[Any]:
@@ -286,15 +309,33 @@ def measure_context(agent: Any) -> ContextState:
     system = _system_tokens(agent)
 
     tools = 0
-    for spec in _tool_specs(agent):
+    cached_tools = _attr(agent, "_tool_schema_tokens", None)
+    if callable(cached_tools):
         try:
-            tools += _spec_tokens(spec)
+            tools = max(0, int(cached_tools()))
         except Exception:
-            continue
+            tools = 0
+    else:
+        for spec in _tool_specs(agent):
+            try:
+                tools += spec_tokens(spec)
+            except Exception:
+                continue
 
     history = 0
     count = 0
-    messages = _attr(agent, "messages", None)
+    # A long raw transcript may be hundreds of messages after the LLM view
+    # has been compacted. Agents expose that effective view so the draw loop
+    # neither scans the raw archive every two seconds nor reports a request
+    # the provider will never receive. Agent-shaped stubs keep the old path.
+    snapshot = _attr(agent, "_context_messages", None)
+    if callable(snapshot):
+        try:
+            messages = snapshot()
+        except Exception:
+            messages = _attr(agent, "messages", None)
+    else:
+        messages = _attr(agent, "messages", None)
     try:
         iterator = [] if messages is None else list(messages)
     except Exception:
@@ -310,7 +351,11 @@ def measure_context(agent: Any) -> ContextState:
     tracker = _attr(agent, "usage", None)
     latest = _attr(tracker, "latest", None)
     observed = latest.total if isinstance(latest, Usage) else 0
-    window = _safe_int(_attr(agent, "context_window", 0))
+    # Requests are bounded by the input share when a provider publishes one;
+    # using the combined input+output context made ChatGPT's 372k input limit
+    # look like 500k in the footer.
+    window = _safe_int(_attr(agent, "input_window",
+                             _attr(agent, "context_window", 0)))
     return ContextState(used=observed or estimated, window=window,
                         messages=count, tools=tools, system=system,
                         history=history)
@@ -333,6 +378,8 @@ class UsageTracker:
         self._run = Usage()
         self._session = Usage()
         self._latest = Usage()
+        self._hidden_run = Usage()
+        self._hidden_session = Usage()
 
     @property
     def run(self) -> Usage:
@@ -347,20 +394,49 @@ class UsageTracker:
         """The provider's latest request/response size, used by the context meter."""
         return self._latest
 
+    @property
+    def hidden_run(self) -> Usage:
+        """Provider work not producing the user's answer (for example summary)."""
+        return self._hidden_run
+
+    @property
+    def hidden_session(self) -> Usage:
+        return self._hidden_session
+
     def start_run(self):
         """Begin a new turn. The session total keeps everything recorded so far."""
         self._run = Usage()
+        self._hidden_run = Usage()
 
-    def record(self, usage: Union[Dict[str, Any], Usage, None]) -> Usage:
+    def record(self, usage: Union[Dict[str, Any], Usage, None], *,
+               continue_request: bool = False) -> Usage:
         """Fold one provider usage payload into both counters; returns the delta.
 
         An already-parsed Usage is taken as-is: from_dict would reject it as
-        "not a dict" and record a silent zero.
+        "not a dict" and record a silent zero. Some streaming APIs report the
+        prompt at message_start and the output at message_delta; those callers
+        set ``continue_request`` so ``latest`` remains the complete request
+        rather than only its final output fragment.
         """
         delta = usage if isinstance(usage, Usage) else Usage.from_dict(usage)
         self._run = self._run.add(delta)
         self._session = self._session.add(delta)
-        self._latest = delta
+        self._latest = self._latest.add(delta) if continue_request else delta
+        return delta
+
+    def record_hidden(self, usage: Union[Dict[str, Any], Usage, None]) -> Usage:
+        """Count a background/provider call without replacing ``latest``.
+
+        Summary usage belongs in the bill and in the turn/session totals, but
+        it is not the size of the main request. Letting it become ``latest``
+        made the context meter display the summariser's small prompt instead
+        of the conversation the user is about to continue.
+        """
+        delta = usage if isinstance(usage, Usage) else Usage.from_dict(usage)
+        self._run = self._run.add(delta)
+        self._session = self._session.add(delta)
+        self._hidden_run = self._hidden_run.add(delta)
+        self._hidden_session = self._hidden_session.add(delta)
         return delta
 
     def invalidate_latest(self):
@@ -378,6 +454,8 @@ class UsageTracker:
         self._run = Usage()
         self._session = Usage()
         self._latest = Usage()
+        self._hidden_run = Usage()
+        self._hidden_session = Usage()
 
     def estimate_cost(self, pricing: Optional[Dict[str, Any]],
                       usage: Optional[Usage] = None) -> float:
@@ -530,6 +608,11 @@ def detail_lines(tracker: Optional[UsageTracker],
         _row("Session", "%s in / %s out" % (format_tokens(session.input_tokens),
                                             format_tokens(session.output_tokens))),
     ]
+    hidden = tracker.hidden_session if tracker is not None else Usage()
+    if hidden.total:
+        rows.append(_row("Background", "%s in / %s out" % (
+            format_tokens(hidden.input_tokens),
+            format_tokens(hidden.output_tokens))))
     if session.reasoning_tokens:
         rows.append(_row("Reasoning", format_tokens(session.reasoning_tokens)))
     if session.cache_read or session.cache_write:
@@ -541,5 +624,6 @@ def detail_lines(tracker: Optional[UsageTracker],
 
 
 __all__ = ["Usage", "ContextState", "UsageTracker", "measure_context",
+           "spec_tokens", "tool_specs_tokens",
            "format_tokens", "format_cost", "format_context", "context_bar",
            "summary_line", "detail_lines", "WARN_PERCENT", "CRITICAL_PERCENT"]

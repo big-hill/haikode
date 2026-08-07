@@ -164,6 +164,21 @@ class MeasureContextTest(unittest.TestCase):
         self.assertEqual(state.tools, estimate_tokens(
             'read' + 'D' * 16 + '{"type": "object"}'))
 
+    def test_the_meter_uses_the_provider_input_limit(self):
+        agent = _StubAgent()
+        agent.input_window = 700
+        self.assertEqual(700, measure_context(agent).window)
+
+    def test_an_agent_can_expose_its_compacted_view(self):
+        agent = _StubAgent()
+        raw = list(agent.messages)
+        agent.messages = raw * 50
+        agent._context_messages = lambda: raw
+        state = measure_context(agent)
+        self.assertEqual(2, state.messages)
+        self.assertEqual(sum(message_tokens(message) for message in raw),
+                         state.history)
+
     def test_bare_object_degrades_to_zero(self):
         state = measure_context(object())
         self.assertEqual(state, ContextState())
@@ -267,6 +282,16 @@ class UsageTrackerTest(unittest.TestCase):
         delta = tracker.record({"input": 5, "output": 2})
         self.assertEqual(delta, Usage(5, 2))
 
+    def test_split_stream_usage_keeps_a_complete_latest_request(self):
+        tracker = UsageTracker()
+        tracker.record({"input": 100, "cache_read": 20})
+        tracker.record({"output": 8, "reasoning": 3},
+                       continue_request=True)
+        self.assertEqual(tracker.latest,
+                         Usage(input_tokens=100, output_tokens=8,
+                               reasoning_tokens=3, cache_read=20))
+        self.assertEqual(tracker.session, tracker.latest)
+
     def test_record_ignores_an_empty_payload(self):
         tracker = UsageTracker()
         tracker.record(None)
@@ -277,6 +302,23 @@ class UsageTrackerTest(unittest.TestCase):
         delta = tracker.record(Usage(input_tokens=500, output_tokens=20))
         self.assertEqual(delta, Usage(500, 20))
         self.assertEqual(tracker.session, Usage(500, 20))
+
+    def test_hidden_usage_is_billed_but_never_becomes_latest(self):
+        tracker = UsageTracker()
+        tracker.record({"input": 100, "output": 4})
+        tracker.record_hidden({"input": 20, "output": 2})
+        self.assertEqual(Usage(120, 6), tracker.run)
+        self.assertEqual(Usage(120, 6), tracker.session)
+        self.assertEqual(Usage(20, 2), tracker.hidden_run)
+        self.assertEqual(Usage(20, 2), tracker.hidden_session)
+        self.assertEqual(Usage(100, 4), tracker.latest)
+
+    def test_new_run_resets_only_the_run_hidden_counter(self):
+        tracker = UsageTracker()
+        tracker.record_hidden({"input": 20})
+        tracker.start_run()
+        self.assertEqual(Usage(), tracker.hidden_run)
+        self.assertEqual(Usage(input_tokens=20), tracker.hidden_session)
 
     def test_reset_clears_both(self):
         tracker = UsageTracker()
@@ -460,6 +502,12 @@ class DetailLinesTest(unittest.TestCase):
         self.assertIn("Reasoning:      250", lines)
         self.assertIn("Cache:          2k read / 30 written", lines)
         self.assertIn("Cost:           $0.01", lines)
+
+    def test_hidden_provider_work_is_visible_in_the_breakdown(self):
+        tracker = UsageTracker()
+        tracker.record_hidden({"input": 1200, "output": 80})
+        self.assertIn("Background:     1.2k in / 80 out",
+                      detail_lines(tracker, ContextState()))
 
     def test_unknown_window_is_reported_as_such(self):
         lines = detail_lines(UsageTracker(),

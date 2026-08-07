@@ -1,8 +1,8 @@
 """Run the suite and assert the documented baseline, for CI.
 
-The README's correctness claim is precise: exactly five failures, all in
+The README's correctness claim is precise: exactly four failures, all in
 tests/test_wiring_audit.py (the wiring backlog kept as executable debt),
-zero errors. A fifth failure is a regression; a third is someone fixing
+zero errors. A fifth failure is a regression; fewer means someone fixed
 the backlog without updating the claim. Both should fail the build.
 """
 

@@ -206,6 +206,37 @@ class TestStreamRetries(unittest.TestCase):
         self.assertEqual(caught.exception.status, 503)
         self.assertTrue(caught.exception.retryable)
 
+    def test_a_bare_429_refusal_is_terminal_in_the_actual_http_loop(self):
+        body = json.dumps({"type": "error", "error": {
+            "type": "rate_limit_error", "message": "Error"}})
+        headers = {"X-Should-Retry": "true",
+                   "Anthropic-Organization-Id": "org-1"}
+        with ScriptedServer(status(429, body, headers)) as server:
+            with self.assertRaises(NetError) as caught:
+                self.collect(server)
+        self.assertEqual(1, server.count,
+                         "provider classification after six calls is too late")
+        self.assertFalse(caught.exception.retryable)
+
+    def test_terminal_quota_exhaustion_ignores_retry_after(self):
+        body = json.dumps({"error": {
+            "code": "insufficient_quota", "message": "billing required"}})
+        with ScriptedServer(status(429, body, {"Retry-After": "30"})) as server:
+            with self.assertRaises(NetError) as caught:
+                self.collect(server)
+        self.assertEqual(1, server.count)
+        self.assertFalse(caught.exception.retryable)
+
+    def test_a_generic_429_without_metadata_is_still_retried(self):
+        # Generic Date/Server/Content-Length headers do not prove an
+        # entitlement refusal.  The early-stop rule is deliberately scoped to
+        # the exact measured Anthropic placeholder response.
+        with ScriptedServer(status(429, '{"error":{"message":"busy"}}'),
+                            sse({"ok": 1}, "[DONE]")) as server:
+            events = self.collect(server)
+        self.assertEqual(events, [{"ok": 1}])
+        self.assertEqual(server.count, 2)
+
     def test_wall_clock_budget_stops_retrying_before_the_attempt_count(self):
         # Ten attempts are allowed, but the half-second budget only pays for
         # one 0.3 s backoff — the clock, not the counter, ends the run.

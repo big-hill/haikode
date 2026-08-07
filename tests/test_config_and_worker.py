@@ -244,6 +244,37 @@ class ConfigAndWorkerTests(unittest.TestCase):
             self.assertIn("in /", usage["summary"])
             self.assertEqual(usage["tokens"], {"input": 0, "output": 0})
 
+    def test_desktop_resolves_an_api_key_only_once(self):
+        """The native keystore helper may take five seconds per invocation."""
+        self._stay_put()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(os.path.join(directory, "config.json"))
+            config.data["default_provider"] = "openai"
+            provider = ScriptedProvider([
+                [CompletionChunk(text="hello", stop_reason="stop")]])
+            provider.api_key = ""
+
+            def build(conf, name):
+                provider.api_key = conf.get_api_key(name)
+                return provider
+
+            config.data["providers"]["openai"]["api_key"] = "test-key"
+            output = StringIO()
+            with patch.object(desktop_worker, "Config", return_value=config), \
+                    patch.object(runtime, "build_provider", side_effect=build), \
+                    patch.object(config, "get_api_key",
+                                 wraps=config.get_api_key) as key_reads, \
+                    patch.object(config_module, "_keystore_get",
+                                 return_value=""), \
+                    patch.object(session, "default_db_path",
+                                 return_value=Path(directory) / "sessions.db"), \
+                    redirect_stdout(output):
+                self.assertEqual(desktop_worker.run(
+                    "hi", provider_name="openai", directory=directory), 0)
+
+            self.assertEqual(key_reads.call_count, 1)
+            self.assertEqual(frame_events(output.getvalue())[-1], "completed")
+
     def test_desktop_worker_emits_every_frame_kind_for_a_stubbed_agent(self):
         """One run, every frame the desktop protocol defines."""
         self._stay_put()

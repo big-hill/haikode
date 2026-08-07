@@ -12,7 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
-from ..net import NetError
+from ..net import (NetError, rate_limit_body_is_terminal,
+                   rate_limit_is_entitlement_response)
 from ..schema import CompletionChunk, Msg, ToolSpec
 
 #: The closed set of kinds the UI may switch on.
@@ -178,30 +179,19 @@ _FILTER_WORDS = ("content_filter", "content_policy", "responsible_ai",
 _SERVER_WORDS = ("server_error", "internal", "unavailable", "api_error",
                  "overloaded", "overloaded_error", "bad_gateway", "upstream",
                  "capacity")
-# Quota exhaustion is a rate-limit *kind* but retrying will not fix it.
-_TERMINAL_RATE_WORDS = ("insufficient_quota", "billing", "credit",
-                        "exceeded your current quota")
-
-
 def rate_limit_is_entitlement(status: Optional[int],
-                              headers: Optional[Dict[str, str]]) -> bool:
-    """A 429 that carries no quota metadata is not a quota problem.
+                              headers: Optional[Dict[str, str]],
+                              body: str = "") -> bool:
+    """Whether this is the measured Anthropic refusal, not a pace limit.
 
-    A real rate limit says how much of what is left: Anthropic sends
-    anthropic-ratelimit-*, OpenAI x-ratelimit-*, and either may send
-    Retry-After. A 429 with none of them — and, observed in the field, the
-    placeholder body {"message":"Error"} — is a refusal of the caller, not
-    of the pace. Retrying it cannot succeed, and hammering a credential
-    that is being refused is how a credential gets degraded further.
+    Absence of quota metadata alone is ambiguous and stays retryable.  The
+    terminal shape also needs the provider's organisation/workspace echo and
+    exact placeholder error envelope; that is the response observed in the
+    field and recognised early by the transport layer too.
     """
     if status != 429:
         return False
-    names = {name.lower() for name in (headers or {})}
-    if not names:
-        return False        # nothing observed; do not guess
-    return not any(name.startswith(("anthropic-ratelimit", "x-ratelimit",
-                                    "ratelimit"))
-                   or name == "retry-after" for name in names)
+    return rate_limit_is_entitlement_response(body, headers)
 
 
 def classify_error(status: Optional[int] = None, body: str = "",
@@ -243,13 +233,13 @@ def classify_error(status: Optional[int] = None, body: str = "",
                      f"{model or 'this model'}{tail}", False)
 
     if status == 429 or any(w in haystack for w in _RATE_WORDS):
-        if rate_limit_is_entitlement(status, headers):
+        if rate_limit_is_entitlement(status, headers, body):
             return build("auth",
                          f"Refused{where} (HTTP 429 with no rate-limit "
                          f"headers). The credential authenticated but is not "
                          f"entitled to use {model or 'this model'} from this "
                          f"client; retrying cannot help{tail}", False)
-        terminal = any(w in haystack for w in _TERMINAL_RATE_WORDS)
+        terminal = rate_limit_body_is_terminal(haystack)
         return build("rate_limit",
                      f"Rate limited{where}"
                      f"{' (HTTP ' + str(status) + ')' if status else ''}"

@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Iterator, List, Optional
 
-from ..net import (DEFAULT_TIMEOUT, Aborted, RetryPolicy, USER_AGENT,
+from ..net import (DEFAULT_TIMEOUT, Aborted, NetError, RetryPolicy, USER_AGENT,
                    _sleep as net_sleep, sse_json_events)
 from ..oauth import (CHATGPT_API_BASE, OAuthStore, _is_expired,
                      access_token)
@@ -194,7 +194,8 @@ class ChatGPTSubscriptionProvider(Provider):
             for chunk in self._stream_once(messages, tools, model, max_tokens):
                 failure = (chunk.usage or {}).get("error") if chunk.usage else None
                 if (failure and not delivered and attempt < attempts - 1
-                        and failure.get("retryable")):
+                        and failure.get("retryable")
+                        and not failure.get("transport_exhausted")):
                     # net's slice-sleeping, not time.sleep: an interrupt must
                     # land inside the backoff too, not after it.
                     net_sleep(RETRY_BACKOFF_SECONDS * (attempt + 1), self.abort)
@@ -223,7 +224,11 @@ class ChatGPTSubscriptionProvider(Provider):
                 for tool in tools
             ],
             "tool_choice": "auto" if tools else "none",
-            "parallel_tool_calls": False,
+            # The agent accepts and pairs several calls from one response and
+            # executes them in the emitted order. Advertising False forced
+            # independent reads/searches into separate provider rounds even
+            # though every system prompt asks the model to batch them.
+            "parallel_tool_calls": True,
             "reasoning": {"effort": self.reasoning_effort, "summary": "auto"},
             "store": False,
             "stream": True,
@@ -283,6 +288,17 @@ class ChatGPTSubscriptionProvider(Provider):
                     return
         except Aborted:
             return
+        except NetError as exc:
+            # sse_json_events has already spent its RetryPolicy ladder. The
+            # provider-level loop exists for retryable *SSE error events*;
+            # feeding an exhausted HTTP/transport error into it multiplied a
+            # six-attempt outage into 18 real requests.
+            chunk = error_chunk(error_from_exception(exc, self.name, model))
+            if isinstance(chunk.usage, dict):
+                failure = chunk.usage.get("error")
+                if isinstance(failure, dict):
+                    failure["transport_exhausted"] = True
+            yield chunk
         except Exception as exc:
             yield error_chunk(error_from_exception(exc, self.name, model))
 
@@ -327,11 +343,26 @@ class SuperGrokSubscriptionProvider(OpenAICompatProvider):
         super().__init__(base_url=base_url, api_key=None, name="supergrok",
                          **kwargs)
         self.store = store
+        self._auth = None
+
+    def invalidate_auth(self) -> None:
+        """Re-read OAuth once on the next request, at the next turn boundary."""
+        self._auth = None
+
+    def _access_token(self) -> str:
+        auth = self._auth
+        if auth is None or _is_expired(auth):
+            auth = access_token("supergrok", self.store)
+            self._auth = auth
+        return str(auth["access"])
 
     def stream(self, messages: List[Msg], tools: List[ToolSpec], model: str,
                max_tokens: int) -> Iterator[CompletionChunk]:
         try:
-            self.api_key = access_token("supergrok", self.store)["access"]
+            # A tool loop may ask the model hundreds of times. Reading the
+            # credential file on every round was both wasted I/O and the same
+            # Haiku filesystem-anomaly amplifier already fixed for ChatGPT.
+            self.api_key = self._access_token()
         except Exception as exc:
             yield error_chunk(error_from_exception(exc, self.name, model))
             return

@@ -35,6 +35,7 @@ folded turns, and the folded turns themselves in the `compactions` table so
 from disk instead of starting from a hole.
 """
 
+import hashlib
 import json
 import os
 import secrets
@@ -57,6 +58,12 @@ from .tool.base import Tool, ToolResult
 DEFAULT_DB_NAME = "sessions.db"
 # Verified snapshots kept beside the store, newest first.
 BACKUP_GENERATIONS = 3
+# The desktop launches one worker process per Send. "Once per process" is
+# therefore once per user turn there, and quick_check + sqlite backup scale
+# with the whole database (100 ms for 50 MiB on the audit Mac, before Haiku's
+# slower storage). Keep recent recovery points without putting a full copy on
+# every turn's synchronous startup path.
+BACKUP_MIN_INTERVAL = 300.0
 # What /compact keeps verbatim when the user names no number.
 DEFAULT_COMPACT_KEEP = 10
 MAX_TITLE_CHARS = 60
@@ -121,6 +128,21 @@ _SCHEMA = (
         last_seq INTEGER NOT NULL DEFAULT 0,
         summary TEXT NOT NULL DEFAULT '',
         messages TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    # Automatic compaction must survive a process boundary: the desktop app
+    # starts one Python worker per Send.  This table stores only the
+    # provider-facing projection; the lossless transcript remains in
+    # ``messages``.  ``raw_digest`` makes a stale projection fail closed after
+    # undo, manual compaction or any other timeline rewrite.
+    """
+    CREATE TABLE IF NOT EXISTS context_checkpoints (
+        session_id TEXT PRIMARY KEY,
+        through_seq INTEGER NOT NULL DEFAULT 0,
+        raw_count INTEGER NOT NULL DEFAULT 0,
+        raw_digest TEXT NOT NULL DEFAULT '',
+        history TEXT NOT NULL DEFAULT '[]',
+        created REAL NOT NULL DEFAULT 0
     )
     """,
 )
@@ -324,6 +346,67 @@ def _deserialize_display(raw: Optional[str]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _serialize_message_list(messages: Sequence[Msg]) -> str:
+    """Lossless-enough JSON for a provider-facing context checkpoint.
+
+    The canonical transcript is still the ``messages`` table.  This encoding
+    preserves every field the adapters may replay, including signed reasoning
+    blocks; malformed values use the same ``default=str`` safety valve as the
+    ordinary message writer.
+    """
+    payload = []
+    for message in messages:
+        payload.append({
+            "role": str(getattr(message, "role", "") or ""),
+            "content": str(getattr(message, "content", "") or ""),
+            "tool_calls": [asdict(call) for call in
+                           list(getattr(message, "tool_calls", None) or [])],
+            "tool_call_id": str(getattr(message, "tool_call_id", "") or ""),
+            "display": dict(getattr(message, "display", None) or {}),
+            "reasoning": dict(getattr(message, "reasoning", None) or {}),
+        })
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                      default=str)
+
+
+def _deserialize_message_list(raw: Optional[str]) -> List[Msg]:
+    """Read a checkpoint history, returning [] for any invalid envelope."""
+    try:
+        payload = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    messages: List[Msg] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            return []
+        calls = _deserialize_calls(json.dumps(item.get("tool_calls") or [],
+                                              default=str))
+        display = item.get("display")
+        reasoning = item.get("reasoning")
+        messages.append(Msg(
+            role=str(item.get("role") or ""),
+            content=str(item.get("content") or ""),
+            tool_calls=calls,
+            tool_call_id=str(item.get("tool_call_id") or ""),
+            display=dict(display) if isinstance(display, dict) else {},
+            reasoning=dict(reasoning) if isinstance(reasoning, dict) else {},
+        ))
+    return messages
+
+
+def _checkpoint_digest(first_seq: int, through_seq: int, raw_count: int) -> str:
+    """Hash a raw prefix's immutable boundary identity, never its contents.
+
+    Timeline-rewriting operations delete the checkpoint in their transaction.
+    The boundary digest is the cheap second guard: validation stays O(1), not
+    another scan of a raw archive that can grow for months.
+    """
+    encoded = "%d:%d:%d" % (int(first_seq), int(through_seq), int(raw_count))
+    return hashlib.sha256(encoded.encode("ascii")).hexdigest()
 
 
 def message_files(message: Msg) -> List[str]:
@@ -585,7 +668,8 @@ class SessionStore:
 
         Twice in one day a defect destroyed a live store, and both times the
         only thing that saved the conversations was a copy someone had taken
-        by hand. This takes it automatically, once per process at open.
+        by hand. This takes it automatically at open, but no more often than
+        BACKUP_MIN_INTERVAL across short-lived worker processes.
 
         Two rules make it a safety net rather than a second way to lose data:
         the source is checked before anything is written, so a store that is
@@ -608,12 +692,18 @@ class SessionStore:
             else:
                 return
         try:
+            newest = Path("%s.bak1" % self.path)
+            try:
+                age = time.time() - newest.stat().st_mtime
+            except OSError:
+                age = BACKUP_MIN_INTERVAL
+            if 0 <= age < BACKUP_MIN_INTERVAL:
+                return
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 return
             if not conn.execute(
                     "SELECT 1 FROM sessions LIMIT 1").fetchone():
                 return          # nothing worth keeping yet
-            newest = Path("%s.bak1" % self.path)
             oldest = Path("%s.bak%d" % (self.path, BACKUP_GENERATIONS))
             if oldest.exists():
                 oldest.unlink()
@@ -962,6 +1052,8 @@ class SessionStore:
             conn.execute("DELETE FROM snapshots WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM compactions WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM context_checkpoints WHERE session_id = ?",
+                         (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
 
@@ -1286,6 +1378,8 @@ class Session:
             # otherwise describe messages that are no longer in the timeline.
             conn.execute("DELETE FROM compactions WHERE session_id = ? AND seq > ?",
                          (self.id, seq))
+            conn.execute("DELETE FROM context_checkpoints WHERE session_id = ?",
+                         (self.id,))
             conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
                          (time.time(), self.id))
             conn.commit()
@@ -1321,6 +1415,76 @@ class Session:
             return True
         return target.startswith(root_real.rstrip(os.sep) + os.sep)
 
+    # --- automatic provider-context checkpoint --------------------------
+
+    def save_context_checkpoint(self, history: Sequence[Msg],
+                                raw_count: int) -> bool:
+        """Persist a successful automatic-compaction view without folding raw rows.
+
+        ``raw_count`` is how many messages from the ordered raw transcript the
+        view has incorporated.  Later appends are deliberately allowed: a new
+        worker restores this prefix and appends the newer raw tail.  Revert and
+        manual-compaction paths clear the row transactionally.
+        """
+        try:
+            raw_count = int(raw_count)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        snapshot = list(history or [])
+        if (raw_count <= 0 or raw_count > len(self.seqs)
+                or not any(bool((message.display or {}).get("summary"))
+                           for message in snapshot)):
+            return False
+        with self.store._lock:
+            if raw_count > len(self.seqs):
+                return False
+            first_seq = self.seqs[0]
+            through_seq = self.seqs[raw_count - 1]
+            encoded = _serialize_message_list(snapshot)
+            conn = self.store.connect()
+            conn.execute(
+                "INSERT OR REPLACE INTO context_checkpoints "
+                "(session_id, through_seq, raw_count, raw_digest, history, created) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.id, through_seq, raw_count,
+                 _checkpoint_digest(first_seq, through_seq, raw_count),
+                 encoded, time.time()))
+            conn.commit()
+        return True
+
+    def load_context_checkpoint(self) -> Optional[Tuple[List[Msg], int]]:
+        """Return a valid ``(provider_history, raw_count)`` checkpoint.
+
+        Validation never scans prompt text.  Sequence ids are append-only, and
+        every in-process timeline rewrite deletes this row in the same SQLite
+        transaction, so a matching prefix identifies the raw material the
+        projection was built from.
+        """
+        rows = self.store._query(
+            "SELECT through_seq, raw_count, raw_digest, history "
+            "FROM context_checkpoints WHERE session_id = ?", (self.id,))
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            raw_count = int(row["raw_count"])
+            through_seq = int(row["through_seq"])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if raw_count <= 0 or raw_count > len(self.seqs):
+            return None
+        first_seq = self.seqs[0]
+        if (self.seqs[raw_count - 1] != through_seq
+                or _checkpoint_digest(first_seq, through_seq, raw_count)
+                != str(row["raw_digest"] or "")):
+            return None
+        history = _deserialize_message_list(row["history"])
+        if not history or not any(
+                bool((message.display or {}).get("summary"))
+                for message in history):
+            return None
+        return history, raw_count
+
     # --- compaction ------------------------------------------------------
 
     def needs_compaction(self, window: int,
@@ -1354,7 +1518,8 @@ class Session:
                     trigger: str = "manual",
                     tail_turns: int = DEFAULT_TAIL_TURNS,
                     keep_tokens: int = MAX_KEEP_TOKENS,
-                    max_tokens: int = SUMMARY_MAX_TOKENS) -> CompactionResult:
+                    max_tokens: int = SUMMARY_MAX_TOKENS,
+                    on_usage: Any = None) -> CompactionResult:
         """
         Fold the old turns into one summary, in memory and on disk.
 
@@ -1389,7 +1554,7 @@ class Session:
                 text, error = summarize_with_reason(
                     folded, provider, model,
                     previous_summary=self.previous_summary(),
-                    max_tokens=max_tokens)
+                    max_tokens=max_tokens, on_usage=on_usage)
                 summarized = bool(text)
         if not text:
             text = summarize_messages(folded)
@@ -1426,6 +1591,8 @@ class Session:
             now = time.time()
             conn.execute("DELETE FROM messages WHERE session_id = ? AND seq <= ?"
                          + holes, params)
+            conn.execute("DELETE FROM context_checkpoints WHERE session_id = ?",
+                         (self.id,))
             # role "user": the summary must be replayed as context, and a
             # history that opens with an assistant turn is rejected by some
             # providers while a user turn is accepted by all of them.
@@ -1452,10 +1619,12 @@ class Session:
                                 trigger=trigger)
 
     def compact(self, keep_last: int = DEFAULT_COMPACT_KEEP, summary: str = "",
-                provider: Any = None, model: str = "") -> int:
+                provider: Any = None, model: str = "",
+                on_usage: Any = None) -> int:
         """compact_now() for callers that only want the folded count."""
         return self.compact_now(keep_last=keep_last, summary=summary,
-                                provider=provider, model=model).folded
+                                provider=provider, model=model,
+                                on_usage=on_usage).folded
 
     def compactions(self) -> List[Dict[str, Any]]:
         """Every compaction of this session, oldest first."""
@@ -1519,6 +1688,8 @@ class Session:
                      item.get("reasoning") or "{}",
                      item.get("created"), item.get("tokens")))
             conn.execute("DELETE FROM compactions WHERE id = ?", (int(row["id"]),))
+            conn.execute("DELETE FROM context_checkpoints WHERE session_id = ?",
+                         (self.id,))
             conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
                          (time.time(), self.id))
             conn.commit()

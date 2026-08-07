@@ -1,0 +1,24 @@
+# Synthetic secret canaries introduced with the benchmark/test corpus. Each
+# fingerprint is an exact historical finding; new findings remain fatal.
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/setup/config/ci.env:generic-api-key:3
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:generic-api-key:10
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:generic-api-key:11
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:github-pat:10
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:github-pat:25
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:github-pat:38
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:benchmarks/tasks/secret-redaction/task.json:github-pat:47
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:haikode/redact.py:generic-api-key:318
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_redact.py:generic-api-key:171
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_redact.py:generic-api-key:192
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_redact.py:generic-api-key:40
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_redact.py:gitlab-pat:152
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_redact.py:jwt:159
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:28
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:369
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:373
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:375
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:381
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:383
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:generic-api-key:433
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_secrets.py:jwt:387
+e2cc3a6c2acbd15e6c51489a53982fa0849bf1b9:tests/test_tool_hardening.py:generic-api-key:752

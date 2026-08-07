@@ -486,6 +486,29 @@ class ATransientBackendErrorIsRetried(unittest.TestCase):
         self._run(late)
         self.assertEqual(1, calls["n"])
 
+    def test_an_exhausted_http_ladder_is_not_run_three_times(self):
+        """The provider retry is for SSE error events, not another net ladder."""
+        from haikode.net import RetryPolicy
+        from tests.test_net import ScriptedServer, status
+
+        policy = RetryPolicy(max_attempts=4, initial_delay=0.0, factor=1.0,
+                             max_delay=0.0, max_elapsed=5.0, jitter=0.0)
+        provider = ChatGPTSubscriptionProvider(
+            object(), retry=policy, timeout=2, connect_timeout=1,
+            stall_timeout=1)
+        with ScriptedServer(status(500, '{"error":{"message":"down"}}')) as server, \
+                patch.object(provider, "_headers", return_value={}):
+            provider.base_url = server.url
+            chunks = list(provider.stream(
+                [Msg(role="user", content="go")], [], "gpt-5.6-sol", 10))
+
+        errors = [chunk for chunk in chunks
+                  if (chunk.usage or {}).get("error")]
+        self.assertEqual(1, len(errors))
+        self.assertEqual(policy.max_attempts, server.count,
+                         "the outer provider retry multiplied the net ladder")
+        self.assertTrue(errors[0].usage["error"]["transport_exhausted"])
+
 
 class SteeringReachesTheModelMidTurn(TemporaryProject):
     """A correction typed mid-run must not wait for the turn to end.
@@ -556,13 +579,22 @@ class CredentialsAreReadOncePerTurn(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="haikode-turn-")
         self.addCleanup(shutil.rmtree, self.root, True)
         self.path = Path(self.root, "oauth.json")
-        self.path.write_text(json.dumps({"chatgpt": {
-            "access": "a", "refresh": "r", "account_id": "acct",
-            "expires": int((time.time() + 3600) * 1000)}}))
+        expires = int((time.time() + 3600) * 1000)
+        self.path.write_text(json.dumps({
+            "chatgpt": {"access": "a", "refresh": "r",
+                        "account_id": "acct", "expires": expires},
+            "supergrok": {"access": "g", "refresh": "r",
+                          "expires": expires},
+        }))
 
     def _provider(self):
         from haikode.oauth import OAuthStore
         return ChatGPTSubscriptionProvider(OAuthStore(str(self.path)))
+
+    def _supergrok_provider(self):
+        from haikode.oauth import OAuthStore
+        from haikode.providers.subscription import SuperGrokSubscriptionProvider
+        return SuperGrokSubscriptionProvider(OAuthStore(str(self.path)))
 
     def _count_reads(self, provider, times):
         reads = {"n": 0}
@@ -606,6 +638,31 @@ class CredentialsAreReadOncePerTurn(unittest.TestCase):
         provider.invalidate_auth()
         self.assertIsNone(provider._auth)
 
+    def test_supergrok_many_rounds_read_the_file_once_too(self):
+        provider = self._supergrok_provider()
+        reads = {"n": 0}
+        real = Path.open
+
+        def counting(self_path, *args, **kwargs):
+            if str(self_path) == str(self.path):
+                reads["n"] += 1
+            return real(self_path, *args, **kwargs)
+
+        with patch.object(Path, "open", counting), \
+                patch.object(OpenAICompatProvider, "stream",
+                             return_value=iter(())):
+            for _ in range(25):
+                list(provider.stream([Msg(role="user", content="x")], [],
+                                     "grok", 1))
+        self.assertEqual(1, reads["n"])
+
+    def test_supergrok_rechecks_at_the_next_turn_boundary(self):
+        provider = self._supergrok_provider()
+        self.assertEqual("g", provider._access_token())
+        provider.invalidate_auth()
+        self.assertIsNone(provider._auth)
+        self.assertEqual("g", provider._access_token())
+
 
 class TheStoreKeepsItsOwnBackups(unittest.TestCase):
     """Two defects destroyed a live store in one day.
@@ -643,11 +700,19 @@ class TheStoreKeepsItsOwnBackups(unittest.TestCase):
             1, backup.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
 
     def test_snapshots_rotate_instead_of_overwriting_one_slot(self):
-        from haikode.session import BACKUP_GENERATIONS, SessionStore
+        from haikode.session import (BACKUP_GENERATIONS, BACKUP_MIN_INTERVAL,
+                                     SessionStore)
         for _ in range(BACKUP_GENERATIONS + 2):
             store = SessionStore(self.db)
             store.new_session("/p", "zen", "m")
             store.close()
+            # Rotation is cadence-driven now: force the next open to represent
+            # a genuinely due recovery point rather than codifying a full
+            # database copy for every short-lived desktop worker.
+            newest = Path(str(self.db) + ".bak1")
+            if newest.exists():
+                old = time.time() - BACKUP_MIN_INTERVAL - 1
+                os.utime(newest, (old, old))
         self.assertEqual(
             ["sessions.db.bak%d" % n
              for n in range(1, BACKUP_GENERATIONS + 1)],
@@ -1018,6 +1083,26 @@ class ReasoningAndContextRegressions(TemporaryProject):
 
         self.assertEqual(captured["reasoning"]["effort"], "max")
         self.assertEqual(captured["tool_choice"], "none")
+
+    def test_chatgpt_may_batch_independent_tool_calls_in_one_round(self):
+        from haikode.schema import ToolSpec
+        captured = {}
+
+        def events(_url, payload, **_kwargs):
+            captured.update(payload)
+            yield {"type": "response.completed",
+                   "response": {"usage": {"input_tokens": 10,
+                                            "output_tokens": 2}}}
+
+        provider = ChatGPTSubscriptionProvider(object())
+        tools = [ToolSpec(name="read", description="read a file",
+                          parameters={"type": "object"})]
+        with patch.object(provider, "_headers", return_value={}), \
+                patch("haikode.providers.subscription.sse_json_events", events):
+            list(provider.stream([], tools, "gpt-5.6-sol", 100))
+
+        self.assertTrue(captured["parallel_tool_calls"])
+        self.assertEqual("auto", captured["tool_choice"])
 
     def test_effort_has_cli_and_live_session_controls(self):
         self.assertEqual(main_mod.build_parser().parse_args(
@@ -1564,28 +1649,20 @@ class TheExitIsAHaiku(TemporaryProject):
 
 
 class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
-    """After the first turn the model writes a display title AND the exit
-    haiku — the settled design: the curated collection greets at startup,
-    the model's own poem (signed with its name) says goodbye, default on,
-    /farewell turns it off. Interactive fronts only — a piped run or a
-    test stub must never lose its next scripted answer.
-    """
+    """Ordinary turns title locally; only an explicit farewell calls a model."""
 
     def test_a_successful_turn_names_the_session(self):
         provider = ScriptedProvider([
             text_turn("the real answer"),
-            text_turn("Fixing The Parser"),
         ])
         agent = Agent(provider, "gpt-5.6-terra", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
         controller = TurnController(cwd=self.root, store_factory=lambda: None)
         controller.compose_farewell = True
         controller.run_turn(agent, "please fix the parser bug in main.py")
-        deadline = time.time() + 5
-        while not controller.display_title and time.time() < deadline:
-            time.sleep(0.01)
-        self.assertEqual("Fixing The Parser", controller.display_title)
-        # Bakgrunnen dikter ikke lenger — det gjør /farewell, på forespørsel.
+        self.assertEqual("please fix the parser bug", controller.display_title)
+        self.assertEqual(1, len(provider.messages),
+                         "a cosmetic title must not be a hidden model call")
         self.assertIsNone(controller.farewell_poem)
 
     def test_slash_farewell_composes_with_context_and_exits(self):
@@ -1597,7 +1674,11 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
         """
         provider = ScriptedProvider([
             text_turn("done"),
-            text_turn("keys rest in silence\nthe parser sleeps without fear\nmorning brings green tests"),
+            [CompletionChunk(
+                text="keys rest in silence\nthe parser sleeps without fear\n"
+                     "morning brings green tests"),
+             CompletionChunk(stop_reason="stop",
+                             usage={"input": 9, "output": 2})],
         ])
         agent = Agent(provider, "gpt-5.6-terra", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
@@ -1609,6 +1690,8 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
                           "morning brings green tests"),
                          controller.farewell_poem)
         self.assertEqual("gpt-5.6-terra", controller.farewell_poet)
+        self.assertEqual(agent.usage.hidden_session.input_tokens, 9)
+        self.assertEqual(agent.usage.hidden_session.output_tokens, 2)
 
     def test_a_failed_composition_reports_false_and_leaves_the_collection(self):
         provider = ScriptedProvider([text_turn("done")])   # ingen dikt-respons
@@ -1658,16 +1741,8 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
                 repl.handle_command("/exit")
         self.assertEqual([], calls)
 
-    def test_the_composer_rides_its_own_pipe(self):
-        """Field incident: two TUI sessions wedged mid-turn on chatgpt.
-
-        The composer streamed on the live turn's provider object — same
-        Codex session-id header, same abort handle. Two streams multiplexed
-        onto one backend session is exactly the kind of thing that wedges,
-        and a poem must never be able to abort (or be aborted by) the
-        user's next turn. The composer now clones the provider: shared
-        credentials, own session id, no abort handle.
-        """
+    def test_the_local_title_never_opens_a_second_pipe(self):
+        """Regression: the old background title raced the next ChatGPT turn."""
         seen = []
 
         class SessionedProvider(ScriptedProvider):
@@ -1680,23 +1755,13 @@ class TheComposerNamesTheSessionAndWritesItsFarewell(TemporaryProject):
 
         provider = SessionedProvider([
             text_turn("the real answer"),
-            text_turn("Fixing The Parser"),
         ])
         agent = Agent(provider, "m", cwd=self.root,
                       permissions=Permissions(auto_approve=True))
         controller = TurnController(cwd=self.root, store_factory=lambda: None)
         controller.compose_farewell = True
         controller.run_turn(agent, "fix it")
-        deadline = time.time() + 5
-        while not controller.display_title and time.time() < deadline:
-            time.sleep(0.01)
-        turn_call = seen[0]
-        composer_calls = seen[1:]
-        self.assertEqual(1, len(composer_calls))
-        for session_id, abort in composer_calls:
-            self.assertNotEqual("live-turn-session", session_id)
-            self.assertIsNone(abort)
-        # Den levende provideren er urørt.
+        self.assertEqual([("live-turn-session", agent.ctx.abort_event)], seen)
         self.assertEqual("live-turn-session", provider.session_id)
 
     def test_every_provider_gets_a_stall_timeout(self):

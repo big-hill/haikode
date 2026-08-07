@@ -4,7 +4,7 @@
   "description": "Rename fetch_records -> load_records across five modules and the test file, without disturbing the wire-protocol string literal of the same name.",
   "proves": "multi-file editing that has to be complete (the suite breaks on a single missed call site) and discriminating (a blind search-and-replace breaks the frozen string literal)",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 900,
   "command_timeout": 90,
   "git_init": true,

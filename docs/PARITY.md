@@ -1,7 +1,7 @@
 # haikode vs opencode — verified parity
 
-**Last verified: 2026-08-02**, against haikode `0.1.0-m0m1` (2270 tests: 2 skips
-and **exactly 5 deliberate failures**, all in `tests/test_wiring_audit.py`,
+**Last verified: 2026-08-07**, against haikode `0.1.0` (2427 tests: 4 skips
+and **exactly 4 deliberate failures**, all in `tests/test_wiring_audit.py`,
 which pin the remaining dead code — see the inventory below) and the opencode
 checkout at `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`).
 
@@ -39,14 +39,14 @@ Every row was checked three ways:
 
 | Feature | opencode | haikode | Evidence |
 |---|---|---|---|
-| Agentic loop with native tool calling | `session/processor.ts` | **Yes** | `haikode/agent.py`; parallel calls, real `tool`-role messages |
+| Agentic loop with native tool calling | `session/processor.ts` | **Yes** | `haikode/agent.py`; accepts several calls in one model response, executes them deterministically in emitted order, and writes real `tool`-role messages |
 | Streaming text | yes | **Yes** | `providers/base.py` SSE; TUI streams per chunk |
 | Streaming reasoning / thinking | yes | **Yes** | Anthropic `thinking_delta`; six key spellings for OpenAI-compat (`providers/base.py:REASONING_KEYS`) |
 | Step limit / agentic cap | yes | **Yes** | unlimited by default; an explicit `max_steps` reserves a tool-free final handoff, emits a continuable `limit` event, and resets on the next user message |
 | Abort mid-run | yes | **Yes** | `Agent.abort()`, `esc` / `ctrl+c` in the TUI, `KeyboardInterrupt` in the REPL; an interrupt also discards queued prompts *and* pending steering (`tui._drop_queued`) |
-| Retry / backoff on provider errors | `session/retry.ts` | **Partial** | `net.py` retries transport errors; no per-model retry policy, no `dialog-retry-action` equivalent |
-| Context-overflow handling | `session/overflow.ts` | **Partial** | `compact_history()` now folds old turns into a model-written anchored summary at request time (`context.py`), degrading to drop-with-a-notice when the summariser fails; a provider-reported `context_overflow` error is still surfaced, not auto-recovered |
-| Automatic compaction | `session/compaction.ts` | **Yes** | every request goes through `agent._messages_for_llm()` → `compact_history()` (agent.py:773–788), budgeted against a per-model **input** window (`agent.input_window`; ChatGPT backend 372k/272k, `providers/subscription.py:61`); the 3.3 chars/token estimator (`context.py:77`) is recalibrated every turn against reported usage (`agent.token_scale`, agent.py:658). `/compact` remains for manual use |
+| Retry / backoff on provider errors | `session/retry.ts` | **Partial** | `net.py` retries transport errors with one bounded ladder; ChatGPT no longer multiplies an exhausted transport ladder through its SSE-event retry loop, and the measured terminal Anthropic 429 stops after one request. There is still no per-model retry policy or `dialog-retry-action` equivalent |
+| Context-overflow handling | `session/overflow.ts` | **Partial** | a provider-reported pre-output overflow forces one anchored compaction and exactly one main-request retry; a failure after any streamed text/reasoning/tool delta is never replayed. The compaction model/effort is still the active model rather than a separately configurable compaction agent |
+| Automatic compaction | `session/compaction.ts` | **Yes** | `Agent` keeps a lossless raw transcript and a separate provider-facing history. A successful summary is latched across tool rounds and stored as a validated SQLite context checkpoint, so a fresh desktop worker reuses it; failed summaries remain transient. The budget uses the per-model **input** window and a live provider-calibrated estimate that includes tool schemas. `/compact` and `/compact undo` remain for durable manual control |
 | Prompt queueing while a run is in flight | yes (`session_queued_prompts`) | **Yes** | prompts typed mid-run land in a pinned band above the prompt (`build_pinned_queue_lines`); `ctrl+x q` (`<leader>q`) opens an edit/drop dialog; a steered message (`/steer`, `agent.steer`/`pending_steering`) reaches the model at its next step and is cleared on interrupt |
 | Sub-agents (`task` tool) | yes | **Yes** | `tool/task.py` → nested `Agent`, with a `subagent_type` argument; `general` and `explore` built-ins plus custom subagents |
 | Cost accounting in currency | yes | **No** | `/cost` prints token totals (`usage.summary_line`); `usage.estimate_cost()` still has **no caller** and there is still no price table |
@@ -139,7 +139,8 @@ code-mode, external-directory`.
 | `$schema` / JSON-schema publishing | yes | **No** | |
 | Variable interpolation (`{env:…}`, `{file:…}`) | `config/variable.ts` | **No** | |
 | `mcp` block honoured | yes | **Yes** | read by `runtime.build_agent()` (runtime.py:388–395), which builds the `MCPManager` from it (§9) |
-| `theme`, `username` honoured | yes | **No** | accepted and validated, never read; `shell` likewise. `theme` and `shell` are pinned as two of the audit's deliberate failures (`ProjectConfigKeysThatGoNowhere`) |
+| `theme`, `username` honoured | yes | **No** | accepted and validated, never read; `theme` is pinned as the config audit's deliberate failure (`ProjectConfigKeysThatGoNowhere`) |
+| Custom `shell` honoured | yes | **Yes** | `runtime.build_agent()` assigns the effective setting to `agent.ctx.shell`, which the bash tool consumes |
 | Managed / enterprise config | yes | **n/a** | |
 
 ## 7. Commands
@@ -218,7 +219,7 @@ Verified by rendering the real program with `tests/render_tui.py`.
 | Revert / undo file changes | `session/revert.ts` + git snapshots | **Yes** | checkpoint + per-file original text (`NULL` = did not exist); `/undo` restores and deletes created files, and fails closed while persistence is broken (`turn.undo_available`) |
 | Redo | yes (`messages_redo`) | **No** | binding is reported unavailable; no handler |
 | Manual compaction | yes | **Yes** | `/compact` |
-| Undo a compaction | yes | **Dead** | `Session.restore_compaction()` still has no caller |
+| Undo a compaction | yes | **Yes** | `/compact undo` (and `/compact restore`) calls `Session.restore_compaction()`, reloads the agent transcript and invalidates the automatic context checkpoint |
 | Per-session token totals and stats | yes | **Yes** | `Session.stats()` (which folds `token_totals()`, `files_touched()` and `compactions()`) feeds `haikode sessions show` (main.py:358) and every JSON export; the live UI counters still come from `UsageTracker` |
 | Export transcript | `cli/cmd/export.ts` | **Yes** | `/export` and `haikode sessions export` → markdown / text / json |
 | Fork a session from a message | yes | **Partial** | `/fork`, `--fork` and `haikode sessions fork` copy the whole session so it can be branched; opencode's fork-from-a-*message* does not exist |
@@ -255,7 +256,7 @@ Verified by rendering the real program with `tests/render_tui.py`.
 The four fully dead modules of the last audit — `mcp.py`, `lsp.py`,
 `providers/gemini.py`, `haiku.py` — are gone from this table as modules:
 the first three are wired (§9, §2) and `haiku.py` has its first production
-caller. What remains dead, verified by grep and pinned by the audit's five
+caller. What remains dead, verified by grep and pinned by the audit's four
 deliberate failures:
 
 | File | Lines | What is still lost |
@@ -272,22 +273,18 @@ Plus these individually dead entry points inside otherwise-live modules:
 | `ModelCatalog.cycle_favourite` | `model_cycle_favorite` remains in `UNAVAILABLE_BINDINGS` |
 | `usage.estimate_cost` | no cost in currency; no price table anywhere |
 | `keybind.bindings_for` / `help_rows` | the help dialog builds its own rows |
-| `Session.restore_compaction` | a compaction cannot be undone |
 | `Session.unarchive` | archiving is one-way |
 | `Session.set_tokens` | dead setter |
 | `Session.needs_compaction` | vestigial wrapper — the live decision is `context.needs_compaction()`, taken on every request |
 | `CustomCommand.agent` / `.model` | command frontmatter silently ignored |
-| project-config `theme`, `shell`, `username` | validated, printed by `/status`, read by nothing (`theme` and `shell` pinned: `ProjectConfigKeysThatGoNowhere`, 2 failures) |
+| project-config `theme`, `username` | validated but not consumed (`theme` is pinned by `ProjectConfigKeysThatGoNowhere`) |
 
-The five deliberate failures in `tests/test_wiring_audit.py` are exactly this
+The four deliberate failures in `tests/test_wiring_audit.py` are exactly this
 inventory's guard: `NoDeadPublicFunctions` (the symbol list above),
-`PaletteDefaultCommandSetIsUsed` ×2, and `ProjectConfigKeysThatGoNowhere`
-(`theme`, `shell`) ×2. When one of them starts passing, delete its row here.
-
-`VERIFICATION.md` at the repository root is **still stale** — dated 2026-07-14,
-it describes a far smaller suite and says "HPKG packaging is not yet provided".
-Both statements remain wrong (2270 tests; the package builds and installs).
-Treat this file as the current record.
+`PaletteDefaultCommandSetIsUsed` ×2, and
+`ProjectConfigKeysThatGoNowhere.test_theme_is_consumed`. When one of them
+starts passing, delete its row here. `VERIFICATION.md` is the platform evidence
+record; this file remains the parity inventory.
 
 ---
 
@@ -307,8 +304,8 @@ unconnected LSP — are fixed and verified above.
 
 3. **Themes.** `theme` is accepted in config and never read; there is no theme
    dialog and only 3 semantic colours. Pinned as a deliberate audit failure so
-   it cannot be quietly forgotten. `shell` and `username` sit in the same
-   validated-but-unread state.
+   it cannot be quietly forgotten. `username` remains in the same
+   validated-but-unread state; `shell` is wired to the bash tool.
 
 4. **Missing TUI features with existing keybind names:** external editor
    (`ctrl+x e`), message copy (`<leader>y`) and redo (`<leader>r`). They are
@@ -321,8 +318,8 @@ unconnected LSP — are fixed and verified above.
 6. **Custom command `agent:` / `model:` frontmatter is ignored.** Documented in
    the file format, parsed, dropped by `dispatch()`.
 
-7. **A compaction cannot be undone and archiving is one-way.**
-   `restore_compaction()` and `unarchive()` still have no callers.
+7. **Archiving is one-way.** `unarchive()` still has no caller. Manual
+   compaction, by contrast, can now be reversed with `/compact undo`.
 
 8. **The desktop asker cannot answer the `question` tool.** REPL and TUI now
    fill `metadata["answers"]`; the desktop NDJSON protocol still only

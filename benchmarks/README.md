@@ -26,7 +26,7 @@ python3 benchmarks/run.py --list
 
 # score haikode on everything, three runs per task, with the free zen provider
 python3 benchmarks/run.py --runner haikode \
-    --provider zen --model north-mini-code-free --repeat 3 -v
+    --provider zen --model deepseek-v4-flash-free --repeat 3 -v
 
 # score both runners on the same model and diff them
 python3 benchmarks/run.py --compare --repeat 3 -v
@@ -56,9 +56,9 @@ Exit status is 0 only when every run passed.
 
 ### Credentials
 
-The default profile is `zen` with `north-mini-code-free`, which needs **no API
+The default profile is `zen` with `deepseek-v4-flash-free`, which needs **no API
 key** — `haikode` ships the profile and `opencode` serves the same model as
-`opencode/north-mini-code-free`. That makes a full parity run free and
+`opencode/deepseek-v4-flash-free`. That makes a full parity run free and
 reproducible on a fresh machine. Any other provider needs its key in the
 environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …); the harness passes the
 environment through.
@@ -296,7 +296,7 @@ tasks/<name>/task.json
   "description": "one sentence about the fixture",
   "proves": "what a pass actually demonstrates",
   "provider": "zen",
-  "model": "north-mini-code-free",
+  "model": "deepseek-v4-flash-free",
   "timeout": 600,                    // wall clock, per turn
   "command_timeout": 120,            // per command_* check
   "git_init": false,                 // git init + baseline commit in the fixture

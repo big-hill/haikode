@@ -442,6 +442,8 @@ class CompactionTest(unittest.TestCase):
         # footer rides along, so the model knows session_history un-folds it.
         self.assertTrue(result.messages[0].content.startswith(result.summary))
         self.assertIn("session_history", result.messages[0].content)
+        self.assertNotIn("Exact folded detail", result.messages[0].content)
+        self.assertIn("/compact undo", result.messages[0].content)
         self.assertTrue(result.messages[0].display.get("summary"))
         self.assertEqual(result.messages[0].display.get("folded"), 5)
         self.assertNotIn("port the parser to Haiku",

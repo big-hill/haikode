@@ -83,6 +83,43 @@ class SessionStoreTests(unittest.TestCase):
     def test_unknown_session_loads_as_none(self):
         self.assertIsNone(self.store.load("ses_missing"))
 
+    def test_short_lived_workers_throttle_full_database_backups(self):
+        session = self.new_session(title="backup cadence")
+        session.append(Msg(role="user", content="first"))
+        session_id = session.id
+        path = self.store.path
+        self.store.close()
+
+        opened = SessionStore(path)
+        opened.connect()                 # first process with data: make bak1
+        opened.close()
+        backup = Path(str(path) + ".bak1")
+        self.assertTrue(backup.exists())
+
+        writer = SessionStore(path)
+        loaded = writer.load(session_id)  # recent bak1: skip full copy
+        loaded.append(Msg(role="assistant", content="second"))
+        writer.close()
+
+        recent = SessionStore(path)
+        recent.connect()                 # another desktop-style worker
+        recent.close()
+        with sqlite3.connect(str(backup)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,)).fetchone()[0], 1)
+
+        old = time.time() - 600
+        os.utime(backup, (old, old))
+        due = SessionStore(path)
+        due.connect()
+        due.close()
+        with sqlite3.connect(str(backup)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,)).fetchone()[0], 2)
+        self.assertTrue(Path(str(path) + ".bak2").exists())
+
     # --- titles -----------------------------------------------------------
 
     def test_auto_title_collapses_whitespace_and_caps_length(self):
@@ -463,6 +500,53 @@ class SessionStoreTests(unittest.TestCase):
             self.new_session().export("pdf")
 
     # --- compaction -------------------------------------------------------
+
+    def test_automatic_context_checkpoint_round_trips_without_folding_raw_rows(self):
+        session = self.new_session(title="checkpoint")
+        session.append(Msg(role="user", content="raw one"))
+        session.append(Msg(role="assistant", content="raw two",
+                           reasoning={"dialect": "x", "blocks": [{"sig": "s"}]}))
+        history = [
+            Msg(role="user", content="anchored summary",
+                display={"summary": True, "folded": 1}),
+            Msg(role="assistant", content="raw two",
+                reasoning={"dialect": "x", "blocks": [{"sig": "s"}]}),
+        ]
+
+        self.assertTrue(session.save_context_checkpoint(history, raw_count=2))
+        self.assertEqual([message.content for message in session.messages],
+                         ["raw one", "raw two"])
+
+        resumed = self.store.load(session.id)
+        restored, raw_count = resumed.load_context_checkpoint()
+        self.assertEqual(raw_count, 2)
+        self.assertEqual([message.content for message in restored],
+                         ["anchored summary", "raw two"])
+        self.assertEqual(restored[1].reasoning, history[1].reasoning)
+
+        # Appends do not invalidate the prefix; a worker appends this tail to
+        # the restored provider view.
+        resumed.append(Msg(role="user", content="later"))
+        _, raw_count = resumed.load_context_checkpoint()
+        self.assertEqual(raw_count, 2)
+
+    def test_timeline_rewrites_invalidate_the_automatic_context_checkpoint(self):
+        session = self._tool_pair_session()
+        history = [Msg(role="user", content="summary",
+                       display={"summary": True, "folded": 3})]
+        self.assertTrue(session.save_context_checkpoint(history,
+                                                        raw_count=len(session.messages)))
+        session.compact(keep_last=3, summary="manual summary")
+        self.assertIsNone(session.load_context_checkpoint())
+
+        # The restore path is independently destructive and must also clear a
+        # newer automatic projection.
+        self.assertTrue(session.save_context_checkpoint(
+            [Msg(role="user", content="automatic",
+                 display={"summary": True, "folded": 1})],
+            raw_count=len(session.messages)))
+        session.restore_compaction()
+        self.assertIsNone(session.load_context_checkpoint())
 
     def _tool_pair_session(self):
         """user, call/result, call/result, answer -- six messages, two pairs."""
