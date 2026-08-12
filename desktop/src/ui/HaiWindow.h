@@ -32,9 +32,11 @@ private:
 									rgb_color color, bool bold,
 									const BFont* font = NULL);
 			void				_AppendDiff(const char* diff);
+			void				_EndReasoning(const char* separator);
 			void				_SetRunning(bool running);
 			void				_AddModelChoice(const BString& provider,
 									const BString& model);
+			void				_SendRouting();
 			void				_ClearPendingApprovals();
 			void				_AppendStyledLabel(const char* label, bool isUser);
 			void				_LogToolActivity(const char* text);
@@ -74,6 +76,7 @@ private:
 			BString				fCurrentEffort;
 			bool				fRunning;
 			bool				fStreamed;
+			bool				fReasoningOpen;
 			int32				fGeneration;
 };
 

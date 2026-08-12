@@ -9,7 +9,7 @@
 # The preferred install is the package:
 #
 #     scripts/build-hpkg.sh                       # -> build/haikode-<version>-<arch>.hpkg
-#     pkgman install build/haikode-0.1.0-1-x86_64.hpkg
+#     pkgman install build/haikode-*-x86_64.hpkg
 #     pkgman uninstall haikode                    # clean removal
 #
 # The package installs into /boot/system, puts the Python tree in

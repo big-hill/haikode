@@ -7,6 +7,8 @@ tricky parts — wrapping, diff classification, truncation, cursor placement —
 can be tested without a tty.
 """
 
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -518,6 +520,34 @@ class ModuleContractTests(unittest.TestCase):
     def test_line_equality_helps_assertions(self):
         self.assertEqual(Line("a", "user"), Line("a", "user"))
         self.assertNotEqual(Line("a", "user"), Line("a", "tool"))
+
+
+class SetupLoadingTests(unittest.TestCase):
+    """The first frame must never wait for git, BKeyStore or SQLite."""
+
+    def test_setup_collection_runs_off_the_curses_thread(self):
+        ui = make_tui()
+        entered = threading.Event()
+        release = threading.Event()
+        complete = tui.status.SetupInfo(provider="zen", model="fast-model",
+                                        auth="no key required", auth_ok=True)
+
+        def slow_collect(*_args, **_kwargs):
+            entered.set()
+            release.wait(2)
+            return complete
+
+        with patch.object(tui.status, "collect", side_effect=slow_collect):
+            started = time.monotonic()
+            initial = ui._setup()
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.2)
+            self.assertTrue(entered.wait(1))
+            self.assertNotEqual(initial.model, "fast-model")
+            release.set()
+            ui._setup_thread.join(2)
+            self.assertFalse(ui._setup_thread.is_alive())
+            self.assertEqual(ui._setup().model, "fast-model")
 
 
 class ContextMeterTests(unittest.TestCase):

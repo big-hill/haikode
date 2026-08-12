@@ -23,6 +23,7 @@
 #include <MessageRunner.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
+#include <Roster.h>
 #include <OS.h>
 #include <OutlineListView.h>
 #include <Path.h>
@@ -47,6 +48,7 @@
 // This combination is instantly recognizable as a classic Haiku app.
 
 enum : uint32 {
+	MSG_NEW_WINDOW      = 'NWIN',
 	MSG_NEW_SESSION     = 'NSES',
 	MSG_OPEN_PROJECT    = 'OPRO',
 	MSG_ATTACH_FILE     = 'ATFL',
@@ -66,7 +68,6 @@ enum : uint32 {
 	MSG_ABOUT           = 'ABOU',
 	MSG_PROVIDERS_LISTED = 'PLst',
 	MSG_PROVIDER_PICKED  = 'PPck',
-	MSG_PROVIDER_SET     = 'PSet',
 	MSG_PROVIDER_MODELS  = 'PMdl',
 	MSG_MODEL_PICKED     = 'MPck',
 	MSG_EFFORTS_LISTED   = 'ELst',
@@ -218,6 +219,7 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	fMainSplit(NULL),
 	fRunning(false),
 	fStreamed(false),
+	fReasoningOpen(false),
 	fGeneration(0)
 {
 	// (BWindow has no SetViewColor; child views use ui_color-based
@@ -227,6 +229,8 @@ HaiWindow::HaiWindow(BRect frame, BMessenger controller)
 	BMenuBar* menuBar = new BMenuBar("menubar");
 
 	BMenu* fileMenu = new BMenu("File");
+	fileMenu->AddItem(new BMenuItem("New Window", new BMessage(MSG_NEW_WINDOW),
+		'N', B_COMMAND_KEY | B_SHIFT_KEY));
 	fileMenu->AddItem(new BMenuItem("New Session", new BMessage(MSG_NEW_SESSION), 'N'));
 	fileMenu->AddItem(new BMenuItem("Open Project...", new BMessage(MSG_OPEN_PROJECT), 'O'));
 	fileMenu->AddItem(new BMenuItem("Attach File" B_UTF8_ELLIPSIS,
@@ -538,6 +542,7 @@ HaiWindow::MessageReceived(BMessage* message)
 			fPendingAttachments.Truncate(0);
 			_SetRunning(true);
 			fStreamed = false;
+			fReasoningOpen = false;
 			fStatusBar->SetText("Starting the worker" B_UTF8_ELLIPSIS);
 			break;
 		}
@@ -625,33 +630,86 @@ HaiWindow::MessageReceived(BMessage* message)
 			const char* model = message->GetString("model", NULL);
 			if (provider == NULL || model == NULL)
 				break;
-			BString args("set-model ");
-			args << ConfigBridge::ShellQuote(provider) << " "
-				<< ConfigBridge::ShellQuote(model);
-			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
+			bool providerChanged = fAgentProvider != provider;
+			fAgentProvider = provider;
+			fAgentModel = model;
+			if (providerChanged) {
+				fCurrentEffort.Truncate(0);
+				BString effortArgs("get providers.");
+				effortArgs << fAgentProvider << ".reasoning_effort";
+				spawn_history_task(BMessenger(this), effortArgs,
+					MSG_EFFORT_CURRENT, fAgentProvider);
+			}
+			// Effort capabilities belong to this exact model, not to the
+			// provider's globally configured default model.
+			BString args("efforts ");
+			args << ConfigBridge::ShellQuote(fAgentProvider) << " "
+				<< ConfigBridge::ShellQuote(fAgentModel);
+			BString routeContext(fAgentProvider);
+			routeContext << "\t" << fAgentModel;
+			spawn_history_task(BMessenger(this), args, MSG_EFFORTS_LISTED,
+				routeContext);
+			for (int32 i = 0; i < fModelPopup->CountItems(); i++) {
+				BMenuItem* item = fModelPopup->ItemAt(i);
+				BMessage* pick = item->Message();
+				if (pick != NULL)
+					item->SetMarked(fAgentProvider
+							== pick->GetString("provider", "")
+						&& fAgentModel == pick->GetString("model", ""));
+			}
+			_SendRouting();
 			break;
 		}
 
 		case MSG_EFFORTS_LISTED:
 		{
+			const char* context = message->GetString("context", NULL);
+			if (context != NULL && context[0] != '\0') {
+				BString current(fAgentProvider);
+				current << "\t" << fAgentModel;
+				if (current != context)
+					break;
+			}
 			while (fEffortPopup->CountItems() > 0)
 				delete fEffortPopup->RemoveItem((int32)0);
 			BStringList efforts;
 			BString(message->GetString("output", "")).Split("\n", true,
 				efforts);
 			int32 shown = 0;
+			bool currentFound = false;
+			BString fallbackEffort;
+			BString preferredEffort;
 			for (int32 i = 0; i < efforts.CountStrings(); i++) {
 				BString level = efforts.StringAt(i);
 				level.Trim();
 				if (level.IsEmpty())
 					continue;
+				if (fallbackEffort.IsEmpty())
+					fallbackEffort = level;
+				if (level == "medium")
+					preferredEffort = level;
 				BMessage* pick = new BMessage(MSG_EFFORT_PICKED);
 				pick->AddString("effort", level);
 				BMenuItem* item = new BMenuItem(level, pick);
-				if (level == fCurrentEffort)
+				if (level == fCurrentEffort) {
 					item->SetMarked(true);
+					currentFound = true;
+				}
 				fEffortPopup->AddItem(item);
 				shown++;
+			}
+			if (shown == 0)
+				fCurrentEffort.Truncate(0);
+			else if (!currentFound) {
+				fCurrentEffort = preferredEffort.IsEmpty()
+					? fallbackEffort : preferredEffort;
+				for (int32 i = 0; i < fEffortPopup->CountItems(); i++) {
+					BMenuItem* item = fEffortPopup->ItemAt(i);
+					if (fCurrentEffort == item->Label()) {
+						item->SetMarked(true);
+						break;
+					}
+				}
 			}
 			// A model with no effort levels has no effort control: hiding
 			// beats lying (field requirement: model-aware).
@@ -659,18 +717,28 @@ HaiWindow::MessageReceived(BMessage* message)
 				fEffortField->Hide();
 			else if (shown > 0 && fEffortField->IsHidden())
 				fEffortField->Show();
+			_SendRouting();
 			break;
 		}
 
 		case MSG_EFFORT_CURRENT:
 		{
+			const char* context = message->GetString("context", NULL);
+			if (context != NULL && context[0] != '\0'
+				&& fAgentProvider != context)
+				break;
 			BString current = message->GetString("output", "");
 			current.Trim();
 			if (message->GetInt32("exit", -1) == 0)
 				fCurrentEffort = current;
 			BString args("efforts ");
-			args << ConfigBridge::ShellQuote(fAgentProvider);
-			spawn_history_task(BMessenger(this), args, MSG_EFFORTS_LISTED);
+			args << ConfigBridge::ShellQuote(fAgentProvider) << " "
+				<< ConfigBridge::ShellQuote(fAgentModel);
+			BString routeContext(fAgentProvider);
+			routeContext << "\t" << fAgentModel;
+			spawn_history_task(BMessenger(this), args, MSG_EFFORTS_LISTED,
+				routeContext);
+			_SendRouting();
 			break;
 		}
 
@@ -680,10 +748,14 @@ HaiWindow::MessageReceived(BMessage* message)
 			if (level == NULL || fAgentProvider.IsEmpty())
 				break;
 			fCurrentEffort = level;
-			BString args("set-effort ");
-			args << ConfigBridge::ShellQuote(fAgentProvider) << " "
-				<< ConfigBridge::ShellQuote(level);
-			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
+			for (int32 i = 0; i < fEffortPopup->CountItems(); i++) {
+				BMenuItem* item = fEffortPopup->ItemAt(i);
+				BMessage* pick = item->Message();
+				if (pick != NULL)
+					item->SetMarked(fCurrentEffort
+						== pick->GetString("effort", ""));
+			}
+			_SendRouting();
 			break;
 		}
 
@@ -692,19 +764,27 @@ HaiWindow::MessageReceived(BMessage* message)
 			const char* name = message->GetString("name", NULL);
 			if (name == NULL || name[0] == '\0')
 				break;
-			BString args("set default_provider ");
-			args << ConfigBridge::ShellQuote(name);
-			spawn_history_task(BMessenger(this), args, MSG_PROVIDER_SET);
+			fAgentProvider = name;
+			fAgentModel.Truncate(0);
+			fCurrentEffort.Truncate(0);
+			for (int32 i = 0; i < fProviderMenu->CountItems(); i++) {
+				BMenuItem* item = fProviderMenu->ItemAt(i);
+				BMessage* pick = item->Message();
+				if (pick != NULL)
+					item->SetMarked(fAgentProvider
+						== pick->GetString("name", ""));
+			}
+			BString modelArgs("get providers.");
+			modelArgs << fAgentProvider << ".model";
+			spawn_history_task(BMessenger(this), modelArgs,
+				MSG_AGENT_MODEL_LOADED, fAgentProvider);
+			BString effortArgs("get providers.");
+			effortArgs << fAgentProvider << ".reasoning_effort";
+			spawn_history_task(BMessenger(this), effortArgs,
+				MSG_EFFORT_CURRENT, fAgentProvider);
+			_SendRouting();
 			break;
 		}
-
-		case MSG_PROVIDER_SET:
-			// Re-read what a run would use now; rebuild the checkmarks.
-			spawn_history_task(BMessenger(this), "get default_provider",
-				MSG_AGENT_PROVIDER_LOADED);
-			spawn_history_task(BMessenger(this), "list-providers",
-				MSG_PROVIDERS_LISTED);
-			break;
 
 		case MSG_AGENT_PROVIDER_LOADED:
 		{
@@ -716,16 +796,20 @@ HaiWindow::MessageReceived(BMessage* message)
 			BString args("get providers.");
 			args << provider << ".model";
 			spawn_history_task(BMessenger(this), args,
-				MSG_AGENT_MODEL_LOADED);
+				MSG_AGENT_MODEL_LOADED, provider);
 			BString effortArgs("get providers.");
 			effortArgs << provider << ".reasoning_effort";
 			spawn_history_task(BMessenger(this), effortArgs,
-				MSG_EFFORT_CURRENT);
+				MSG_EFFORT_CURRENT, provider);
 			break;
 		}
 
 		case MSG_AGENT_MODEL_LOADED:
 		{
+			const char* context = message->GetString("context", NULL);
+			if (context != NULL && context[0] != '\0'
+				&& fAgentProvider != context)
+				break;
 			BString model = message->GetString("output", "");
 			model.Trim();
 			if (message->GetInt32("exit", -1) == 0)
@@ -741,6 +825,14 @@ HaiWindow::MessageReceived(BMessage* message)
 					&& fAgentModel == pick->GetString("model", "");
 				item->SetMarked(current);
 			}
+			BString effortArgs("efforts ");
+			effortArgs << ConfigBridge::ShellQuote(fAgentProvider) << " "
+				<< ConfigBridge::ShellQuote(fAgentModel);
+			BString routeContext(fAgentProvider);
+			routeContext << "\t" << fAgentModel;
+			spawn_history_task(BMessenger(this), effortArgs,
+				MSG_EFFORTS_LISTED, routeContext);
+			_SendRouting();
 			break;
 		}
 
@@ -752,6 +844,7 @@ HaiWindow::MessageReceived(BMessage* message)
 				&& generation == fGeneration
 				&& message->FindString("text", &text) == B_OK)
 			{
+				_EndReasoning("\n\n");
 				if (!fStreamed) {
 					fStreamed = true;
 					fStatusBar->SetText("Streaming the reply"
@@ -770,8 +863,12 @@ HaiWindow::MessageReceived(BMessage* message)
 				&& generation == fGeneration
 				&& message->FindString("text", &text) == B_OK)
 			{
+				// Providers stream reasoning in small deltas, often only a few
+				// words. A newline after every delta turned it into a very tall,
+				// narrow column. Keep the stream open and break only when the
+				// answer or a tool event starts.
+				fReasoningOpen = true;
 				_AppendStyled(text, _DimTextColor(), false);
-				_Append("\n");
 			}
 			break;
 		}
@@ -787,6 +884,7 @@ HaiWindow::MessageReceived(BMessage* message)
 				|| generation != fGeneration
 				|| message->FindString("name", &name) != B_OK)
 				break;
+			_EndReasoning("\n");
 			BString line("\n· ");
 			line << name;
 			const char* title = message->GetString("title", NULL);
@@ -927,6 +1025,7 @@ HaiWindow::MessageReceived(BMessage* message)
 			if (message->FindInt32("gen", &generation) == B_OK
 				&& generation == fGeneration
 				&& message->FindString("error", &error) == B_OK) {
+				_EndReasoning("\n");
 				// The provider's own classification, so the advice underneath
 				// fits the failure: only an auth problem is fixed in Settings.
 				BString kind(message->GetString("kind", ""));
@@ -1042,6 +1141,7 @@ HaiWindow::MessageReceived(BMessage* message)
 			int32 generation;
 			if (message->FindInt32("gen", &generation) != B_OK || generation != fGeneration)
 				break;
+			_EndReasoning("\n");
 
 			if (message->what == kMsgRunCancelled)
 				_Append(" [stopped]\n");
@@ -1169,12 +1269,27 @@ HaiWindow::MessageReceived(BMessage* message)
 
 		case MSG_NEW_SESSION:
 			fController.SendMessage(kMsgNewSession);
+			fReasoningOpen = false;
 			fTranscript->SetText("");
 			SetTitle("haikode");
 			_ResetMeters();
 			_Append("New durable conversation.\n\n");
 			fStatusBar->SetText("New session • Ready");
 			break;
+
+		case MSG_NEW_WINDOW:
+		{
+			// B_MULTIPLE_LAUNCH makes every launch a separate process with
+			// its own controller and route; there is no fixed window cap. Use
+			// this process's entry_ref so a developer build cannot accidentally
+			// open an older packaged copy with the same application signature.
+			app_info info;
+			if (be_app != NULL && be_app->GetAppInfo(&info) == B_OK)
+				be_roster->Launch(&info.ref);
+			else
+				be_roster->Launch("application/x-vnd.haikode");
+			break;
+		}
 
 		case MSG_OPEN_PROJECT:
 			{
@@ -1402,6 +1517,17 @@ HaiWindow::_AppendStyled(const char* text, rgb_color color, bool bold,
 }
 
 
+void
+HaiWindow::_EndReasoning(const char* separator)
+{
+	if (!fReasoningOpen)
+		return;
+	if (separator != NULL && separator[0] != '\0')
+		_Append(separator);
+	fReasoningOpen = false;
+}
+
+
 rgb_color
 HaiWindow::_DimTextColor() const
 {
@@ -1564,6 +1690,27 @@ void
 HaiWindow::_SetRunning(bool running)
 {
 	fRunning = running;
+}
+
+
+void
+HaiWindow::_SendRouting()
+{
+	BMessage route(kMsgRoutingChanged);
+	route.AddString("provider", fAgentProvider);
+	route.AddString("model", fAgentModel);
+	route.AddString("effort", fCurrentEffort);
+	fController.SendMessage(&route);
+
+	if (!fRunning && (!fAgentProvider.IsEmpty() || !fAgentModel.IsEmpty())) {
+		BString label("Next reply  •  ");
+		label << fAgentProvider;
+		if (!fAgentModel.IsEmpty())
+			label << "/" << fAgentModel;
+		if (!fCurrentEffort.IsEmpty())
+			label << "  •  " << fCurrentEffort;
+		fInfoView->SetText(label.String());
+	}
 }
 
 

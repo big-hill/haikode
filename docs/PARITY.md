@@ -1,6 +1,6 @@
 # haikode vs opencode — verified parity
 
-**Last verified: 2026-08-07**, against haikode `0.1.0` (2427 tests: 4 skips
+**Last verified: 2026-08-12**, against haikode `0.1.1` (2434 tests: 4 skips
 and **exactly 4 deliberate failures**, all in `tests/test_wiring_audit.py`,
 which pin the remaining dead code — see the inventory below) and the opencode
 checkout at `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`).
@@ -204,7 +204,7 @@ Verified by rendering the real program with `tests/render_tui.py`.
 | IDE / ACP / editor extensions | `src/ide`, `src/acp` | **No** | |
 | GitHub integration, PR/issue commands | `cli/cmd/github.ts` | **No** | |
 | HTTP server + SDK + web UI | `src/server`, `packages/web` | **n/a** | the whole point is that there is no server |
-| Desktop application | Electron/Tauri (`packages/desktop`) | **Yes, natively** | pure BeAPI C++ + NDJSON worker; runs the same agent loop through the same TurnController |
+| Desktop application | Electron/Tauri (`packages/desktop`) | **Yes, natively** | pure BeAPI C++ + NDJSON worker; `B_MULTIPLE_LAUNCH` gives each window an independent session and provider/model/effort route, while every worker runs the same agent loop through the same TurnController |
 | Haiku desktop integration (notifications, BFS attributes, Tracker, alerts) | — | **Partial** | `haiku.copy_attributes()` now preserves BFS attributes across every atomic file replace (tool/files.py:184). The rest of `haikode/haiku.py` (494 lines) — notifications, Tracker, native alerts, attributes on exported transcripts — is still **never called** |
 
 ## 10. Sessions
@@ -245,7 +245,7 @@ Verified by rendering the real program with `tests/render_tui.py`.
 |---|---|---|---|
 | Runs on Haiku at all | **No** | **Yes** | that is the project |
 | Zero runtime dependencies | no (Bun) | **Yes** | stdlib only, Python 3.10 |
-| `.hpkg` package | no | **Yes** | `scripts/build-hpkg.sh`; a real `haikode-0.1.0-1-x86_64.hpkg` (284 KB) was built and `package list`-verified on hrev57937 |
+| `.hpkg` package | no | **Yes** | `scripts/build-hpkg.sh`; release packages are built and `package list`-verified on physical x86_64 and x86_gcc2 machines |
 | Deskbar entry, MIME signature | no | **Yes** | via the package |
 | OS keyring for secrets | no | **Yes** | BKeyStore |
 

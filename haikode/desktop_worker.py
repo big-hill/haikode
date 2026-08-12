@@ -13,9 +13,11 @@ into a tools-less chat box nor into a second, subtly different lifecycle that
 writes different rows than /undo and the session list expect.
 
 The HAI_* environment variables below are the wire contract with the installed
-C++ desktop binary (desktop/src/domain/AppController.cpp). They keep their
-pre-rename names on purpose so an already-installed desktop app keeps working
-against a freshly updated Python tree, and vice versa.
+C++ desktop binary (desktop/src/domain/AppController.cpp). HAI_PROVIDER,
+HAI_MODEL and HAI_REASONING_EFFORT are per-window routing overrides; they never
+rewrite the user's global defaults. They keep their pre-rename names on purpose
+so an already-installed desktop app keeps working against a freshly updated
+Python tree, and vice versa.
 
 Protocol (NDJSON, one frame per line, all frames carry {"v":1,"event":...}):
 
@@ -405,6 +407,7 @@ def _attach_session(controller: TurnController, session_name: str):
 
 def _turn(controller: TurnController, config: Config, provider_name: str,
           provider_config: dict, model: str, model_override: str,
+          reasoning_effort_override: str,
           session_name: str, cwd: str, prompt: str) -> int:
     session, attach_error = _attach_session(controller, session_name)
     if attach_error:
@@ -425,12 +428,12 @@ def _turn(controller: TurnController, config: Config, provider_name: str,
     try:
         _check_auth(config, provider_name, provider_config)
         permissions = Permissions(config=config, asker=DesktopAsker())
-        agent = runtime.build_agent(config, provider_name, cwd,
-                                    permissions=permissions)
+        agent = runtime.build_agent(
+            config, provider_name, cwd, permissions=permissions,
+            model=model_override,
+            reasoning_effort=reasoning_effort_override)
         _check_auth(config, provider_name, provider_config,
                     getattr(agent, "provider", None))
-        if model_override:
-            agent.model = model_override
         # Replaying the durable transcript keeps tool calls paired with their
         # results, which providers reject if we drop one half.
         agent.messages = list(getattr(session, "messages", None) or [])
@@ -508,15 +511,20 @@ def _turn(controller: TurnController, config: Config, provider_name: str,
 
 
 def run(prompt: str, provider_name: str = "", model_override: str = "",
-        directory: str = "", session_name: str = "") -> int:
+        directory: str = "", session_name: str = "",
+        reasoning_effort: str = "") -> int:
     config = Config()
-    provider_name = provider_name or config.data.get("default_provider", "ollama")
+    provider_name = (provider_name or os.environ.get("HAI_PROVIDER", "")
+                     or config.data.get("default_provider", "ollama"))
     provider_config = config.data.get("providers", {}).get(provider_name)
     if not provider_config:
         emit("error", message=f"Unknown provider: {provider_name}")
         return 2
 
+    model_override = model_override or os.environ.get("HAI_MODEL", "")
     model = model_override or provider_config.get("model", "")
+    reasoning_effort = (reasoning_effort
+                        or os.environ.get("HAI_REASONING_EFFORT", ""))
     # Empty means "create a new session" — the one unambiguous contract.
     # The old synthetic "desktop-default" fallback made every non-empty id
     # ambiguous, which is what allowed a load failure to fork the
@@ -539,7 +547,8 @@ def run(prompt: str, provider_name: str = "", model_override: str = "",
                                 model=model)
     try:
         return _turn(controller, config, provider_name, provider_config, model,
-                     model_override, session_name, cwd, prompt)
+                     model_override, reasoning_effort, session_name, cwd,
+                     prompt)
     except KeyboardInterrupt:
         emit("cancelled")
         return 130
@@ -558,6 +567,7 @@ def main(argv=None):
         description="haikode desktop NDJSON worker")
     parser.add_argument("--provider", default="")
     parser.add_argument("--model", default="")
+    parser.add_argument("--effort", default="")
     parser.add_argument("--directory", default="")
     parser.add_argument("--session", default="")
     args = parser.parse_args(argv)
@@ -569,7 +579,8 @@ def main(argv=None):
     if not prompt.strip():
         emit("error", message="Prompt is empty")
         return 2
-    return run(prompt, args.provider, args.model, args.directory, args.session)
+    return run(prompt, args.provider, args.model, args.directory, args.session,
+               args.effort)
 
 
 if __name__ == "__main__":

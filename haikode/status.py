@@ -7,8 +7,9 @@ this directory — so the answer is gathered once, here, as data. The three call
 sites then only format it, and cannot drift apart.
 
 This module is deliberately pure: no curses, no printing, and every probe
-degrades to a safe default instead of raising, because collect() runs while the
-UI is drawing and a missing git binary must never take the screen down with it.
+degrades to a safe default instead of raising. Front ends may collect it on a
+worker thread, and a missing git binary or busy session database must never
+take the screen down with it.
 """
 
 import os
@@ -169,8 +170,7 @@ def _session_count() -> int:
     """0 when the store is unavailable — sqlite3 is not guaranteed on Haiku."""
     try:
         from . import session as session_module
-        store = session_module.SessionStore()
-        return len(store.list_sessions(SESSION_SCAN_LIMIT))
+        return session_module.quick_session_count(limit=SESSION_SCAN_LIMIT)
     except Exception:
         return 0
 

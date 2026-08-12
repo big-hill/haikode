@@ -3,6 +3,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -12,7 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from haikode.schema import CompletionChunk, Msg, ToolCall
-from haikode.session import SessionStore, capture_modified, summarize_messages
+from haikode.session import (SessionStore, capture_modified,
+                             quick_session_count, summarize_messages)
 
 
 class _StubProvider:
@@ -55,6 +57,58 @@ class SessionStoreTests(unittest.TestCase):
     def new_session(self, title=""):
         return self.store.new_session(str(self.root), "anthropic",
                                       "claude-sonnet-4", title=title)
+
+    def test_quick_count_does_not_run_store_initialisation(self):
+        self.new_session("one")
+        with patch.object(SessionStore, "connect",
+                          side_effect=AssertionError("full store opened")):
+            self.assertEqual(quick_session_count(self.store.path, limit=20), 1)
+
+    def test_six_processes_can_create_independent_sessions_together(self):
+        """One database serves many terminal and desktop windows."""
+        path = str(self.root / "concurrent.db")
+        initial = SessionStore(path)
+        initial.connect()
+        initial.close()
+        code = (
+            "import sys; "
+            "from haikode.schema import Msg; "
+            "from haikode.session import SessionStore; "
+            "sys.stdin.buffer.read(1); "
+            "s=SessionStore(sys.argv[1]); "
+            "row=s.new_session('.', sys.argv[2], sys.argv[3]); "
+            "row.append(Msg(role='user', content=sys.argv[3])); "
+            "print(row.id, flush=True); s.close()"
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (os.getcwd(), env.get("PYTHONPATH", "")) if part)
+        processes = [subprocess.Popen(
+            [sys.executable, "-c", code, path, "provider-%d" % index,
+             "model-%d" % index],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=env)
+            for index in range(6)]
+        for process in processes:
+            process.stdin.write(b"x")
+            process.stdin.flush()
+            process.stdin.close()
+            process.stdin = None
+        outputs = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, stderr.decode())
+            outputs.append(stdout.decode().strip())
+        self.assertEqual(len(set(outputs)), 6)
+
+        store = SessionStore(path)
+        try:
+            rows = store.list_sessions(limit=20)
+        finally:
+            store.close()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({row["model"] for row in rows},
+                         {"model-%d" % index for index in range(6)})
 
     # --- persistence ------------------------------------------------------
 

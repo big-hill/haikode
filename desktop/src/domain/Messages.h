@@ -13,6 +13,9 @@ enum : uint32 {
 	kMsgCancelRun    = 'hCan',  // "gen"
 	kMsgNewSession   = 'hNew',  // start a new durable desktop conversation
 	kMsgSelectSession = 'hSel', // "name": select an existing durable conversation
+	// Per-window route. Empty model/effort means use that provider's default;
+	// changing it never rewrites the global config or an already-running child.
+	kMsgRoutingChanged = 'hRou', // "provider", "model", "effort"
 
 	// Controller / gateway → Window (streaming)
 	kMsgStreamDelta  = 'hDlt',  // "text", "gen"

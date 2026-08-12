@@ -25,6 +25,9 @@ private:
 			BMessenger			fEventSink;
 			BString				fProjectPath;
 			BString				fSessionName;
+			BString				fProviderName;
+			BString				fModelName;
+			BString				fReasoningEffort;
 			int32				fGeneration;
 			thread_id			fWorkerThread;
 			pid_t				fChildPid;

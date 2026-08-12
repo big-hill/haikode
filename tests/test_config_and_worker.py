@@ -109,6 +109,88 @@ class ConfigAndWorkerTests(unittest.TestCase):
         self.assertEqual(frames[1], {
             "v": 1, "event": "delta", "text": "framed-ok"})
 
+    def test_desktop_workers_keep_environment_models_independent(self):
+        """Two native windows must not share the last globally saved model."""
+        processes = []
+        for model in ("model-window-a", "model-window-b"):
+            env = os.environ.copy()
+            env.update({
+                "HAI_DESKTOP_TEST_REPLY": "ok",
+                "HAI_PROVIDER": "zen",
+                "HAI_MODEL": model,
+                "HAI_REASONING_EFFORT": "high",
+            })
+            processes.append(subprocess.Popen(
+                [sys.executable, "-m", "haikode.desktop_worker"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, env=env))
+
+        seen = []
+        for process in processes:
+            stdout, stderr = process.communicate("hello", timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+            seen.append(worker_frames(stdout)[0])
+        self.assertEqual([frame["provider"] for frame in seen], ["zen", "zen"])
+        self.assertEqual([frame["model"] for frame in seen],
+                         ["model-window-a", "model-window-b"])
+
+    def test_native_app_is_multi_launch_and_routes_each_window(self):
+        root = Path(__file__).resolve().parents[1]
+        resources = (root / "desktop/resources/haikode.rdef").read_text()
+        messages = (root / "desktop/src/domain/Messages.h").read_text()
+        controller = (root / "desktop/src/domain/AppController.cpp").read_text()
+        window = (root / "desktop/src/ui/HaiWindow.cpp").read_text()
+        window_header = (root / "desktop/src/ui/HaiWindow.h").read_text()
+        application = (root / "desktop/src/app/HaiApplication.cpp").read_text()
+
+        self.assertIn("B_MULTIPLE_LAUNCH", resources)
+        self.assertNotIn("B_SINGLE_LAUNCH", resources)
+        self.assertIn("kMsgRoutingChanged", messages)
+        for variable in ("HAI_PROVIDER", "HAI_MODEL", "HAI_REASONING_EFFORT"):
+            self.assertIn(variable, controller)
+        self.assertIn("MSG_NEW_WINDOW", window)
+        self.assertIn("kMsgRoutingChanged", window)
+        self.assertIn("GetAppInfo(&info)", window)
+        self.assertIn("Launch(&info.ref)", window)
+        self.assertIn("fReasoningOpen", window_header)
+        reasoning_case = window.split("case kMsgStreamReasoning:", 1)[1]
+        reasoning_case = reasoning_case.split("case ", 1)[0]
+        self.assertIn("fReasoningOpen = true", reasoning_case)
+        self.assertNotIn('_Append("\\n")', reasoning_case)
+        self.assertIn("initial_window_frame", application)
+        self.assertIn("GetAppList", application)
+        self.assertIn("OffsetBy", application)
+        for global_write in ("set-model ", "set-effort ",
+                             "set default_provider "):
+            self.assertNotIn(global_write, window)
+
+    def test_desktop_model_override_builds_the_agent_with_that_model(self):
+        self._stay_put()
+        with tempfile.TemporaryDirectory() as directory:
+            provider = ScriptedProvider([
+                [CompletionChunk(text="hello", stop_reason="stop")]])
+            _, patches = self._worker_env(directory, provider)
+            output = StringIO()
+            original = runtime.build_agent
+            calls = []
+
+            def build(*args, **kwargs):
+                calls.append(dict(kwargs))
+                return original(*args, **kwargs)
+
+            with patches[0], patches[1], patches[2], patches[3], \
+                    patch.object(runtime, "build_agent", side_effect=build), \
+                    redirect_stdout(output):
+                self.assertEqual(desktop_worker.run(
+                    "hi", model_override="window-model",
+                    reasoning_effort="high", directory=directory), 0)
+
+            self.assertEqual(calls[0]["model"], "window-model")
+            self.assertEqual(calls[0]["reasoning_effort"], "high")
+            self.assertEqual(
+                frames_named(output.getvalue(), "info")[0]["model"],
+                "window-model")
+
     def test_desktop_worker_permission_roundtrip(self):
         class DuplexInput:
             buffer = BytesIO(b"permission\tper_test\tonce\n")
@@ -706,6 +788,22 @@ class ConfigAndWorkerTests(unittest.TestCase):
             listed = output.getvalue().split()
             self.assertIn("max", listed)
             self.assertIn("xhigh", listed)
+
+    def test_configtool_efforts_accepts_a_window_local_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(os.path.join(directory, "config.json"))
+            config.data.setdefault("providers", {})["chatgpt"] = {
+                "dialect": "chatgpt", "model": "gpt-5.6-sol"}
+            output = StringIO()
+            with (patch.object(configtool, "Config", return_value=config),
+                  redirect_stdout(output)):
+                self.assertEqual(
+                    configtool.main(["efforts", "chatgpt", "legacy-model"]),
+                    0)
+            listed = output.getvalue().split()
+            self.assertIn("high", listed)
+            self.assertNotIn("xhigh", listed)
+            self.assertNotIn("max", listed)
 
     def test_configtool_set_effort_persists(self):
         with tempfile.TemporaryDirectory() as directory:

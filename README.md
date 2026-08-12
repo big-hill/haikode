@@ -1063,6 +1063,11 @@ localhost server is involved anywhere.
 Settings in the app cover provider, model, API key, Ollama LAN/Tailscale URL and
 the ChatGPT/SuperGrok subscription logins.
 
+The app is `B_MULTIPLE_LAUNCH`: each Deskbar launch, or File > New Window,
+starts an independent native window with its own conversation, provider, model
+and reasoning effort. Picking a model in one window affects its next replies
+only; Settings still controls the defaults used by newly opened windows.
+
 The `HAI_*` environment variables keep their pre-rename names on purpose: they
 are the wire contract between the installed C++ binary and the Python worker,
 and renaming them would break a mixed-age install in both directions.
@@ -1077,7 +1082,7 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2427 tests as of the 2026-08-07 release audit, stdlib `unittest`, no network. Four
+2434 tests as of 2026-08-12, stdlib `unittest`, no network. Four
 documented wiring-audit failures and four skips are expected.
 `HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
 Haiku's keyring approval dialog.

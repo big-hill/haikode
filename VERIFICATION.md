@@ -1,6 +1,6 @@
 # haikode completion and verification matrix
 
-Last updated: 2026-08-07. This file records executable evidence, not
+Last updated: 2026-08-12. This file records executable evidence, not
 intended behavior. Every PASS below names the machine class it was
 demonstrated on; nothing is claimed from reading the source alone.
 
@@ -17,11 +17,11 @@ reviewer.
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
 | HPKG packaging | Native C++ and HPKG builds pass on x86_gcc2 and x86_64 from the same commit; architecture fields follow HaikuPorts convention, and in-place upgrades get a commit-count package revision. | PASS |
-| Real Haiku release gate | The 2427-test baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE pass on x86_gcc2 and x86_64. A two-round live read-tool flow also passes on x86_64. | PASS |
+| Real Haiku release gate | The 2434-test baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE pass on x86_gcc2 and x86_64. A two-round live read-tool flow also passes on x86_64. | PASS |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
-| Native desktop app | Builds, installs and runs its worker on Haiku; convergence on the current agent engine is tracked, not claimed. | PARTIAL |
+| Native desktop app | Builds, installs and runs its worker on Haiku. Multiple simultaneous windows, independent model selection, visible window cascading and continuous reasoning text were exercised on the physical x86_64 machine. Convergence on the full TUI feature set is tracked, not claimed. | PARTIAL |
 
 ## Automated checks
 
@@ -29,7 +29,7 @@ reviewer.
 python3 -m unittest discover -s tests -b
 ```
 
-The 2026-08-07 Mac run executed **2427 tests**. It fails **exactly four** on
+The 2026-08-12 Mac run executed **2434 tests**. It fails **exactly four** on
 purpose — the wiring-audit backlog documented in the README — and skips four.
 A fifth failure is a real regression. `scripts/ci_baseline.py` verifies the
 failure identities, not only the count.

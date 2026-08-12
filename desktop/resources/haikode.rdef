@@ -1,11 +1,14 @@
 resource app_signature "application/x-vnd.haikode";
 
-resource app_flags B_SINGLE_LAUNCH;
+// Every launch owns its own window, controller, session and model route.
+// Haiku imposes no artificial two-window limit: Deskbar and File > New Window
+// may start as many independent instances as the machine can support.
+resource app_flags B_MULTIPLE_LAUNCH;
 
 resource app_version {
 	major  = 0,
 	middle = 1,
-	minor  = 0,
+	minor  = 1,
 	variety = B_APPV_FINAL,
 	internal = 0,
 	short_info = "haikode",

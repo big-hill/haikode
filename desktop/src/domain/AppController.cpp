@@ -89,6 +89,7 @@ struct WorkerTask {
 // inherited environment first so ours are the only definitions.
 static const char* const kWorkerVariables[] = {
 	"PYTHONPATH", "HAI_PROJECT_DIR", "HAI_SESSION_ID", "HAI_FRAMED_STDIN",
+	"HAI_PROVIDER", "HAI_MODEL", "HAI_REASONING_EFFORT",
 };
 
 
@@ -114,7 +115,8 @@ free_environment(char** environment)
 // pointer store, which is safe.
 static char**
 build_worker_environment(const BString& pythonPath, const BString& projectPath,
-	const BString& sessionName)
+	const BString& sessionName, const BString& providerName,
+	const BString& modelName, const BString& reasoningEffort)
 {
 	int32 inherited = 0;
 	for (char** entry = environ; entry != NULL && *entry != NULL; entry++)
@@ -147,7 +149,7 @@ build_worker_environment(const BString& pythonPath, const BString& projectPath,
 	}
 
 	BString line;
-	BString definitions[4];
+	BString definitions[7];
 	int32 defined = 0;
 	definitions[defined++].SetToFormat("PYTHONPATH=%s", pythonPath.String());
 	if (!projectPath.IsEmpty())
@@ -156,6 +158,14 @@ build_worker_environment(const BString& pythonPath, const BString& projectPath,
 	definitions[defined++].SetToFormat("HAI_SESSION_ID=%s",
 		sessionName.String());
 	definitions[defined++] = "HAI_FRAMED_STDIN=1";
+	if (!providerName.IsEmpty())
+		definitions[defined++].SetToFormat("HAI_PROVIDER=%s",
+			providerName.String());
+	if (!modelName.IsEmpty())
+		definitions[defined++].SetToFormat("HAI_MODEL=%s", modelName.String());
+	if (!reasoningEffort.IsEmpty())
+		definitions[defined++].SetToFormat("HAI_REASONING_EFFORT=%s",
+			reasoningEffort.String());
 
 	for (int32 i = 0; i < defined; i++) {
 		environment[count] = strdup(definitions[i].String());
@@ -533,6 +543,16 @@ AppController::MessageReceived(BMessage* message)
 			}
 			break;
 		}
+		case kMsgRoutingChanged:
+		{
+			// This controller belongs to exactly one native window process.
+			// The current child already has an immutable environment; these
+			// fields therefore affect only the next Send in this window.
+			fProviderName = message->GetString("provider", "");
+			fModelName = message->GetString("model", "");
+			fReasoningEffort = message->GetString("effort", "");
+			break;
+		}
 		case kMsgWorkerSession:
 		{
 			int32 generation;
@@ -639,8 +659,9 @@ AppController::_StartRun(const char* prompt, BMessenger sink, int32 generation)
 	BString pythonPath(configured != NULL ? configured : "");
 	if (pythonPath.IsEmpty())
 		pythonPath = "/boot/home/haikode";
-	char** environment = build_worker_environment(pythonPath, fProjectPath,
-		fSessionName);
+	char** environment = build_worker_environment(
+		pythonPath, fProjectPath, fSessionName, fProviderName, fModelName,
+		fReasoningEffort);
 	if (environment == NULL) {
 		BMessage failed(kMsgRunFailed);
 		failed.AddInt32("gen", generation);

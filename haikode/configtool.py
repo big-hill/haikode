@@ -389,10 +389,9 @@ def main(argv=None):
         print("ok")
         return 0
 
-    if cmd == "efforts" and len(args) == 1:
-        # The allowed reasoning efforts for the provider's CURRENT model —
-        # model-aware by construction: the provider itself answers, and an
-        # empty answer means the control should not be shown at all.
+    if cmd == "efforts" and len(args) in (1, 2):
+        # The optional model is the desktop window's local choice. Without it,
+        # retain the original CLI contract and inspect the configured default.
         from .runtime import build_provider
         prov = config.data.get("providers", {}).get(args[0])
         if prov is None:
@@ -406,7 +405,8 @@ def main(argv=None):
         listing = getattr(client, "reasoning_efforts", None)
         if not callable(listing):
             return 0
-        for effort in listing(prov.get("model", "")) or ():
+        model = args[1] if len(args) == 2 else prov.get("model", "")
+        for effort in listing(model) or ():
             print(effort)
         return 0
 

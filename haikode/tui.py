@@ -2372,6 +2372,7 @@ class TUI:
         self._placeholder = random.randrange(len(PLACEHOLDERS))
         self._setup_cache: Optional[status.SetupInfo] = None
         self._setup_at = 0.0
+        self._setup_thread: Optional[threading.Thread] = None
 
         # run state. Every queued item carries the token of the run that
         # produced it, so events from a run that /new (or a fresh submit)
@@ -5205,18 +5206,91 @@ class TUI:
         return _ReportedConfig(data, self.config)
 
     def _setup(self, refresh: bool = False) -> status.SetupInfo:
-        """The setup report, cached: collect() runs git and sqlite, and the
-        home screen must not pay for that on every frame."""
-        now = time.time()
-        if refresh or self._setup_cache is None or now - self._setup_at > SETUP_TTL:
+        """Return setup immediately and refresh its slow probes off-screen.
+
+        Git, the native keystore and SQLite can all wait on another process.
+        Running them before curses draws its first frame is what made a second
+        Haiku terminal look like a permanently black window.
+        """
+        if refresh:
+            # Explicit /status requests an authoritative snapshot. Startup
+            # never takes this branch; its first frame remains non-blocking.
+            provider = self._provider_name()
+            model = str(getattr(self.agent, "model", "") or "")
             try:
-                self._setup_cache = status.collect(
-                    self._effective_config(), self._provider_name(), self.cwd,
+                report = status.collect(
+                    self._effective_config(), provider, self.cwd,
                     getattr(self.agent, "tools", None))
+                if provider:
+                    report.provider = provider
+                if model:
+                    report.model = model
             except Exception:
-                self._setup_cache = status.SetupInfo()
-            self._setup_at = now
+                report = self._setup_placeholder()
+            self._setup_cache = report
+            self._setup_at = time.time()
+            return report
+
+        now = time.time()
+        expired = self._setup_cache is None or now - self._setup_at > SETUP_TTL
+        if self._setup_cache is None:
+            self._setup_cache = self._setup_placeholder()
+        active = self._setup_thread is not None and self._setup_thread.is_alive()
+        if expired and not active:
+            config = self._effective_config()
+            provider = self._provider_name()
+            model = str(getattr(self.agent, "model", "") or "")
+            tools = getattr(self.agent, "tools", None)
+
+            def collect_setup():
+                try:
+                    report = status.collect(
+                        config, provider, self.cwd, tools)
+                    # collect() reports the configured default model; this TUI
+                    # may carry a process-local /model or command-line choice.
+                    if provider:
+                        report.provider = provider
+                    if model:
+                        report.model = model
+                except Exception:
+                    report = self._setup_placeholder()
+                current_provider = self._provider_name()
+                current_model = str(getattr(self.agent, "model", "") or "")
+                if (provider, model) != (current_provider, current_model):
+                    # A /provider or /model completed while the probes ran.
+                    # Leave the placeholder stale so the next tick starts a
+                    # fresh collection instead of publishing the old route.
+                    self._setup_at = 0.0
+                    self._dirty = True
+                    return
+                self._setup_cache = report
+                self._setup_at = time.time()
+                self._dirty = True
+
+            self._setup_thread = threading.Thread(
+                target=collect_setup, name="haikode-setup", daemon=True)
+            self._setup_thread.start()
         return self._setup_cache
+
+    def _setup_placeholder(self) -> status.SetupInfo:
+        """Cheap fields that are safe to show before background probes land."""
+        try:
+            provider = self._provider_name()
+        except Exception:
+            provider = ""
+        try:
+            model = str(getattr(self.agent, "model", "") or "")
+        except Exception:
+            model = ""
+        try:
+            raw_tools = getattr(self.agent, "tools", None) or {}
+            names = sorted(str(name) for name in raw_tools)
+        except Exception:
+            names = []
+        return status.SetupInfo(
+            provider=provider, model=model, auth="checking setup...",
+            auth_ok=True, cwd=self.cwd, cwd_label=status.short_label(self.cwd),
+            tool_count=len(names), tool_names=names)
 
     def _addstr(self, y: int, x: int, text: str, attr: int = 0):
         """Clipped, exception-proof write. curses raises on the last cell."""

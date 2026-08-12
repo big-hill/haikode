@@ -187,6 +187,42 @@ def default_db_path() -> Path:
     return global_config_dir() / DEFAULT_DB_NAME
 
 
+def quick_session_count(db_path: Union[str, Path, None] = None,
+                        limit: int = 500) -> int:
+    """Return a bounded session count without opening a :class:`SessionStore`.
+
+    This is for decorative UI status only.  A full store open also performs
+    migrations, WAL recovery and backup rotation; on Haiku those operations
+    can legitimately wait for another live process.  The first screen must not
+    wait with them, so this probe is read-only, has a tiny lock timeout, and
+    degrades to zero when the database is busy or unavailable.
+    """
+    path = Path(db_path) if db_path is not None else default_db_path()
+    try:
+        bounded = max(0, int(limit))
+        if bounded == 0 or not path.is_file():
+            return 0
+    except (OSError, TypeError, ValueError):
+        return 0
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(path), timeout=0.05)
+        conn.execute("PRAGMA query_only=ON")
+        row = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM sessions LIMIT ?)",
+            (bounded,)).fetchone()
+        return int(row[0]) if row else 0
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
 def new_session_id() -> str:
     """Time-prefixed so ids sort chronologically, random-suffixed so they collide never."""
     return "ses_%013x%s" % (int(time.time() * 1000), secrets.token_hex(3))

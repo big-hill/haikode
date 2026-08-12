@@ -35,8 +35,14 @@ class _BrokenStore:
 @contextmanager
 def isolated(directory, store=_FakeStore):
     """Keep collect() away from the machine's keystore, sessions and AGENTS.md."""
+    def session_count(limit):
+        instance = store()
+        return len(instance.list_sessions(limit=limit))
+
     with (patch.dict(os.environ, {"HAI_DISABLE_KEYSTORE": "1"}),
           patch("haikode.session.SessionStore", store),
+          patch("haikode.session.quick_session_count",
+                side_effect=session_count),
           patch("haikode.status.global_config_dir",
                 return_value=Path(directory) / "global-config")):
         yield
