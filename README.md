@@ -1101,7 +1101,7 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2440 tests as of 2026-08-15, stdlib `unittest`, no network. Four
+2448 tests as of 2026-08-15, stdlib `unittest`, no network. Four
 documented wiring-audit failures and four skips are expected.
 `HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
 Haiku's keyring approval dialog.
