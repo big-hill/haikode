@@ -17,6 +17,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -573,7 +574,7 @@ class CommandsAreClassified(unittest.TestCase):
 
     def test_network_and_keystore_commands_are_asynchronous(self):
         for line in ("/models", "/model openai/gpt-4o", "/provider openai",
-                     "/keys", "/logout openai", "/status"):
+                     "/keys", "/logout openai", "/status", "/update"):
             self.assertEqual(turn_mod.command_mode(line), ASYNC, line)
 
     def test_login_needs_a_modal(self):
@@ -600,8 +601,8 @@ class TUIDispatchesEachClassCorrectly(TurnTestCase):
         self.calls = []
         ui.on_command = lambda line: self.calls.append(line) or "ok"
         self.async_jobs = []
-        ui._run_async = lambda label, work, done=None: self.async_jobs.append(
-            (label, work, done))
+        ui._run_async = lambda label, work, done=None, **options: \
+            self.async_jobs.append((label, work, done, options))
         self.submitted = []
         ui._submit = self.submitted.append
         return ui
@@ -617,10 +618,22 @@ class TUIDispatchesEachClassCorrectly(TurnTestCase):
         ui._dispatch_command("/keys")
         self.assertEqual(self.calls, [])          # not on the curses thread
         self.assertEqual(len(self.async_jobs), 1)
-        label, work, _done = self.async_jobs[0]
+        label, work, _done, options = self.async_jobs[0]
         self.assertEqual(label, "keys")
+        self.assertTrue(options["cancellable"])
         self.assertEqual(work(), "ok")            # the worker does the work
         self.assertEqual(self.calls, ["/keys"])
+
+    def test_update_goes_to_a_non_cancellable_worker(self):
+        ui = self.make_tui()
+        ui._dispatch_command("/update")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(self.async_jobs), 1)
+        label, work, _done, options = self.async_jobs[0]
+        self.assertEqual(label, "update")
+        self.assertFalse(options["cancellable"])
+        self.assertEqual(work(), "ok")
+        self.assertEqual(self.calls, ["/update"])
 
     def test_login_opens_a_modal_and_never_touches_the_command_layer(self):
         ui = self.make_tui()
@@ -717,6 +730,42 @@ class AsyncCommandsAreCancellable(TurnTestCase):
             time.sleep(0.005)
         self.assertEqual(done, [])
         self.assertEqual(ui.status_hint, "cancelled")
+
+    def test_package_install_cannot_be_orphaned_as_if_it_were_cancelled(self):
+        ui = self.make_tui()
+        release = threading.Event()
+        done = []
+
+        def install():
+            release.wait(2)
+            return "installed"
+
+        ui._run_async("update", install, done.append, cancellable=False)
+        ui._cancel_async()
+        self.assertEqual(ui._busy_label, "update")
+        self.assertIn("still running", ui.status_hint)
+
+        release.set()
+        for _ in range(200):
+            ui._pump()
+            if done:
+                break
+            import time
+            time.sleep(0.01)
+        self.assertEqual(done, ["installed"])
+        self.assertEqual(ui._busy_label, "")
+
+    def test_input_is_preserved_while_package_install_is_running(self):
+        ui = self.make_tui()
+        ui._busy_label = "update"
+        ui._busy_cancellable = False
+        ui.buffer = "do not lose this"
+        ui.cursor = len(ui.buffer)
+
+        ui._on_enter()
+
+        self.assertEqual(ui.buffer, "do not lose this")
+        self.assertIn("still running", ui.status_hint)
 
     def test_a_failing_worker_becomes_a_transcript_error(self):
         ui = self.make_tui()

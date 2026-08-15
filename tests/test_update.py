@@ -1,15 +1,22 @@
 """The update check: quiet, honest, and architecture-aware."""
 
+import hashlib
+import io
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from haikode import update
 
 
-def release(tag, assets=()):
+def release(tag, assets=(), digest=""):
     return {"tag_name": tag, "html_url": "https://example.invalid/rel",
             "assets": [{"name": name,
                         "browser_download_url": "https://example.invalid/"
-                        + name} for name in assets]}
+                        + name,
+                        "digest": digest} for name in assets]}
 
 
 class VersionOrdering(unittest.TestCase):
@@ -35,6 +42,13 @@ class CheckTests(unittest.TestCase):
         self.assertEqual("v9.9.9", state["latest"])
         self.assertIn(update._architecture(), state["asset"])
 
+    def test_the_matching_assets_github_digest_is_preserved(self):
+        digest = "sha256:" + "a" * 64
+        state = update.check(fetch=lambda: release(
+            "v9.9.9", ["haikode-9.9.9-60-%s.hpkg"
+                        % update._architecture()], digest=digest))
+        self.assertEqual(digest, state["digest"])
+
     def test_an_older_release_is_not_an_update(self):
         state = update.check(fetch=lambda: release("v0.0.1"))
         self.assertFalse(state["available"])
@@ -53,6 +67,7 @@ class StartupNoticeTests(unittest.TestCase):
         notice = update.startup_notice({}, fetch=lambda: release("v9.9.9"))
         self.assertIn("v9.9.9", notice)
         self.assertIn("/update", notice)
+        self.assertIn("install", notice)
 
     def test_the_opt_out_wins_without_any_network(self):
         def explode():
@@ -63,6 +78,89 @@ class StartupNoticeTests(unittest.TestCase):
     def test_quiet_when_current(self):
         self.assertEqual("", update.startup_notice(
             {}, fetch=lambda: release("v0.0.1")))
+
+
+class PackagedUpdateTests(unittest.TestCase):
+    def state(self, payload, digest=None):
+        checksum = digest
+        if checksum is None:
+            checksum = "sha256:" + hashlib.sha256(payload).hexdigest()
+        return {"available": True, "current": "0.1.1", "latest": "v0.1.2",
+                "url": "https://example.invalid/rel",
+                "asset": "https://example.invalid/"
+                         "haikode-0.1.2-110-x86_64.hpkg",
+                "digest": checksum}
+
+    def test_one_command_verifies_installs_and_only_requires_restart(self):
+        payload = b"a small but validly transferred package"
+        completed = subprocess.CompletedProcess([], 0, "installed\n", "")
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update, "UPDATE_DIR", Path(temp)), \
+                patch.object(update.shutil, "which",
+                             return_value="/boot/system/bin/pkgman"), \
+                patch.object(update.urllib.request, "urlopen",
+                             return_value=io.BytesIO(payload)), \
+                patch.object(update.subprocess, "run",
+                             return_value=completed) as runner:
+            result = update.apply_update(self.state(payload))
+            remaining = list(Path(temp).iterdir())
+
+        argv = runner.call_args.args[0]
+        self.assertEqual(argv[:3], ["/boot/system/bin/pkgman", "install", "-y"])
+        self.assertEqual(Path(argv[3]).name,
+                         "haikode-0.1.2-110-x86_64.hpkg")
+        self.assertIn("installed haikode v0.1.2", result)
+        self.assertIn("close and reopen", result.lower())
+        self.assertNotIn("pkgman install", result)
+        self.assertEqual([], remaining)
+
+    def test_a_checksum_mismatch_never_reaches_pkgman(self):
+        payload = b"not the release asset"
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update, "UPDATE_DIR", Path(temp)), \
+                patch.object(update.shutil, "which",
+                             return_value="/boot/system/bin/pkgman"), \
+                patch.object(update.urllib.request, "urlopen",
+                             return_value=io.BytesIO(payload)), \
+                patch.object(update.subprocess, "run") as runner:
+            result = update.apply_update(self.state(
+                payload, digest="sha256:" + "0" * 64))
+
+            self.assertIn("checksum mismatch", result)
+            runner.assert_not_called()
+            self.assertEqual([], list(Path(temp).iterdir()))
+
+    def test_a_release_without_a_digest_is_not_installed(self):
+        payload = b"package"
+        with patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update.urllib.request, "urlopen") as fetch, \
+                patch.object(update.subprocess, "run") as runner:
+            result = update.apply_update(self.state(payload, digest=""))
+
+        self.assertIn("has no SHA-256 digest", result)
+        fetch.assert_not_called()
+        runner.assert_not_called()
+
+    def test_a_pkgman_failure_keeps_the_verified_package_for_recovery(self):
+        payload = b"verified package"
+        completed = subprocess.CompletedProcess([], 5, "", "transaction failed")
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update, "UPDATE_DIR", Path(temp)), \
+                patch.object(update.shutil, "which",
+                             return_value="/boot/system/bin/pkgman"), \
+                patch.object(update.urllib.request, "urlopen",
+                             return_value=io.BytesIO(payload)), \
+                patch.object(update.subprocess, "run", return_value=completed):
+            result = update.apply_update(self.state(payload))
+            kept = list(Path(temp).rglob("*.hpkg"))
+
+            self.assertIn("package install failed", result)
+            self.assertIn("transaction failed", result)
+            self.assertEqual(1, len(kept))
+            self.assertIn(str(kept[0]), result)
 
 
 if __name__ == "__main__":

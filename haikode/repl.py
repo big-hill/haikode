@@ -577,7 +577,7 @@ class REPL:
             ("cost", self._cmd_cost, "show token usage"),
             ("init", self._cmd_init, "write AGENTS.md and haikode.json"),
             ("update", self._cmd_update,
-             "check for a newer haikode and fetch it"),
+             "check for a newer haikode and install it"),
             ("failures", self._cmd_failures,
              "recent provider failures (they never enter the transcript)"),
         ]

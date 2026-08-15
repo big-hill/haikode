@@ -1184,7 +1184,7 @@ HaiWindow::MessageReceived(BMessage* message)
 				BString text("haikode ");
 				text << fields.StringAt(1) << " is available (running "
 					<< fields.StringAt(2)
-					<< ").\n\nFetch it with /update in the terminal, or "
+					<< ").\n\nInstall it with /update in the terminal, or "
 					<< "download from the releases page.";
 				BAlert* alert = new BAlert("Update", text.String(), "OK");
 				alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);

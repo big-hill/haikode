@@ -2400,6 +2400,7 @@ class TUI:
         # a result whose serial no longer matches is dropped.
         self._command_serial = 0
         self._busy_label = ""
+        self._busy_cancellable = True
         # Configuration warnings already on screen. Every rebuilt agent carries
         # the same list, so without this a /model would repeat all of them.
         self._reported: set = set()
@@ -3471,6 +3472,11 @@ class TUI:
         self._dirty = True
 
     def _on_enter(self):
+        if self._busy_label and not self._busy_cancellable:
+            self.status_hint = "%s is still running; do not close haikode" \
+                % self._busy_label
+            self._dirty = True
+            return
         # A trailing backslash is the "continue on the next line" convention.
         if self.buffer[:self.cursor].endswith("\\"):
             self.buffer = self.buffer[:self.cursor - 1] + "\n" + self.buffer[self.cursor:]
@@ -3717,6 +3723,11 @@ class TUI:
     # --- commands --------------------------------------------------------
 
     def _dispatch_command(self, line: str):
+        if self._busy_label and not self._busy_cancellable:
+            self.status_hint = "%s is still running; do not close haikode" \
+                % self._busy_label
+            self._dirty = True
+            return
         name = line.split()[0].lower()
         if name == "/reload" and self.running:
             self.transcript.add(Entry(
@@ -3867,16 +3878,23 @@ class TUI:
 
     def _run_command_async(self, line: str):
         """Run a slow command on a worker so the screen keeps drawing."""
-        self._run_async(command_name(line),
+        name = command_name(line)
+        self._run_async(name,
                         lambda: self._call_command(line),
-                        lambda result: self._finish_command(line, result))
+                        lambda result: self._finish_command(line, result),
+                        cancellable=name != "update")
 
-    def _run_async(self, label: str, work, done=None, on_error=None):
+    def _run_async(self, label: str, work, done=None, on_error=None,
+                   cancellable: bool = True):
         """Run `work()` off the curses thread; `done(value)` on the main one.
 
         The serial is the cancel token. A cancelled or superseded result is
         dropped in _on_async_done rather than drawn, which is as close to
         cancellation as a blocking keystore subprocess allows.
+
+        Package activation is different: cancelling only the result cannot
+        cancel pkgman's transaction. Mark that worker non-cancellable so the
+        screen never says an installation stopped while it is still running.
 
         `on_error` lets a caller that owns a dialog show the failure inside it
         instead of only as a transcript line — a sign-in that fails while its
@@ -3885,7 +3903,13 @@ class TUI:
         self._command_serial += 1
         serial = self._command_serial
         self._busy_label = label
-        self.status_hint = "%s%s  esc to cancel" % (label, self.glyphs.ellipsis)
+        self._busy_cancellable = cancellable
+        if cancellable:
+            self.status_hint = "%s%s  esc to cancel" \
+                % (label, self.glyphs.ellipsis)
+        else:
+            self.status_hint = "%s%s  do not close haikode" \
+                % (label, self.glyphs.ellipsis)
         self._dirty = True
         put = self._queue.put
 
@@ -3899,6 +3923,11 @@ class TUI:
         threading.Thread(target=body, daemon=True).start()
 
     def _cancel_async(self):
+        if not self._busy_cancellable:
+            self.status_hint = "%s is still running; do not close haikode" \
+                % self._busy_label
+            self._dirty = True
+            return
         self._command_serial += 1       # orphans whatever is in flight
         self._busy_label = ""
         self.status_hint = "cancelled"
@@ -3916,6 +3945,7 @@ class TUI:
         if serial != self._command_serial:
             return                      # cancelled, or a newer command won
         self._busy_label = ""
+        self._busy_cancellable = True
         self.status_hint = ""
         self._dirty = True
         if error:

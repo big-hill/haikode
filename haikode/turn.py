@@ -34,12 +34,13 @@ ASYNC = "async"    # network or a subprocess (the Haiku keystore): worker
 MODAL = "modal"    # needs the user to type something: a front-end modal
 TURN = "turn"      # expands into a prompt: goes through run_turn()
 
-# Every one of these either lists models over the network, rebuilds the agent
-# (which re-resolves credentials), or asks the config layer for a key — and on
-# Haiku a key lookup shells out to the BKeyStore helper, up to five seconds
-# per provider.
+# Every one of these either uses the network, invokes a subprocess, rebuilds
+# the agent (which re-resolves credentials), or asks the config layer for a key
+# — and on Haiku a key lookup shells out to the BKeyStore helper, up to five
+# seconds per provider.
 ASYNC_COMMANDS = frozenset({
     "model", "models", "provider", "providers", "keys", "logout", "status",
+    "update",
 })
 # /login prompts for a secret. In a curses front end stdin belongs to the
 # screen, so the prompt would be invisible and the app would look hung.

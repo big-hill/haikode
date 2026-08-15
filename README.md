@@ -82,6 +82,19 @@ pkgman install ./haikode-*.hpkg
 Remove it again with `pkgman uninstall haikode`. No build tools, no git,
 no pip — the requirements table above is the whole story.
 
+### Updating an installed package
+
+Run `/update` in haikode's terminal interface. That explicit command checks the
+latest GitHub release, selects the HPKG for the current architecture, verifies
+GitHub's SHA-256 asset digest, and runs Haiku's package manager in
+non-interactive mode. Wait for the installed message, then close and reopen
+haikode to use the new version.
+
+The passive startup check never installs anything. A failed checksum never
+reaches `pkgman`; a package whose installation fails is kept in `/tmp` and its
+path is shown for recovery. Configuration, OAuth state, keys and sessions live
+outside the package and remain in place across the upgrade.
+
 ### Building the package yourself
 
 The same thing from a source checkout. Build the `.hpkg` on the Haiku
