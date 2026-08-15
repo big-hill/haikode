@@ -137,8 +137,10 @@ an explicitly authorized direct push. A build, local commit, or successful
 hardware test does not itself authorize publication.
 
 After landing, the single `NOW.md` writer rewrites its transient handoff against
-the fetched reference SHA, removes completed items, and sets a short validity
-window. Permanent findings go to their owning document or a new ADR instead.
+the fetched pre-handoff reference SHA, removes completed items, and sets a short
+validity window. The commit carrying `NOW.md` may then advance the reference;
+the recorded SHA must remain its ancestor. Permanent findings go to their
+owning document or a new ADR instead.
 
 ## Deployment and release
 

@@ -123,6 +123,16 @@ class ProjectContextTests(unittest.TestCase):
         self.assertTrue(any("not an ancestor" in item
                             for item in result.warnings))
 
+        result = project_context.Result()
+        with patch.object(
+                project_context, "git",
+                side_effect=[(0, reference), (0, ""), (0, "")]):
+            project_context.validate_now(
+                data, "origin/main", result, fetched=True)
+        self.assertFalse(result.warnings)
+        self.assertTrue(any("is an ancestor" in item
+                            for item in result.okays))
+
 
 if __name__ == "__main__":
     unittest.main()

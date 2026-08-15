@@ -324,17 +324,20 @@ def validate_now(data: Dict[str, str], reference: str, result: Result,
     if expiry.astimezone(dt.timezone.utc) <= current:
         result.warn("NOW.md expired - IGNORE NOW.md")
         return
+    relationship = "matches"
     if reference_sha != verified:
         code, _ = git("merge-base", "--is-ancestor", verified, reference_sha)
-        if code == 0:
-            result.warn("NOW.md reference advanced - IGNORE NOW.md")
-        else:
-            result.warn("NOW.md SHA is not an ancestor of the reference - IGNORE NOW.md")
-        return
+        if code != 0:
+            result.warn(
+                "NOW.md SHA is not an ancestor of the reference - IGNORE NOW.md")
+            return
+        relationship = "verified SHA is an ancestor of"
     if not fetched:
-        result.warn("NOW.md matches cached reference only; remote was not fetched")
+        result.warn(
+            "NOW.md ancestry is valid against cached reference only; "
+            "remote was not fetched")
         return
-    result.ok("NOW.md valid against fetched %s" % reference)
+    result.ok("NOW.md valid: %s fetched %s" % (relationship, reference))
 
 
 def fetch_reference(reference: str, result: Result, *, offline: bool) -> bool:
