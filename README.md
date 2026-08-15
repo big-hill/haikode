@@ -537,6 +537,10 @@ leader is armed.
 | `ctrl+x q` | queued prompts — edit or drop what is waiting |
 | `ctrl+c`, `ctrl+d` | quit |
 
+The mouse wheel scrolls the transcript both during and after a turn. Haiku
+Terminal sends one wheel step as a three-arrow burst; haikode distinguishes
+that burst from a single Up/Down press, so prompt history still works.
+
 `ctrl+x` followed by an unbound key is swallowed rather than typed into the
 prompt. **`ctrl+a` opens the provider list, not line-start** — that is
 opencode's ranking, and `Home` still moves to the start of the line.
@@ -1102,7 +1106,7 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2455 tests as of 2026-08-15, stdlib `unittest`, no network. Four
+2459 tests as of 2026-08-15, stdlib `unittest`, no network. Four
 documented wiring-audit failures and four skips are expected.
 `HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
 Haiku's keyring approval dialog.

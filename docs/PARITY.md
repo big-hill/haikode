@@ -2,7 +2,7 @@
 
 **Last parity audit: 2026-08-12**, against the opencode checkout at
 `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`). The current
-2026-08-15 haikode baseline is 2455 tests: 4 skips and **exactly 4
+2026-08-15 haikode baseline is 2459 tests: 4 skips and **exactly 4
 deliberate failures**, all in `tests/test_wiring_audit.py`, which pin the
 remaining dead code described below.
 
@@ -187,7 +187,7 @@ Verified by rendering the real program with `tests/render_tui.py`.
 | Session timeline, fork, tag, move | several | **Partial** | forking exists as `/fork`, `--fork` and `haikode sessions fork` (whole session, §10), just not from a TUI dialog; timeline, tag and move are absent |
 | External editor (`ctrl+x e`) | yes | **No** | `editor_open` is in `UNAVAILABLE_BINDINGS`: consumed and reported, not implemented |
 | Sidebar / file context toggles | yes | **No** | |
-| Mouse support | yes | **Yes** | scroll wheel in the transcript |
+| Mouse support | yes | **Yes** | scroll wheel in the transcript during and after a turn; a single Up/Down press still browses prompt history |
 | ASCII fallback for non-UTF-8 terminals | no | **Yes (haikode only)** | `Glyphs.detect()`, for serial and `TERM=vt100` |
 | Session persistence from the TUI | yes | **Yes** | every turn runs through the shared `TurnController.run_turn()` (tui.py:2270, 2712); the wiring audit asserts a TUI turn writes a session row (`TUIUsesTheTurnController`) — see §10 |
 

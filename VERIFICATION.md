@@ -40,6 +40,11 @@ reviewer.
   metadata, clean contents, 32-bit binaries, app signature and updater code
   were inspected. The live release path also selected, verified, parsed and
   cleaned the published x86_gcc2 asset without installing it.
+- Candidate `8aa2da9` restores normal Haiku Terminal wheel scrolling after a
+  completed turn without stealing single-arrow prompt history. Exact raw-PTY
+  wheel-burst and single-arrow tests passed on physical x86_64 and x86_gcc2
+  Haiku. The 2459-test baseline also passed on macOS and physical x86_64 with
+  exactly the four documented wiring failures and no others.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
@@ -47,12 +52,12 @@ metadata, and observed target behavior override it when they differ.
 | Requirement | Current evidence | Status |
 |---|---|---|
 | Standalone CLI on Haiku | Installed and used daily on all three machines; no Node, Bun, tunnel or external server. Deployment is git push to a bare repo on the box. | PASS |
-| Curses TUI + REPL engine | Driven end-to-end through a real pty on Haiku (`tests/render_tui.py`); slash commands, dialogs, queueing, steering and farewell flow covered by the suite. | PASS |
+| Curses TUI + REPL engine | Driven end-to-end through a real pty on Haiku (`tests/render_tui.py`); slash commands, dialogs, queueing, steering, farewell flow and after-turn wheel scrolling are covered. Exact raw-PTY wheel-burst and single-arrow checks passed on physical x86_64 and x86_gcc2 Haiku. | PASS |
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
 | HPKG packaging | Published v0.1.1 packages were built on physical x86_gcc2 and x86_64 from commit `8fe7009`; architecture, version `0.1.1-109`, contents, BFS attributes and checksums were verified before and after GitHub upload. Candidate `0.1.1-114` completed an in-place physical x86_64 upgrade with persistent-state hashes unchanged, and candidate `0.1.1-115` was built and inspected on physical x86_gcc2. | PASS structural on both candidate architectures and x86_64 activation; TO VERIFY published-asset GUI upgrade |
-| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The updater candidate now passes its 2455-test baseline, fixtures, performance audit, native package build and live-asset verification on both architectures; x86_64 package activation/state preservation also passed. User-driven restart and a simple real prompt remain to verify. | PASS automated/structural/download/activation; TO VERIFY restarted GUI |
+| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The updater candidate passes its 2455-test baseline, fixtures, performance audit, native package build and live-asset verification on both architectures; x86_64 package activation/state preservation also passed. The scroll candidate passes the 2459-test baseline on x86_64 and exact physical raw-PTY checks on both architectures. User-driven restart and a simple real prompt remain to verify. | PASS automated/structural/download/activation; TO VERIFY restarted GUI |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
@@ -64,10 +69,16 @@ metadata, and observed target behavior override it when they differ.
 python3 -m unittest discover -s tests -b
 ```
 
-The current 2026-08-15 Mac run executed **2455 tests**. It fails **exactly four** on
+The current 2026-08-15 Mac run executed **2459 tests**. It fails **exactly four** on
 purpose — the wiring-audit backlog documented in the README — and skips four.
 A fifth failure is a real regression. `scripts/ci_baseline.py` verifies the
 failure identities, not only the count.
+
+The physical x86_64 scroll-candidate run also executed **2459 tests** with the
+same four intentional failures, four skips, no other failures and no errors.
+Its exact raw-PTY checks distinguish a three-arrow wheel burst from a single
+prompt-history arrow. The same targeted 25-test regression set and exact PTY
+checks passed on physical x86_gcc2.
 
 The physical x86_gcc2 updater-candidate run also executed **2455 tests** with
 the same four intentional failures, two platform-specific skips, no other
