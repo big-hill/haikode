@@ -22,6 +22,18 @@ reviewer.
   from v0.1.0 found v0.1.1, downloaded the matching x86_64 asset, and printed
   the correct installation path. Package activation, state preservation and
   the post-upgrade prompt remain **TO VERIFY**.
+- Published `v0.1.2` at `374bada` has matching `0.1.2-119` x86_64 and
+  x86_gcc2 packages. The 2460-test baseline, all 13 fixture validations,
+  deterministic performance audit, native build, package metadata, signature,
+  multiple-launch flag, app version 0.1.2, 2728-byte HVIF icon, links and clean
+  contents passed on both physical architectures. GitHub reports SHA-256
+  `575826452d8e80abd61b3fa8ffbed47dbb8ebc500c74acfc257966b4da587697`
+  for x86_64 and
+  `be6c276c150c65e6f7e91f72ada6fa4254c66baf0b15a5e835e3acc41ebf3fa7`
+  for x86_gcc2; fresh post-upload downloads matched the local packages byte
+  for byte. The live latest-release check from installed x86_64 `0.1.1-118`
+  selected v0.1.2, its matching asset and digest. The user-driven `/update`,
+  close/reopen, state-preservation check and real prompt remain **TO VERIFY**.
 - Candidate `76910f0` makes an explicit `/update` verify GitHub's asset digest
   and HPKG name/version, then wait for `pkgman install -y` to complete. Its
   2455-test baseline passed on macOS and physical x86_64 Haiku with only the
@@ -56,8 +68,8 @@ metadata, and observed target behavior override it when they differ.
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
-| HPKG packaging | Published v0.1.1 packages were built on physical x86_gcc2 and x86_64 from commit `8fe7009`; architecture, version `0.1.1-109`, contents, BFS attributes and checksums were verified before and after GitHub upload. Candidate `0.1.1-114` completed an in-place physical x86_64 upgrade with persistent-state hashes unchanged, and candidate `0.1.1-115` was built and inspected on physical x86_gcc2. | PASS structural on both candidate architectures and x86_64 activation; TO VERIFY published-asset GUI upgrade |
-| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The updater candidate passes its 2455-test baseline, fixtures, performance audit, native package build and live-asset verification on both architectures; x86_64 package activation/state preservation also passed. The scroll candidate passes the 2459-test baseline on x86_64 and exact physical raw-PTY checks on both architectures. User-driven restart and a simple real prompt remain to verify. | PASS automated/structural/download/activation; TO VERIFY restarted GUI |
+| HPKG packaging | Published v0.1.2 packages were built on physical x86_gcc2 and x86_64 from commit `374bada`; architecture, version `0.1.2-119`, contents, BFS resources, checksums and fresh post-upload bytes were verified on both. Candidate `0.1.1-114` previously completed an in-place physical x86_64 upgrade with persistent-state hashes unchanged. | PASS structural and published bytes on both architectures; TO VERIFY v0.1.2 activation |
+| Real Haiku release gate | v0.1.2 passed the 2460-test baseline, all 13 fixture validations, deterministic performance audit, native build and exact raw-PTY wheel/history checks on x86_gcc2 and x86_64. The installed x86_64 updater selects the live release's correct asset and digest. User-driven `/update`, restart and a simple real prompt remain to verify. | PASS automated/structural/download selection; TO VERIFY user-driven activation |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
@@ -73,6 +85,12 @@ The current 2026-08-15 Mac run executed **2460 tests**. It fails **exactly four*
 purpose — the wiring-audit backlog documented in the README — and skips four.
 A fifth failure is a real regression. `scripts/ci_baseline.py` verifies the
 failure identities, not only the count.
+
+The physical x86_64 and x86_gcc2 v0.1.2 release runs each discovered **2460
+tests** and passed `scripts/ci_baseline.py`: exactly the same four intentional
+wiring failures, platform-appropriate skips, no other failures and no errors.
+Both also passed all 13 fixture validations, the deterministic performance
+audit and exact raw-PTY wheel-burst versus single-arrow checks.
 
 The physical x86_64 scroll-candidate run also executed **2459 tests** with the
 same four intentional failures, four skips, no other failures and no errors.
@@ -107,3 +125,9 @@ correct asset for both architectures. The equivalent updater candidate was
 activated on x86_64 with unchanged persistent-state hashes, but that does not
 replace the pending user-driven close/reopen and real-prompt checks against an
 installed release asset.
+
+For v0.1.2, the release tag resolves to the exact dual-architecture build
+commit, GitHub's asset digests match `SHA256SUMS.txt`, fresh downloads match the
+locally inspected packages byte for byte, and the installed x86_64 updater
+selects the correct live asset. Activation remains a separate user-observed
+test.
