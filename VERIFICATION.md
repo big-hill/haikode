@@ -22,12 +22,14 @@ reviewer.
   from v0.1.0 found v0.1.1, downloaded the matching x86_64 asset, and printed
   the correct installation path. Package activation, state preservation and
   the post-upgrade prompt remain **TO VERIFY**.
-- Candidate `c657e58` makes an explicit `/update` verify GitHub's asset digest
-  and run `pkgman install -y`. Its 2448-test baseline passed on macOS and
-  physical x86_64 Haiku with only the four documented wiring failures; the
-  native app also built there. A live GitHub asset was downloaded, verified,
-  parsed as an HPKG and cleaned up on x86_64 without installation. End-to-end
-  package activation and x86_gcc2 execution remain **TO VERIFY**.
+- Candidate `76910f0` makes an explicit `/update` verify GitHub's asset digest
+  and HPKG name/version, then wait for `pkgman install -y` to complete. Its
+  2455-test baseline passed on macOS and physical x86_64 Haiku with only the
+  four documented wiring failures; the native app also built there. The final
+  candidate downloaded the live GitHub asset, verified it as `haikode
+  0.1.1-109`, and cleaned its private temporary copy on x86_64 without
+  installation. End-to-end package activation and x86_gcc2 execution remain
+  **TO VERIFY**.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
