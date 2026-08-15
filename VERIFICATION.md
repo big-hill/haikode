@@ -28,8 +28,12 @@ reviewer.
   four documented wiring failures; the native app also built there. The final
   candidate downloaded the live GitHub asset, verified it as `haikode
   0.1.1-109`, and cleaned its private temporary copy on x86_64 without
-  installation. End-to-end package activation and x86_gcc2 execution remain
-  **TO VERIFY**.
+  installation. The full branch at `192c8cd` was then built as
+  `haikode-0.1.1-114-x86_64.hpkg` and upgraded the physical system from
+  `0.1.0-106`. A fresh process imported the new packaged updater, while the
+  configuration and session database hashes remained unchanged. User-driven
+  close/reopen plus a real prompt, and x86_gcc2 execution, remain **TO
+  VERIFY**.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
@@ -41,8 +45,8 @@ metadata, and observed target behavior override it when they differ.
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
-| HPKG packaging | Published v0.1.1 packages were built on physical x86_gcc2 and x86_64 from commit `8fe7009`; architecture, version `0.1.1-109`, contents, BFS attributes and checksums were verified before and after GitHub upload. In-place upgrades use the commit-count package revision. | PASS structural; TO VERIFY manual v0.1.1 upgrade |
-| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The post-release `/update` download passed; package activation, state preservation and a simple real prompt remain to verify. | PASS automated/structural/download; TO VERIFY installed upgrade |
+| HPKG packaging | Published v0.1.1 packages were built on physical x86_gcc2 and x86_64 from commit `8fe7009`; architecture, version `0.1.1-109`, contents, BFS attributes and checksums were verified before and after GitHub upload. Candidate `0.1.1-114` also completed an in-place physical x86_64 upgrade with persistent-state hashes unchanged. | PASS structural and candidate upgrade; TO VERIFY published-asset GUI upgrade |
+| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The post-release `/update` download and the candidate package activation/state-preservation checks passed; user-driven restart and a simple real prompt remain to verify. | PASS automated/structural/download/activation; TO VERIFY restarted GUI |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
@@ -78,5 +82,7 @@ rebuilt the package, compared installed trees against the checkout by hash,
 and audited the full git history for personal identifiers (zero findings).
 For v0.1.1, GitHub's downloaded release assets matched the locally verified
 packages byte for byte, and the live `releases/latest` response selected the
-correct asset for both architectures. Those facts do not replace the pending
-manual x86_64 package activation, state-preservation and real-prompt checks.
+correct asset for both architectures. The equivalent updater candidate was
+activated on x86_64 with unchanged persistent-state hashes, but that does not
+replace the pending user-driven close/reopen and real-prompt checks against an
+installed release asset.
