@@ -1572,11 +1572,12 @@ class PinnedTodoTests(unittest.TestCase):
 
 
 class WheelEmulationTests(unittest.TestCase):
-    """Arrows scroll instead of browsing history when that is the intent.
+    """Haiku's wheel triplets scroll without stealing single arrow presses.
 
-    Haiku Terminal turns wheel ticks into arrow keys in the alternate screen
-    (it never sends mouse reports there), so arrows during a running turn or
-    in scrollback must reach _scroll, not the prompt history.
+    Haiku Terminal writes three arrow sequences for one wheel step in the
+    alternate screen. A single physical arrow still belongs to prompt history,
+    but the immediate triplet must reach transcript scrolling even when an
+    agent has finished and the view is following the bottom.
     """
 
     def _seeded(self):
@@ -1646,6 +1647,57 @@ class WheelEmulationTests(unittest.TestCase):
         ui = self._seeded()
         ui._on_vertical(-1)
         self.assertEqual(ui.buffer, "earlier prompt")
+
+    def test_wheel_up_scrolls_after_the_turn_has_finished(self):
+        ui = self._seeded()
+        calls = []
+        ui._scroll = calls.append
+        with patch.object(tui.sys, "platform", "haiku1"), \
+                patch.object(ui, "_peek_key",
+                             side_effect=[tui.curses.KEY_UP,
+                                          tui.curses.KEY_UP]):
+            ui._handle_key(tui.curses.KEY_UP)
+
+        self.assertEqual(calls, [-3])
+        self.assertEqual(ui.buffer, "")
+
+    def test_raw_haiku_wheel_triplet_scrolls_after_the_turn_has_finished(self):
+        ui = self._seeded()
+        calls = []
+        ui._scroll = calls.append
+        # The physical Haiku ncurses build exposes each CSI arrow as its three
+        # raw tokens even with keypad(True). The first Esc is already in hand;
+        # this is the rest of all three arrows from one Terminal wheel step.
+        raw_tail = ["[", "A", 27, "[", "A", 27, "[", "A"]
+        with patch.object(tui.sys, "platform", "haiku1"), \
+                patch.object(ui, "_peek_key", side_effect=raw_tail):
+            ui._handle_key(27)
+
+        self.assertEqual(calls, [-3])
+        self.assertEqual(ui.buffer, "")
+
+    def test_wheel_down_scrolls_after_the_turn_has_finished(self):
+        ui = self._seeded()
+        calls = []
+        ui._scroll = calls.append
+        with patch.object(tui.sys, "platform", "haiku1"), \
+                patch.object(ui, "_peek_key",
+                             side_effect=[tui.curses.KEY_DOWN,
+                                          tui.curses.KEY_DOWN]):
+            ui._handle_key(tui.curses.KEY_DOWN)
+
+        self.assertEqual(calls, [3])
+        self.assertEqual(ui.buffer, "")
+
+    def test_one_buffered_arrow_is_not_mistaken_for_a_wheel(self):
+        ui = self._seeded()
+        with patch.object(tui.sys, "platform", "haiku1"), \
+                patch.object(ui, "_peek_key",
+                             side_effect=[tui.curses.KEY_UP, None]):
+            ui._handle_key(tui.curses.KEY_UP)
+
+        self.assertEqual(ui.buffer, "earlier prompt")
+        self.assertEqual(ui._read_key(), tui.curses.KEY_UP)
 
 
 class CommandOutputTests(unittest.TestCase):

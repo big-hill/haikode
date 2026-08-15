@@ -2360,6 +2360,10 @@ class TUI:
         self.history: List[str] = []
         self.history_index = 0
         self.history_draft = ""
+        # Keys tentatively read while distinguishing Haiku Terminal's three-
+        # arrow wheel burst from a physical arrow press. A partial burst is
+        # replayed here so probing can never eat real input.
+        self._key_backlog: List[Any] = []
 
         # view state
         self.scroll = 0
@@ -3074,6 +3078,8 @@ class TUI:
 
     def _read_key(self):
         """Return a str for printable input, an int for control/function keys."""
+        if self._key_backlog:
+            return self._key_backlog.pop(0)
         try:
             key = self.stdscr.get_wch()
         except curses.error:
@@ -3136,6 +3142,12 @@ class TUI:
                 if follow not in ("[", "O"):
                     key, alt = follow, True
 
+        if self.dialog is None:
+            wheel = self._haiku_wheel_delta(key)
+            if wheel:
+                self._scroll(wheel)
+                return
+
         event = self._key_event(key, alt)
         if self.dialog is not None:
             self._dialog_key(event)
@@ -3145,6 +3157,53 @@ class TUI:
         if event is not None and self._input_binding(event):
             return
         self._input_key(key, alt)
+
+    def _haiku_wheel_delta(self, key) -> int:
+        """Coalesce the arrow triplet Haiku Terminal emits for one wheel step.
+
+        Terminal's alternate-screen handler writes three identical arrow
+        escape sequences in one PTY write. Curses otherwise makes those
+        indistinguishable from prompt-history arrows. The other two keys are
+        therefore probed without waiting; only a complete triplet is a wheel.
+        Anything shorter is replayed through _read_key so fast key presses and
+        unrelated input are never swallowed.
+        """
+        if not sys.platform.startswith("haiku") or key not in (
+                curses.KEY_UP, curses.KEY_DOWN):
+            return 0
+
+        buffered = []
+        decoded = []
+        for _ in range(2):
+            following, raw = self._peek_navigation_key()
+            buffered.extend(raw)
+            if following is None:
+                break
+            decoded.append(following)
+        if len(decoded) == 2 and all(item == key for item in decoded):
+            return -3 if key == curses.KEY_UP else 3
+
+        if buffered:
+            self._key_backlog[0:0] = buffered
+        return 0
+
+    def _peek_navigation_key(self):
+        """Read one queued key and retain its raw tokens for exact replay."""
+        raw = []
+        first = self._peek_key()
+        if first is None:
+            return None, raw
+        raw.append(first)
+        if first != 27:
+            return first, raw
+
+        introducer = self._peek_key()
+        if introducer is None:
+            return first, raw
+        raw.append(introducer)
+        if introducer not in ("[", "O"):
+            return first, raw
+        return self._decode_escape(introducer, raw), raw
 
     def _key_event(self, key, alt: bool = False):
         """One getch value as a keybind.KeyEvent, or None if it is not a key."""
@@ -3390,7 +3449,7 @@ class TUI:
         elif key == curses.KEY_NPAGE:
             self._scroll(self._transcript_height() - 1)
 
-    def _decode_escape(self, introducer: str):
+    def _decode_escape(self, introducer: str, consumed=None):
         """Decode CSI/SS3 keys omitted by Haiku's terminfo, else consume them."""
         tail = ""
         limit = 1 if introducer == "O" else 16
@@ -3398,6 +3457,8 @@ class TUI:
             nxt = self._peek_key()
             if not isinstance(nxt, str) or len(nxt) != 1:
                 break
+            if consumed is not None:
+                consumed.append(nxt)
             tail += nxt
             if introducer == "O" or "@" <= nxt <= "~":
                 break
