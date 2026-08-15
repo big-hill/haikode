@@ -14,10 +14,12 @@ reviewer.
 - Published `v0.1.0` at `0016d1c` completed the dual-architecture release gate:
   x86_64 and x86_gcc2 packages, native suites, fixture validation, package
   inspection, and an independent x86_64 HaikuDepot install.
-- Local `v0.1.1` candidate `442945f` is not a release. Its Mac baseline,
-  x86_64 native build, physical multi-window behavior, and x86_64 HPKG
-  structure were checked. The x86_gcc2 build, independent v0.1.1 HaikuDepot
-  install, tag, push, and release remain **TO VERIFY**.
+- Published `v0.1.1` at `8fe7009` has matching `0.1.1-109` x86_64 and
+  x86_gcc2 packages. The 2440-test baseline, all 13 fixture validations,
+  deterministic performance audit, native build, package metadata, signature,
+  multiple-launch flag, HVIF icon, links, documentation and clean package
+  contents were checked on both physical architectures. A manual `/update`
+  from v0.1.0 followed by the x86_64 HaikuDepot upgrade remains **TO VERIFY**.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
@@ -29,8 +31,8 @@ metadata, and observed target behavior override it when they differ.
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
-| HPKG packaging | Published v0.1.0 packages passed on x86_gcc2 and x86_64 from the same commit; architecture fields follow HaikuPorts convention, and in-place upgrades get a commit-count package revision. v0.1.1 currently has x86_64 structural evidence only. | PASS for v0.1.0; TO VERIFY for v0.1.1 |
-| Real Haiku release gate | v0.1.0 passed its then-current baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE on x86_gcc2 and x86_64; a two-round live read-tool flow passed on x86_64. Repeat the relevant gate for later release commits. | PASS for v0.1.0; TO VERIFY for v0.1.1 |
+| HPKG packaging | Published v0.1.1 packages were built on physical x86_gcc2 and x86_64 from commit `8fe7009`; architecture, version `0.1.1-109`, contents, BFS attributes and checksums were verified before and after GitHub upload. In-place upgrades use the commit-count package revision. | PASS structural; TO VERIFY manual v0.1.1 upgrade |
+| Real Haiku release gate | v0.1.1 passed the 2440-test baseline, all 13 fixture validations, deterministic performance audit and native package build on x86_gcc2 and x86_64. Its physical multi-window behavior was exercised on x86_64 before release. The post-release `/update`, HaikuDepot upgrade, state preservation and simple real prompt remain to verify. | PASS automated/structural; TO VERIFY manual upgrade |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
@@ -64,4 +66,7 @@ Completed v0.1.0 acceptance runs used one SSH connection per machine and left
 no processes behind (`ps` verified). The independent review on hrev59917 also
 rebuilt the package, compared installed trees against the checkout by hash,
 and audited the full git history for personal identifiers (zero findings).
-Those facts do not close the remaining v0.1.1 gates listed above.
+For v0.1.1, GitHub's downloaded release assets matched the locally verified
+packages byte for byte, and the live `releases/latest` response selected the
+correct asset for both architectures. Those facts do not replace the pending
+manual x86_64 `/update` and HaikuDepot upgrade.
