@@ -1,6 +1,12 @@
 # hai Desktop for Haiku OS — Technical Specification
 
-**Status:** Proposed implementation specification  
+> **Superseded design document.** This 2026-07-13 proposal predates the shipped
+> architecture and still assigns policy, persistence, and mutations to C++.
+> Do not use it as current project truth. Start with
+> [`docs/project/CONTEXT.md`](docs/project/CONTEXT.md),
+> [`docs/project/CODEMAP.md`](docs/project/CODEMAP.md), and the current code.
+
+**Status:** Superseded proposal
 **Target:** Haiku OS native desktop application  
 **Product name:** `hai`  
 **Primary language:** C++17 using the Haiku API (BeAPI)  

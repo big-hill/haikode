@@ -1,7 +1,12 @@
 # hai — Full Native AI Coding Agent Desktop App for Haiku OS
 
+> **Superseded early proposal.** Its localhost server and C++ policy ownership
+> were not adopted. Start with
+> [`docs/project/CONTEXT.md`](../docs/project/CONTEXT.md),
+> [`docs/project/CODEMAP.md`](../docs/project/CODEMAP.md), and the current code.
+
 **Version**: 0.2 (Desktop)
-**Status**: Spec generated with assistance from Codex (gpt-5.6-sol, high effort) + previous Claude plan + current Python CLI implementation.
+**Status**: Superseded early proposal.
 
 ## 1. High-level Architecture
 

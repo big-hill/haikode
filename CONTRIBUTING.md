@@ -1,5 +1,10 @@
 # Contributing
 
+Start with `./scripts/project-preflight`, then read
+[`docs/project/CONTEXT.md`](docs/project/CONTEXT.md) and
+[`docs/project/WORKFLOW.md`](docs/project/WORKFLOW.md). They are the shared,
+agent-agnostic project contract and workflow.
+
 ## The one constraint that shapes everything
 
 **Python 3.10, standard library only.** No pip, no vendored packages, no

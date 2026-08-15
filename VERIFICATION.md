@@ -1,6 +1,6 @@
 # haikode completion and verification matrix
 
-Last updated: 2026-08-12. This file records executable evidence, not
+Last updated: 2026-08-15. This file records executable evidence, not
 intended behavior. Every PASS below names the machine class it was
 demonstrated on; nothing is claimed from reading the source alone.
 
@@ -9,6 +9,19 @@ Hardware the evidence comes from: a stock-named x86_64 desktop
 a MacBook5,1 (R1/beta6 development, hrev59917) run by an independent
 reviewer.
 
+## Release boundary
+
+- Published `v0.1.0` at `0016d1c` completed the dual-architecture release gate:
+  x86_64 and x86_gcc2 packages, native suites, fixture validation, package
+  inspection, and an independent x86_64 HaikuDepot install.
+- Local `v0.1.1` candidate `442945f` is not a release. Its Mac baseline,
+  x86_64 native build, physical multi-window behavior, and x86_64 HPKG
+  structure were checked. The x86_gcc2 build, independent v0.1.1 HaikuDepot
+  install, tag, push, and release remain **TO VERIFY**.
+
+Recorded release evidence is a snapshot. Git, current test output, package
+metadata, and observed target behavior override it when they differ.
+
 | Requirement | Current evidence | Status |
 |---|---|---|
 | Standalone CLI on Haiku | Installed and used daily on all three machines; no Node, Bun, tunnel or external server. Deployment is git push to a bare repo on the box. | PASS |
@@ -16,8 +29,8 @@ reviewer.
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
 | Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
-| HPKG packaging | Native C++ and HPKG builds pass on x86_gcc2 and x86_64 from the same commit; architecture fields follow HaikuPorts convention, and in-place upgrades get a commit-count package revision. | PASS |
-| Real Haiku release gate | The 2434-test baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE pass on x86_gcc2 and x86_64. A two-round live read-tool flow also passes on x86_64. | PASS |
+| HPKG packaging | Published v0.1.0 packages passed on x86_gcc2 and x86_64 from the same commit; architecture fields follow HaikuPorts convention, and in-place upgrades get a commit-count package revision. v0.1.1 currently has x86_64 structural evidence only. | PASS for v0.1.0; TO VERIFY for v0.1.1 |
+| Real Haiku release gate | v0.1.0 passed its then-current baseline, all 13 fixture validations, deterministic performance audit and live Zen SSE on x86_gcc2 and x86_64; a two-round live read-tool flow passed on x86_64. Repeat the relevant gate for later release commits. | PASS for v0.1.0; TO VERIFY for v0.1.1 |
 | MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
@@ -29,7 +42,7 @@ reviewer.
 python3 -m unittest discover -s tests -b
 ```
 
-The 2026-08-12 Mac run executed **2434 tests**. It fails **exactly four** on
+The 2026-08-15 Mac run executed **2440 tests**. It fails **exactly four** on
 purpose — the wiring-audit backlog documented in the README — and skips four.
 A fifth failure is a real regression. `scripts/ci_baseline.py` verifies the
 failure identities, not only the count.
@@ -47,8 +60,8 @@ live-provider or TLS latency.
 
 ## Acceptance shape
 
-Acceptance runs happen over a single non-multiplexed SSH connection per
-machine and leave no processes behind (`ps` verified). The independent
-review on hrev59917 additionally rebuilt the package, compared installed
-trees against the checkout by hash, and audited the full git history for
-personal identifiers (zero findings).
+Completed v0.1.0 acceptance runs used one SSH connection per machine and left
+no processes behind (`ps` verified). The independent review on hrev59917 also
+rebuilt the package, compared installed trees against the checkout by hash,
+and audited the full git history for personal identifiers (zero findings).
+Those facts do not close the remaining v0.1.1 gates listed above.

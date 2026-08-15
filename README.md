@@ -1076,13 +1076,19 @@ and renaming them would break a mixed-age install in both directions.
 
 ## Development
 
+Agents and maintainers restarting work should run
+`./scripts/project-preflight` and read
+[`docs/project/CONTEXT.md`](docs/project/CONTEXT.md) before changing the tree.
+The project context is shared across agent vendors; `AGENTS.md` and
+`CLAUDE.md` are only thin entry adapters.
+
 ```sh
 python3 -m compileall -q haikode
 sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2434 tests as of 2026-08-12, stdlib `unittest`, no network. Four
+2440 tests as of 2026-08-15, stdlib `unittest`, no network. Four
 documented wiring-audit failures and four skips are expected.
 `HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
 Haiku's keyring approval dialog.

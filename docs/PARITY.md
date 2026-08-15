@@ -1,9 +1,10 @@
 # haikode vs opencode — verified parity
 
-**Last verified: 2026-08-12**, against haikode `0.1.1` (2434 tests: 4 skips
-and **exactly 4 deliberate failures**, all in `tests/test_wiring_audit.py`,
-which pin the remaining dead code — see the inventory below) and the opencode
-checkout at `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`).
+**Last parity audit: 2026-08-12**, against the opencode checkout at
+`scratchpad/opencode-src` (`packages/opencode`, `packages/tui`). The current
+2026-08-15 haikode `0.1.1` baseline is 2440 tests: 4 skips and **exactly 4
+deliberate failures**, all in `tests/test_wiring_audit.py`, which pin the
+remaining dead code described below.
 
 This document exists to stop us fooling ourselves. The failure mode it guards
 against is real and has already happened here once: a module can be complete,
