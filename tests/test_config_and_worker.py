@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from haikode import config as config_module
+from haikode import __version__, config as config_module
 from haikode.config import Config
 from haikode.providers import base as provider_base
 from haikode.schema import CompletionChunk
@@ -30,6 +31,19 @@ class ScriptedProvider:
                   else [CompletionChunk(text="done", stop_reason="stop")])
         for chunk in chunks:
             yield chunk
+
+
+class ReleaseMetadataTests(unittest.TestCase):
+    def test_native_app_version_matches_python_package(self):
+        root = Path(__file__).resolve().parents[1]
+        resources = (root / "desktop/resources/haikode.rdef").read_text()
+        fields = []
+        for name in ("major", "middle", "minor"):
+            match = re.search(r"\b%s\s*=\s*(\d+)\s*," % name, resources)
+            self.assertIsNotNone(match, name)
+            fields.append(int(match.group(1)))
+        self.assertEqual(tuple(map(int, __version__.split("."))),
+                         tuple(fields))
 
 
 def tool_call_chunks(call_id, name, arguments):
