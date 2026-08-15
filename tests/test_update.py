@@ -5,10 +5,12 @@ import io
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from haikode import update
+from haikode.repl import REPL
 
 
 def release(tag, assets=(), digest=""):
@@ -49,6 +51,14 @@ class CheckTests(unittest.TestCase):
                         % update._architecture()], digest=digest))
         self.assertEqual(digest, state["digest"])
 
+    def test_an_unrelated_or_wrong_version_package_is_not_selected(self):
+        state = update.check(fetch=lambda: release(
+            "v9.9.9", ["helper-9.9.9-60-%s.hpkg" % update._architecture(),
+                       "haikode-9.9.8-60-%s.hpkg"
+                       % update._architecture()]))
+        self.assertTrue(state["available"])
+        self.assertEqual("", state["asset"])
+
     def test_an_older_release_is_not_an_update(self):
         state = update.check(fetch=lambda: release("v0.0.1"))
         self.assertFalse(state["available"])
@@ -80,6 +90,35 @@ class StartupNoticeTests(unittest.TestCase):
             {}, fetch=lambda: release("v0.0.1")))
 
 
+class PackageInspectionTests(unittest.TestCase):
+    def test_identity_comes_from_haikus_absolute_package_tool(self):
+        completed = subprocess.CompletedProcess(
+            [], 0, "haikode\t0.1.2-110\n", "")
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(update, "PACKAGE_PATH",
+                             Path(temp) / "package"), \
+                patch.object(update.os, "access", return_value=True), \
+                patch.object(update.Path, "is_file", return_value=True), \
+                patch.object(update.subprocess, "run",
+                             return_value=completed) as runner:
+            identity = update._package_identity(Path("/tmp/release.hpkg"))
+
+        self.assertEqual(("haikode", "0.1.2-110"), identity)
+        self.assertEqual(
+            [str(Path(temp) / "package"), "info", "-f",
+             "%name%\t%version%\n", "/tmp/release.hpkg"],
+            runner.call_args.args[0])
+
+    def test_rejected_package_metadata_fails_closed(self):
+        completed = subprocess.CompletedProcess([], 1, "", "bad package")
+        with patch.object(update, "PACKAGE_PATH", Path("/system/package")), \
+                patch.object(update.os, "access", return_value=True), \
+                patch.object(update.Path, "is_file", return_value=True), \
+                patch.object(update.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "bad package"):
+                update._package_identity(Path("/tmp/release.hpkg"))
+
+
 class PackagedUpdateTests(unittest.TestCase):
     def state(self, payload, digest=None):
         checksum = digest
@@ -97,8 +136,10 @@ class PackagedUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(update, "install_kind", return_value="package"), \
                 patch.object(update, "UPDATE_DIR", Path(temp)), \
-                patch.object(update.shutil, "which",
+                patch.object(update, "_pkgman_path",
                              return_value="/boot/system/bin/pkgman"), \
+                patch.object(update, "_package_identity",
+                             return_value=("haikode", "0.1.2-110")), \
                 patch.object(update.urllib.request, "urlopen",
                              return_value=io.BytesIO(payload)), \
                 patch.object(update.subprocess, "run",
@@ -108,6 +149,7 @@ class PackagedUpdateTests(unittest.TestCase):
 
         argv = runner.call_args.args[0]
         self.assertEqual(argv[:3], ["/boot/system/bin/pkgman", "install", "-y"])
+        self.assertNotIn("timeout", runner.call_args.kwargs)
         self.assertEqual(Path(argv[3]).name,
                          "haikode-0.1.2-110-x86_64.hpkg")
         self.assertIn("installed haikode v0.1.2", result)
@@ -120,7 +162,7 @@ class PackagedUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(update, "install_kind", return_value="package"), \
                 patch.object(update, "UPDATE_DIR", Path(temp)), \
-                patch.object(update.shutil, "which",
+                patch.object(update, "_pkgman_path",
                              return_value="/boot/system/bin/pkgman"), \
                 patch.object(update.urllib.request, "urlopen",
                              return_value=io.BytesIO(payload)), \
@@ -143,14 +185,49 @@ class PackagedUpdateTests(unittest.TestCase):
         fetch.assert_not_called()
         runner.assert_not_called()
 
+    def test_wrong_package_metadata_never_reaches_pkgman(self):
+        payload = b"a renamed but unrelated package"
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update, "UPDATE_DIR", Path(temp)), \
+                patch.object(update, "_pkgman_path",
+                             return_value="/boot/system/bin/pkgman"), \
+                patch.object(update, "_package_identity",
+                             return_value=("other", "0.1.2-110")), \
+                patch.object(update.urllib.request, "urlopen",
+                             return_value=io.BytesIO(payload)), \
+                patch.object(update.subprocess, "run") as runner:
+            result = update.apply_update(self.state(payload))
+
+            self.assertIn("package validation failed", result)
+            runner.assert_not_called()
+            self.assertEqual([], list(Path(temp).iterdir()))
+
+    def test_a_non_https_asset_is_never_downloaded_or_installed(self):
+        payload = b"package"
+        state = self.state(payload)
+        state["asset"] = "http://example.invalid/haikode-0.1.2-110-x86_64.hpkg"
+        with patch.object(update, "install_kind", return_value="package"), \
+                patch.object(update, "_pkgman_path",
+                             return_value="/boot/system/bin/pkgman"), \
+                patch.object(update.urllib.request, "urlopen") as fetch, \
+                patch.object(update.subprocess, "run") as runner:
+            result = update.apply_update(state)
+
+        self.assertIn("HTTPS", result)
+        fetch.assert_not_called()
+        runner.assert_not_called()
+
     def test_a_pkgman_failure_keeps_the_verified_package_for_recovery(self):
         payload = b"verified package"
         completed = subprocess.CompletedProcess([], 5, "", "transaction failed")
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(update, "install_kind", return_value="package"), \
                 patch.object(update, "UPDATE_DIR", Path(temp)), \
-                patch.object(update.shutil, "which",
+                patch.object(update, "_pkgman_path",
                              return_value="/boot/system/bin/pkgman"), \
+                patch.object(update, "_package_identity",
+                             return_value=("haikode", "0.1.2-110")), \
                 patch.object(update.urllib.request, "urlopen",
                              return_value=io.BytesIO(payload)), \
                 patch.object(update.subprocess, "run", return_value=completed):
@@ -161,6 +238,22 @@ class PackagedUpdateTests(unittest.TestCase):
             self.assertIn("transaction failed", result)
             self.assertEqual(1, len(kept))
             self.assertIn(str(kept[0]), result)
+
+
+class UpdateCommandRenderingTests(unittest.TestCase):
+    def test_command_returns_text_instead_of_printing_over_curses(self):
+        state = {"available": True, "current": "0.1.1",
+                 "latest": "v0.1.2", "error": ""}
+        printed = io.StringIO()
+        with patch.object(update, "check", return_value=state), \
+                patch.object(update, "apply_update",
+                             return_value="installed; restart"), \
+                redirect_stdout(printed):
+            result = REPL._cmd_update(None, "")
+
+        self.assertEqual("", printed.getvalue())
+        self.assertIn("newest release: v0.1.2", result)
+        self.assertIn("installed; restart", result)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,8 +35,9 @@ RELEASES_URL = ("https://api.github.com/repos/big-hill/haikode/"
                 "releases/latest")
 CHECK_TIMEOUT = 6.0
 DOWNLOAD_TIMEOUT = 120.0
-INSTALL_TIMEOUT = 300.0
 UPDATE_DIR = Path("/tmp")
+PKGMAN_PATH = Path("/boot/system/bin/pkgman")
+PACKAGE_PATH = Path("/boot/system/bin/package")
 DOWNLOAD_CHUNK = 128 * 1024
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
@@ -117,9 +117,12 @@ def check(fetch=None) -> Dict[str, Any]:
     if parse_version(latest) <= parse_version(__version__):
         return result
     wanted = _architecture()
+    version = parse_version(latest)[:3]
+    prefix = "haikode-%d.%d.%d-" % version
+    suffix = "-%s.hpkg" % wanted
     for asset in payload.get("assets") or []:
         name = str(asset.get("name") or "")
-        if name.endswith(".hpkg") and wanted in name:
+        if name.startswith(prefix) and name.endswith(suffix):
             result["asset"] = str(asset.get("browser_download_url") or "")
             result["digest"] = str(asset.get("digest") or "")
             break
@@ -129,8 +132,10 @@ def check(fetch=None) -> Dict[str, Any]:
 
 def _download_package(asset: str, expected_sha256: str) -> Path:
     """Download one HPKG to a private temporary file and verify its bytes."""
-    asset_name = Path(urllib.parse.unquote(
-        urllib.parse.urlparse(asset).path)).name
+    parsed = urllib.parse.urlparse(asset)
+    if parsed.scheme != "https":
+        raise ValueError("release asset does not use HTTPS")
+    asset_name = Path(urllib.parse.unquote(parsed.path)).name
     if not asset_name.endswith(".hpkg"):
         raise ValueError("release asset is not an HPKG")
 
@@ -179,6 +184,30 @@ def _process_error(completed: subprocess.CompletedProcess) -> str:
     return detail or "pkgman exited with status %s" % completed.returncode
 
 
+def _package_identity(target: Path) -> Tuple[str, str]:
+    """Read the name and version from the verified HPKG itself."""
+    if not PACKAGE_PATH.is_file() or not os.access(str(PACKAGE_PATH), os.X_OK):
+        raise ValueError("Haiku's package inspector was not found")
+    inspected = subprocess.run(
+        [str(PACKAGE_PATH), "info", "-f", "%name%\t%version%\n",
+         str(target)],
+        capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+    if inspected.returncode != 0:
+        detail = str(inspected.stderr or inspected.stdout or "").strip()
+        raise ValueError(detail or "package inspector rejected the HPKG")
+    fields = inspected.stdout.strip().split("\t")
+    if len(fields) != 2 or not fields[0] or not fields[1]:
+        raise ValueError("package inspector returned an unexpected identity")
+    return fields[0], fields[1]
+
+
+def _pkgman_path() -> str:
+    """Use Haiku's system binary, never a project-controlled PATH entry."""
+    if PKGMAN_PATH.is_file() and os.access(str(PKGMAN_PATH), os.X_OK):
+        return str(PKGMAN_PATH)
+    return ""
+
+
 def apply_update(state: Dict[str, Any]) -> str:
     """Do what can safely be done; return the message for the user."""
     if not state.get("available"):
@@ -212,7 +241,7 @@ def apply_update(state: Dict[str, Any]) -> str:
             return ("release %s has an invalid SHA-256 digest; it was not "
                     "installed automatically."
                     % state.get("latest"))
-        pkgman = shutil.which("pkgman")
+        pkgman = _pkgman_path()
         if not pkgman:
             return ("pkgman was not found; install %s from %s"
                     % (state.get("latest"),
@@ -223,12 +252,20 @@ def apply_update(state: Dict[str, Any]) -> str:
         except Exception as exc:
             return "download failed: %s" % exc
         try:
+            package_name, package_version = _package_identity(target)
+            expected_version = parse_version(str(state.get("latest") or ""))[:3]
+            actual_version = parse_version(package_version)[:3]
+            if package_name != "haikode" or actual_version != expected_version:
+                raise ValueError("expected haikode %d.%d.%d, got %s %s"
+                                 % (*expected_version, package_name,
+                                    package_version))
+        except Exception as exc:
+            _remove_download(target)
+            return "package validation failed: %s" % exc
+        try:
             installed = subprocess.run(
                 [pkgman, "install", "-y", str(target)],
-                capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            return ("package install timed out; the verified package remains "
-                    "at %s" % target)
+                capture_output=True, text=True)
         except OSError as exc:
             return ("package install failed: %s; the verified package remains "
                     "at %s" % (exc, target))

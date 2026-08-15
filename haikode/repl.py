@@ -1252,14 +1252,12 @@ class REPL:
         from . import update
         state = update.check()
         if state.get("error"):
-            print("update check failed: %s" % state["error"])
-            return
+            return "update check failed: %s" % state["error"]
         if not state.get("available"):
-            print("haikode is up to date (%s)." % state.get("current"))
-            return
-        print("newest release: %s (running %s)"
-              % (state.get("latest"), state.get("current")))
-        print(update.apply_update(state))
+            return "haikode is up to date (%s)." % state.get("current")
+        heading = "newest release: %s (running %s)" \
+            % (state.get("latest"), state.get("current"))
+        return heading + "\n" + update.apply_update(state)
 
     def _cmd_compact(self, arg):
         action = arg.strip().lower()

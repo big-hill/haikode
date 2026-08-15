@@ -86,9 +86,10 @@ no pip — the requirements table above is the whole story.
 
 Run `/update` in haikode's terminal interface. That explicit command checks the
 latest GitHub release, selects the HPKG for the current architecture, verifies
-GitHub's SHA-256 asset digest, and runs Haiku's package manager in
-non-interactive mode. Wait for the installed message, then close and reopen
-haikode to use the new version.
+GitHub's SHA-256 asset digest, confirms that the HPKG identifies itself as the
+expected haikode version, and runs Haiku's package manager in non-interactive
+mode. Wait for the installed message, then close and reopen haikode to use the
+new version.
 
 The passive startup check never installs anything. A failed checksum never
 reaches `pkgman`; a package whose installation fails is kept in `/tmp` and its
@@ -1101,7 +1102,7 @@ sh -n scripts/install-on-haiku.sh scripts/haikode-launcher scripts/build-hpkg.sh
 HAI_DISABLE_KEYSTORE=1 python3 -m unittest discover -s tests -t . -p "test_*.py" -b
 ```
 
-2448 tests as of 2026-08-15, stdlib `unittest`, no network. Four
+2455 tests as of 2026-08-15, stdlib `unittest`, no network. Four
 documented wiring-audit failures and four skips are expected.
 `HAI_DISABLE_KEYSTORE=1` skips the native helper so the suite never blocks on
 Haiku's keyring approval dialog.

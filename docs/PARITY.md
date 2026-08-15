@@ -2,7 +2,7 @@
 
 **Last parity audit: 2026-08-12**, against the opencode checkout at
 `scratchpad/opencode-src` (`packages/opencode`, `packages/tui`). The current
-2026-08-15 haikode `0.1.1` baseline is 2448 tests: 4 skips and **exactly 4
+2026-08-15 haikode baseline is 2455 tests: 4 skips and **exactly 4
 deliberate failures**, all in `tests/test_wiring_audit.py`, which pin the
 remaining dead code described below.
 

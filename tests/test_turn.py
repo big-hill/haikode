@@ -767,6 +767,16 @@ class AsyncCommandsAreCancellable(TurnTestCase):
         self.assertEqual(ui.buffer, "do not lose this")
         self.assertIn("still running", ui.status_hint)
 
+    def test_normal_quit_is_blocked_while_pkgman_is_running(self):
+        ui = self.make_tui()
+        ui._busy_label = "update"
+        ui._busy_cancellable = False
+
+        ui._begin_quit()
+
+        self.assertFalse(ui._quit)
+        self.assertIn("still running", ui.status_hint)
+
     def test_a_failing_worker_becomes_a_transcript_error(self):
         ui = self.make_tui()
 

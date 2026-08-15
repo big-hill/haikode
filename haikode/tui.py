@@ -3292,7 +3292,8 @@ class TUI:
                 # EOF-on-empty is a ctrl+d convention; the Delete key shares
                 # this binding and must never exit the app (Haiku Terminal
                 # sends ESC[3~ and users press it with an empty prompt).
-                self._quit = True
+                if not self._blocked_by_noncancellable():
+                    self._quit = True
         elif command == "input_word_forward":
             self._move_word(1)
         elif command == "input_word_backward":
@@ -3334,7 +3335,8 @@ class TUI:
             self._interrupt()
         elif key == 4:                      # Ctrl-D
             if not self.buffer:
-                self._quit = True
+                if not self._blocked_by_noncancellable():
+                    self._quit = True
         elif key == 12:                     # Ctrl-L
             self._redraw()
         elif key == 21:                     # Ctrl-U
@@ -3472,10 +3474,7 @@ class TUI:
         self._dirty = True
 
     def _on_enter(self):
-        if self._busy_label and not self._busy_cancellable:
-            self.status_hint = "%s is still running; do not close haikode" \
-                % self._busy_label
-            self._dirty = True
+        if self._blocked_by_noncancellable():
             return
         # A trailing backslash is the "continue on the next line" convention.
         if self.buffer[:self.cursor].endswith("\\"):
@@ -3723,10 +3722,7 @@ class TUI:
     # --- commands --------------------------------------------------------
 
     def _dispatch_command(self, line: str):
-        if self._busy_label and not self._busy_cancellable:
-            self.status_hint = "%s is still running; do not close haikode" \
-                % self._busy_label
-            self._dirty = True
+        if self._blocked_by_noncancellable():
             return
         name = line.split()[0].lower()
         if name == "/reload" and self.running:
@@ -3923,15 +3919,20 @@ class TUI:
         threading.Thread(target=body, daemon=True).start()
 
     def _cancel_async(self):
-        if not self._busy_cancellable:
-            self.status_hint = "%s is still running; do not close haikode" \
-                % self._busy_label
-            self._dirty = True
+        if self._blocked_by_noncancellable():
             return
         self._command_serial += 1       # orphans whatever is in flight
         self._busy_label = ""
         self.status_hint = "cancelled"
         self._dirty = True
+
+    def _blocked_by_noncancellable(self) -> bool:
+        if self._busy_label and not self._busy_cancellable:
+            self.status_hint = "%s is still running; do not close haikode" \
+                % self._busy_label
+            self._dirty = True
+            return True
+        return False
 
     def _on_async_done(self, payload):
         on_error = None
@@ -4937,6 +4938,8 @@ class TUI:
         /exit or ctrl+c compose the session's haiku first. Never during a
         run: an interrupt-flavoured quit must stay instant.
         """
+        if self._blocked_by_noncancellable():
+            return
         wants = False
         try:
             wants = bool(getattr(self.config, "data", {})

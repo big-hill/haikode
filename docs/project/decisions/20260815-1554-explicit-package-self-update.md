@@ -26,9 +26,9 @@ check would be a different and unsafe contract.
 
 Choose option 3 for packaged installations. `/update` selects the current
 architecture's HPKG, requires and verifies the SHA-256 digest in GitHub's
-release response, and passes the private temporary file to `pkgman install -y`.
-The passive check remains read-only. A source checkout continues to use a
-fast-forward-only Git pull.
+release response, verifies the HPKG's own name and version metadata, and passes
+the private temporary file to `pkgman install -y`. The passive check remains
+read-only. A source checkout continues to use a fast-forward-only Git pull.
 
 The TUI runs the explicit update off its drawing thread. Once package
 activation starts, that worker is presented as non-cancellable because hiding
@@ -48,6 +48,8 @@ executing a mixture of old loaded modules and newly activated package files.
 - Release assets need a valid GitHub SHA-256 digest and a package for each
   supported architecture.
 - A checksum or download failure removes the temporary file and never invokes
+  pkgman.
+- A package with an unexpected name or version is removed and never invokes
   pkgman.
 - An installation failure keeps the verified HPKG in `/tmp` and reports its
   path for manual diagnosis or recovery.
