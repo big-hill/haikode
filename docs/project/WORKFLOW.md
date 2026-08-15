@@ -99,6 +99,45 @@ or HPKG layout.
 - Do not read a live session database through a second process. For diagnosis,
   make a consistent copy of the database together with its WAL/SHM files.
 
+### Single-connection SSH routine
+
+"One SSH connection" means one underlying SSH transport and no parallel remote
+jobs. Do not run a series of independent `ssh`, `scp`, or `sftp` connections.
+For the first remote operation, set `HAIKODE_SSH_TARGET` from the external
+operations context, create a private temporary socket directory, and start one
+multiplexing master:
+
+```sh
+HAIKODE_SSH_DIR=$(mktemp -d /tmp/haikode-ssh.XXXXXX)
+HAIKODE_SSH_SOCKET=$HAIKODE_SSH_DIR/control
+export HAIKODE_SSH_DIR HAIKODE_SSH_SOCKET
+
+ssh -M -S "$HAIKODE_SSH_SOCKET" \
+  -o ControlMaster=yes \
+  -o ControlPersist=600 \
+  -o BatchMode=yes \
+  -o ConnectTimeout=10 \
+  -fN "$HAIKODE_SSH_TARGET"
+```
+
+Retain the target and socket path for the whole task. Before use, verify the
+master, then send every remote command sequentially through that same socket:
+
+```sh
+ssh -S "$HAIKODE_SSH_SOCKET" -O check "$HAIKODE_SSH_TARGET"
+ssh -S "$HAIKODE_SSH_SOCKET" "$HAIKODE_SSH_TARGET" '<remote command>'
+```
+
+File-transfer tools must likewise receive the same `ControlPath`; do not let
+them open an independent transport. If the master check fails, stop and
+diagnose it instead of silently starting several connections. Close the master
+explicitly after remote cleanup and remove the now-empty private directory:
+
+```sh
+ssh -S "$HAIKODE_SSH_SOCKET" -O exit "$HAIKODE_SSH_TARGET"
+rmdir "$HAIKODE_SSH_DIR"
+```
+
 When haikode edits its own checkout, the running process continues with modules
 already loaded in memory. Source changes take effect on the next launch; config
 changes require reload or restart. Verify the next process, not only the one
