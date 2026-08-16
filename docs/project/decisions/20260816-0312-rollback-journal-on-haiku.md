@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-16
 decision: Keep the session database out of WAL mode on Haiku, converting once while provably alone
 ---
