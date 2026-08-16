@@ -64,6 +64,21 @@ plus schema replay, not a real `connect()`: a real one also migrates, runs
 contention, and it would have set `journal_mode=WAL` and undone the very
 conversion being measured.
 
+**More than two, under `DELETE`.** Three processes committing in tight loops
+and three reading the session list, twelve seconds, all against one store:
+
+| | result |
+|---|---|
+| commits | 957, p50 0.013s, p95 0.014s, **max 2.054s**, **4 x `database is locked`** |
+| picker reads | 711, p50 0.001s, p95 0.002s, max 0.004s, none failed |
+
+Nothing here limits the store to two processes, and readers do not compete with
+each other at all — the picker was untouched by three simultaneous writers.
+Writers serialise, which is the real constraint: under this saturated load a
+few commits exceeded the five-second busy timeout and failed outright. That is
+several times production's write rate, but it sets the implementation's
+homework, below.
+
 ## Alternatives considered
 
 1. Keep WAL and keep hardening around it — a longer retry ladder, more
@@ -163,6 +178,15 @@ than by raising.
   with this change.
 - Readers no longer see a snapshot while a write is in flight; they wait for
   it. At p95 2 ms that is not felt, but it is a different concurrency model.
+- **Writers serialise against each other, and the current five-second busy
+  timeout is not always enough.** With three processes committing continuously,
+  four commits failed with `database is locked` and the worst took 2.05 s while
+  the median stayed at 13 ms. Readers were unaffected throughout. Production
+  writes are bursty rather than continuous, so this is a stress bound and not a
+  prediction — but it means the implementation must raise the write busy
+  timeout and decide, deliberately, that `database is locked` is a wait rather
+  than a lost turn. Those two are the same work as the `_append_wedge_tokens`
+  item above and must land with the conversion, not after it.
 - **Bulk writes are already batched, with one trap.** `compact_now`,
   `restore_compaction` and `revert_to` each commit once, and the tree has no
   import path. The only per-row committer is `Session.extend`, which has no
