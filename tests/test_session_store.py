@@ -1256,18 +1256,53 @@ class TestWedgedWalRecovery(unittest.TestCase):
         store.new_session(self.dir, "zen", "m", title="earlier work")
         store.close()
 
+    def _killed_writer(self):
+        """A store whose writer died with committed turns still in the WAL.
+
+        The point of the fixture. The old version wrote a zero-filled `-wal`
+        beside rows that were already in the main file, so it could not tell
+        a recovery that preserves the log from one that throws it away --
+        and it asserted that throwing it away was correct.
+        """
+        script = (
+            "import os, sqlite3, sys\n"
+            "conn = sqlite3.connect(sys.argv[1])\n"
+            "conn.execute('PRAGMA journal_mode=WAL')\n"
+            "conn.execute('CREATE TABLE IF NOT EXISTS sessions "
+            "(id TEXT PRIMARY KEY, title TEXT, cwd TEXT, provider TEXT, "
+            "model TEXT, created REAL, updated REAL, archived INTEGER)')\n"
+            "conn.execute('CREATE TABLE IF NOT EXISTS messages "
+            "(session_id TEXT, seq INTEGER, content TEXT)')\n"
+            "conn.commit()\n"
+            "conn.execute(\"INSERT INTO sessions VALUES "
+            "(\'ses_late\',\'committed but not checkpointed\',\'.\',"
+            "\'p\',\'m\',1,1,0)\")\n"
+            "conn.commit()\n"
+            "os._exit(0)\n")
+        subprocess.run([sys.executable, "-c", script, str(self.path)],
+                       check=True)
+
     def test_a_stale_index_is_cleared_and_the_rows_survive(self):
-        self._seed()
+        """Recovery must not cost the user the tail of their history.
+
+        The wedge itself is provoked by call count rather than by a real
+        leaked lock: a stale or zeroed `-shm` does not actually wedge
+        SQLite, and the fixture that does -- a held byte-range lock on the
+        index -- costs SQLite a ten-second retry spin per attempt, which is
+        too slow to carry in the suite. What is pinned here is the property
+        that was actually broken: the committed frames in the log survive
+        recovery. That deleting the index cures a real wedge end to end was
+        verified separately against a genuinely locked store on Haiku.
+        """
+        self._killed_writer()
         index = Path(str(self.path) + "-shm")
-        index.write_bytes(b"\0" * 32768)          # what the dead process left
         journal = Path(str(self.path) + "-wal")
-        journal.write_bytes(b"\0" * 4096)
+        self.assertTrue(journal.exists() and journal.stat().st_size,
+                        "the fixture must leave real committed frames behind")
+        index.write_bytes(b"\0" * 32768)          # what the dead process left
 
         store = SessionStore(self.path)
         store._TRANSIENT_PAUSES = (0, 0)
-        # A dead process's lock state does not clear on its own: the error
-        # must survive the transient retries, or retrying (rightly) makes
-        # recovery unnecessary.
         wedged_opens = 1 + len(store._TRANSIENT_PAUSES)
         opens = {"count": 0}
         real = sqlite3.connect
@@ -1281,14 +1316,12 @@ class TestWedgedWalRecovery(unittest.TestCase):
         try:
             with patch.object(sqlite3, "connect", flaky):
                 rows = store.list_sessions()
-            self.assertEqual([r["title"] for r in rows], ["earlier work"])
-            self.assertTrue(Path(str(self.path) + "-wal.recovered").exists(),
-                            "the wal is kept aside, never deleted outright")
-            # sqlite rebuilds -shm the moment it reopens in WAL mode, so its
-            # presence proves nothing; that it is no longer the dead process's
-            # copy does.
-            if index.exists():
-                self.assertNotEqual(index.read_bytes(), b"\0" * 32768)
+            # The row that only ever existed in the log. Recovery that moves
+            # the log aside loses it and still reports a healthy database.
+            self.assertEqual([r["title"] for r in rows],
+                             ["committed but not checkpointed"])
+            self.assertFalse(Path(str(self.path) + "-wal.recovered").exists(),
+                             "the log holds committed turns; it stays put")
         finally:
             store.close()
 
@@ -1348,7 +1381,6 @@ class LiveWalGuardTests(unittest.TestCase):
         cleared = stranger._clear_stale_wal(
             sqlite3.OperationalError("locking protocol"))
         self.assertFalse(cleared)
-        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
         self.assertTrue(Path(str(self.path) + "-shm").exists())
 
     def test_a_failed_open_releases_the_claimed_guard(self):
@@ -1396,6 +1428,10 @@ class LiveWalGuardTests(unittest.TestCase):
             store.connect()
 
     def test_a_non_transient_error_mid_retry_is_raised_not_recovered(self):
+        # Something recovery *could* have removed, so its survival means
+        # recovery declined rather than merely having nothing to do.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        Path(str(self.path) + "-shm").write_bytes(b"\0" * 32768)
         store = self.store()
         store._TRANSIENT_PAUSES = (0, 0)
         real = store._open
@@ -1411,7 +1447,8 @@ class LiveWalGuardTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError) as caught:
             store.connect()
         self.assertIn("malformed", str(caught.exception))
-        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+        self.assertTrue(Path(str(self.path) + "-shm").exists(),
+                        "recovery must not have cleared the index")
 
     def test_a_durable_but_reported_failed_commit_is_not_overwritten(self):
         # The review's reproduction: commit lands, then reports "disk I/O
@@ -1477,7 +1514,8 @@ class LiveWalGuardTests(unittest.TestCase):
 
         store._open = flaky
         store.connect()
-        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+        self.assertTrue(Path(str(self.path) + "-shm").exists(),
+                        "recovery must not have cleared the index")
 
     def test_append_reopens_a_wedged_connection(self):
         store = self.store()
@@ -1547,7 +1585,6 @@ class GuardIdentityTests(unittest.TestCase):
         cleared = stranger._clear_stale_wal(
             sqlite3.OperationalError("locking protocol"))
         self.assertFalse(cleared)
-        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
         self.assertTrue(Path(str(self.path) + "-shm").exists())
 
     def test_a_refused_upgrade_re_asserts_the_shared_hold(self):

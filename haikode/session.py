@@ -666,10 +666,15 @@ class SessionStore:
                 raise
             self._conn = conn
             self._register()
-            # Downgrade a recovery's exclusive hold back to the shared
-            # lifetime hold; a no-op when no recovery ran.
-            self._claim()
             try:
+                # Downgrade a recovery's exclusive hold back to the shared
+                # lifetime hold; a no-op when no recovery ran. _claim_shared
+                # rather than _claim, and the difference is the whole bug
+                # class this file keeps meeting: flock drops the held lock
+                # before taking the new one, so a downgrade can fail, and the
+                # bare _claim that used to be here discarded that answer and
+                # carried on with an unlocked guard.
+                self._claim_shared()
                 self._leave_wal(conn)
             except BaseException:
                 # Only a guard this process could not get back reaches here,
@@ -1029,16 +1034,23 @@ class SessionStore:
     def _clear_stale_wal(self, error: sqlite3.OperationalError) -> bool:
         """Remove a dead process's WAL index so the database opens again.
 
-        Only the `-shm` file is deleted, and only for the errors that actually
-        mean "the lock state is unusable". The `-shm` is a rebuildable index
-        into the `-wal`, so dropping it costs nothing; the `-wal` itself holds
-        committed data and is moved aside rather than deleted, so a bad guess
-        here can still be undone by hand.
+        The `-shm` file, and nothing else. It is a rebuildable index into the
+        `-wal`, so dropping it costs nothing: SQLite reconstructs it by
+        scanning the log, and every committed frame in that log is replayed.
+
+        This used to move the `-wal` aside as well, "so a bad guess can still
+        be undone by hand". That was wrong, and quietly so. A `-wal` holds
+        transactions that are committed but not yet folded into the main
+        file, so moving it away makes them vanish while `quick_check` still
+        answers "ok" — the loss looks like a healthy database. It cost this
+        project a 1.3 MB log in the field, and the regression test that was
+        meant to cover the path seeded a zero-filled `-wal`, so it could
+        never have caught it and asserted the relocation was correct.
 
         Recovery only runs when this process holds the guard. Haiku reports
         "locking protocol" for a *live* second instance too, and without the
-        guard a newly started haikode would rip the running one's WAL out from
-        under it — losing the turns it had committed but not checkpointed.
+        guard a newly started haikode would drop the running one's WAL index
+        from under it.
 
         Returns True when something was cleared and a retry is worth making.
         """
@@ -1055,25 +1067,16 @@ class SessionStore:
             # Someone alive holds the guard shared — their WAL, not a corpse's.
             return False
 
-        cleared = False
         index = Path(str(self.path) + "-shm")
         try:
-            if index.exists():
-                index.unlink()
-                cleared = True
+            if not index.exists():
+                return False
+            index.unlink()
         except OSError:
             return False
-
-        journal = Path(str(self.path) + "-wal")
-        try:
-            if journal.exists() and journal.stat().st_size:
-                # Keep it: if this recovery turns out to be wrong, the data is
-                # still on disk next to the database rather than gone.
-                journal.replace(Path(str(self.path) + "-wal.recovered"))
-                cleared = True
-        except OSError:
-            pass
-        return cleared
+        # The -wal is deliberately left exactly where it is. Everything in it
+        # that was committed is replayed on the next open.
+        return True
 
     def close(self):
         with self._lock:
