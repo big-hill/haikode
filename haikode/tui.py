@@ -4667,9 +4667,11 @@ class TUI:
                                  or "sessions unavailable")
             return []
         try:
-            if query.strip():
-                return store.search(query, limit=30)
-            return store.list_sessions(limit=50)
+            # browse(), not list_sessions()/search(): those go through
+            # connect(), which replays the schema and migrations and measured
+            # 27.5s beside a writing neighbour on Haiku. This runs on the UI
+            # thread, once per keystroke in the picker.
+            return store.browse(query, limit=50)
         except Exception as exc:
             self._store_error = "cannot reach your sessions (%s)" % exc
             return []

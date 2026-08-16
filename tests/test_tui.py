@@ -1760,18 +1760,12 @@ class CompactionHintIsTransient(unittest.TestCase):
 class _WedgedStore:
     """A store the platform has locked this process out of."""
 
-    def search(self, *_args, **_kwargs):
-        raise sqlite3.OperationalError("locking protocol")
-
-    def list_sessions(self, *_args, **_kwargs):
+    def browse(self, *_args, **_kwargs):
         raise sqlite3.OperationalError("locking protocol")
 
 
 class _EmptyStore:
-    def search(self, *_args, **_kwargs):
-        return []
-
-    def list_sessions(self, *_args, **_kwargs):
+    def browse(self, *_args, **_kwargs):
         return []
 
 

@@ -1568,5 +1568,193 @@ class GuardIdentityTests(unittest.TestCase):
             "the shared hold must be re-asserted after a refused upgrade")
 
 
+class BrowseTests(unittest.TestCase):
+    """A read a person is waiting on must not pay for a full store open.
+
+    Measured on shredder64 while a neighbour committed turns: the first
+    `connect()` took 27.5s, and every second of it was inside the schema and
+    migration replay, not the guard (0.00s) and not the backup (0.05s). The
+    session picker runs that on the UI thread, so browsing gets the same
+    treatment `quick_session_count` already gets — bounded, read-only, and
+    creating nothing.
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.path = Path(self._temp.name) / "sessions.db"
+
+    def store(self):
+        store = SessionStore(self.path)
+        self.addCleanup(store.close)
+        return store
+
+    def _seed(self):
+        store = SessionStore(self.path)
+        store.new_session(".", "p", "m", title="earlier work")
+        store.close()
+
+    def test_a_cold_browse_creates_no_database(self):
+        store = self.store()
+        self.assertEqual(store.browse(), [])
+        self.assertFalse(self.path.exists(),
+                         "a picker must not bring a store into being")
+
+    def test_a_cold_browse_reads_without_opening_the_store(self):
+        self._seed()
+        store = self.store()
+        store._open = lambda *a, **k: self.fail(
+            "browsing must not replay the schema and migrations")
+        rows = store.browse()
+        self.assertEqual([row["title"] for row in rows], ["earlier work"])
+        self.assertIsNone(store._conn, "the borrowed connection must be given back")
+
+    def test_a_cold_browse_asks_with_a_short_lock_timeout(self):
+        self._seed()
+        store = self.store()
+        timeouts = []
+        real = sqlite3.connect
+
+        def record(*args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return real(*args, **kwargs)
+
+        with patch.object(sqlite3, "connect", record):
+            store.browse()
+        self.assertTrue(timeouts and all(t is not None and t <= 1.0
+                                         for t in timeouts),
+                        "a waiting person's read must give up, not queue: %s"
+                        % timeouts)
+
+    def test_browsing_searches_too(self):
+        self._seed()
+        store = self.store()
+        store._open = lambda *a, **k: self.fail(
+            "browsing must not replay the schema and migrations")
+        self.assertEqual([row["title"] for row in store.browse("earlier")],
+                         ["earlier work"])
+        self.assertEqual(store.browse("nothing-like-this"), [])
+
+    def test_a_live_connection_is_reused_rather_than_doubled(self):
+        self._seed()
+        store = self.store()
+        store.connect()
+        opens = []
+        real = sqlite3.connect
+
+        def count(*args, **kwargs):
+            opens.append(args[0] if args else kwargs.get("database"))
+            return real(*args, **kwargs)
+
+        with patch.object(sqlite3, "connect", count):
+            rows = store.browse()
+        self.assertEqual([row["title"] for row in rows], ["earlier work"])
+        self.assertEqual(opens, [],
+                         "a second connection beside the live one is the bug "
+                         "the history view already had")
+
+    def test_an_unreadable_database_still_raises(self):
+        # The caller turns this into a stated reason; swallowing it here
+        # would put us straight back to "No saved sessions" as a lie.
+        self.path.write_bytes(b"this is not a database")
+        store = self.store()
+        with self.assertRaises(sqlite3.DatabaseError):
+            store.browse()
+
+    def _abandoned_wal(self):
+        """A database whose writer died before checkpointing, as on a kill."""
+        script = (
+            "import os, sqlite3, sys\n"
+            "conn = sqlite3.connect(sys.argv[1])\n"
+            "conn.execute('PRAGMA journal_mode=WAL')\n"
+            "conn.execute('CREATE TABLE IF NOT EXISTS sessions "
+            "(id TEXT PRIMARY KEY, title TEXT, cwd TEXT, provider TEXT, "
+            "model TEXT, created REAL, updated REAL, archived INTEGER)')\n"
+            "conn.execute('CREATE TABLE IF NOT EXISTS messages "
+            "(session_id TEXT, seq INTEGER, content TEXT)')\n"
+            "conn.execute(\"INSERT INTO sessions VALUES "
+            "('ses_kept','uncheckpointed','.','p','m',1,1,0)\")\n"
+            "conn.commit()\n"
+            "os._exit(0)\n")
+        subprocess.run([sys.executable, "-c", script, str(self.path)],
+                       check=True)
+
+    def _sidecar_sizes(self):
+        sizes = {}
+        for suffix in ("", "-wal", "-shm"):
+            target = Path(str(self.path) + suffix)
+            sizes[suffix] = target.stat().st_size if target.exists() else None
+        return sizes
+
+    def test_a_cold_browse_never_checkpoints_a_dead_writer(self):
+        """The oldest injury in this project, arriving through a keystroke.
+
+        `PRAGMA query_only` refuses write statements but leaves the handle
+        read-write, and WAL housekeeping runs below SQL. Measured: such a
+        browse of a killed writer's database checkpointed on close, growing
+        the main file and truncating the -wal to nothing. Committed frames
+        belonging to somebody else must not move because a picker opened.
+        """
+        self._abandoned_wal()
+        before = self._sidecar_sizes()
+        self.assertTrue(before["-wal"], "the fixture must leave a real WAL")
+        store = self.store()
+        rows = store.browse()
+        self.assertEqual([row["title"] for row in rows], ["uncheckpointed"])
+        self.assertEqual(self._sidecar_sizes(), before)
+
+    def test_the_borrowed_connection_refuses_writes(self):
+        self._seed()
+        store = self.store()
+        refused = []
+
+        def try_to_write(_query, _limit):
+            try:
+                store._conn.execute("DELETE FROM sessions")
+            except sqlite3.Error as exc:
+                refused.append(str(exc))
+            return []
+
+        store._browse_rows = try_to_write
+        store.browse()
+        self.assertTrue(refused, "a borrowed connection must not accept a write")
+
+    def test_a_database_awaiting_migration_is_read_not_disowned(self):
+        """An upgrade that adds a column must not read as "unreachable".
+
+        The cold path skips migrations by design, so it names a column the
+        old file has not got yet. Saying the sessions cannot be reached
+        would be the same lie this whole change exists to remove.
+        """
+        conn = sqlite3.connect(str(self.path))
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, "
+                     "cwd TEXT, provider TEXT, model TEXT, created REAL, "
+                     "updated REAL)")          # no `archived` yet
+        conn.execute("CREATE TABLE messages (session_id TEXT, seq INTEGER, "
+                     "content TEXT)")
+        conn.execute("INSERT INTO sessions VALUES "
+                     "('ses_old','from before the upgrade','.','p','m',1,1)")
+        conn.commit()
+        conn.close()
+        store = self.store()
+        self.assertEqual([row["title"] for row in store.browse()],
+                         ["from before the upgrade"])
+
+    def test_a_database_missing_a_newer_table_is_read_too(self):
+        # Same class as the missing column: a store old enough to predate a
+        # table the cold read joins against must not read as unreachable.
+        conn = sqlite3.connect(str(self.path))
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, "
+                     "cwd TEXT, provider TEXT, model TEXT, created REAL, "
+                     "updated REAL, archived INTEGER)")
+        conn.execute("INSERT INTO sessions VALUES "
+                     "('ses_old','older still','.','p','m',1,1,0)")
+        conn.commit()
+        conn.close()
+        store = self.store()
+        self.assertEqual([row["title"] for row in store.browse()],
+                         ["older still"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,10 @@ BACKUP_GENERATIONS = 3
 # slower storage). Keep recent recovery points without putting a full copy on
 # every turn's synchronous startup path.
 BACKUP_MIN_INTERVAL = 300.0
+# How long a read someone is watching may wait for a lock before it gives up
+# and says so. A quarter second is already at the edge of felt delay, and the
+# alternative measured 27.5s beside a writing neighbour on Haiku.
+BROWSE_LOCK_TIMEOUT = 0.25
 # What /compact keeps verbatim when the user names no number.
 DEFAULT_COMPACT_KEEP = 10
 MAX_TITLE_CHARS = 60
@@ -207,7 +211,12 @@ def quick_session_count(db_path: Union[str, Path, None] = None,
 
     conn = None
     try:
-        conn = sqlite3.connect(str(path), timeout=0.05)
+        # mode=ro, not merely query_only: a read-write handle still runs WAL
+        # housekeeping below the SQL layer, and one measured probe of a
+        # killed writer's database checkpointed it on close. This runs on
+        # every start, so it was the most frequent way in.
+        uri = Path(os.path.abspath(str(path))).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=0.05)
         conn.execute("PRAGMA query_only=ON")
         row = conn.execute(
             "SELECT COUNT(*) FROM (SELECT 1 FROM sessions LIMIT ?)",
@@ -1025,6 +1034,90 @@ class SessionStore:
             "FROM sessions s" + clause +
             " ORDER BY s.updated DESC, s.id DESC LIMIT ?", tuple(params))
         return [self._row_to_dict(row) for row in rows]
+
+    def browse(self, query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """`search()` or `list_sessions()` for a picker someone is waiting on.
+
+        `connect()` is allowed to take its time: it replays the schema, runs
+        migrations, recovers a WAL and rotates a backup. Measured on Haiku
+        beside a neighbour committing a turn, one such open took 27.5s, and
+        all of it was that replay -- the guard cost 0.00s and the backup
+        0.05s. The session picker calls this from the UI thread on every
+        keystroke, so it must never be the caller that pays for it.
+
+        So a store this process has already opened answers from its own
+        connection -- opening a second one beside a live one is the bug the
+        history view already had. A store that is not open yet is read
+        through a borrowed connection that creates nothing, migrates
+        nothing, recovers nothing, and gives up rather than queueing behind
+        a writer.
+
+        That connection is opened `mode=ro`, and the URI is the whole point:
+        `PRAGMA query_only` only refuses write *statements*. Underneath it
+        the handle is still read-write, and WAL housekeeping lives below
+        SQL. Measured: a query_only browse of a database whose writer had
+        been killed checkpointed on close -- main file 4096 -> 8192 bytes,
+        the -wal truncated to nothing. That is this project's oldest injury,
+        committed frames moved out from under a neighbour, arriving through
+        a picker keystroke. A mode=ro browse read the same 200 rows and left
+        every byte identical.
+
+        Failures are raised, not swallowed: the caller states the reason.
+        An empty list means the store really is empty.
+        """
+        with self._lock:
+            if self._conn is not None:
+                return self._browse_rows(query, limit)
+            if not self.path.is_file():
+                return []          # first run: empty, not unreachable
+            try:
+                return self._browse_cold(query, limit)
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if ("no such column" not in message
+                        and "no such table" not in message):
+                    raise
+            # An upgrade added a column or a table and nothing has opened
+            # this store yet, so neither the schema replay nor the migration
+            # has run and the cold read names something that is not there.
+            # Telling the user their sessions are unreachable would be the
+            # same lie in a new place: pay for one honest full open, which
+            # creates and migrates, and then answer properly.
+            self.connect()
+            return self._browse_rows(query, limit)
+
+    def _browse_cold(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Read a store this process has not opened, changing nothing."""
+        uri = Path(os.path.abspath(str(self.path))).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=BROWSE_LOCK_TIMEOUT)
+        try:
+            conn.row_factory = sqlite3.Row
+            # Belt and braces behind mode=ro: a write that somehow reached
+            # this connection should fail loudly rather than be attempted.
+            conn.execute("PRAGMA query_only=ON")
+            # Lent to the existing readers for this call only. Every other
+            # path into the connection takes the same lock, so nothing can
+            # reach it expecting to write.
+            #
+            # This holds only while reads stay reads. `Session.append` heals
+            # a wedged connection with reset()+connect(); a read path that
+            # ever grew the same trick would install and *register* a real
+            # connection here, the finally below would orphan it with
+            # _registered still set, and _open_here() would then answer True
+            # forever -- permanently blocking recovery for this process.
+            self._conn = conn
+            return self._browse_rows(query, limit)
+        finally:
+            self._conn = None
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+    def _browse_rows(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        text = (query or "").strip()
+        return (self.search(text, limit=min(limit, 30)) if text
+                else self.list_sessions(limit=limit))
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
