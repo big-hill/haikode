@@ -1492,5 +1492,81 @@ class LiveWalGuardTests(unittest.TestCase):
         self.assertEqual(2, count)
 
 
+class GuardIdentityTests(unittest.TestCase):
+    """The guard survives a database reached by two different path spellings.
+
+    A review argued that `_claim()` builds the guard name from the raw path
+    while `_key()` resolves it, so a symlinked route — /boot/home on Haiku,
+    /var against /private/var on macOS — would hand out two independent
+    guards and let recovery run beside a live process. It does not: the
+    guard is opened, not merely named, and an aliased path opens the same
+    file. These pin that down, because the day it stops being true is the
+    day recovery starts running next to somebody's live WAL.
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        real = Path(self._temp.name) / "real"
+        real.mkdir()
+        link = Path(self._temp.name) / "link"
+        os.symlink(str(real), str(link))
+        self.path = real / "sessions.db"
+        self.aliased = link / "sessions.db"
+
+    def store(self, path):
+        store = SessionStore(path)
+        self.addCleanup(store.close)
+        return store
+
+    def test_a_live_hold_blocks_a_claim_through_the_other_path(self):
+        live = self.store(self.path)
+        live.connect()
+        stranger = self.store(self.aliased)
+        stranger._open_here = lambda: False       # simulate another process
+        self.assertFalse(stranger._claim(exclusive=True))
+
+    def test_recovery_declines_through_an_aliased_path(self):
+        live = self.store(self.path)
+        session = live.new_session(".", "p", "m")
+        session.append(Msg(role="user", content="precious, uncheckpointed"))
+        stranger = self.store(self.aliased)
+        stranger._open_here = lambda: False
+        cleared = stranger._clear_stale_wal(
+            sqlite3.OperationalError("locking protocol"))
+        self.assertFalse(cleared)
+        self.assertFalse(Path(str(self.path) + "-wal.recovered").exists())
+        self.assertTrue(Path(str(self.path) + "-shm").exists())
+
+    def test_a_refused_upgrade_re_asserts_the_shared_hold(self):
+        """flock conversion is not atomic.
+
+        The old lock is dropped before the new one is taken, so a refused
+        upgrade can leave the handle holding nothing at all — a live store
+        running unguarded, which is the state that lost committed turns in
+        the field. The docstring on `_claim` claimed the opposite.
+        """
+        try:
+            import fcntl
+        except ImportError:                       # pragma: no cover
+            self.skipTest("no advisory locks on this platform")
+        store = self.store(self.path)
+        self.assertTrue(store._claim())           # a real shared hold
+        operations = []
+        real = fcntl.flock
+
+        def refuses_exclusive(fileno, operation):
+            operations.append(operation)
+            if operation & fcntl.LOCK_EX:
+                raise OSError("would block")
+            return real(fileno, operation)
+
+        with patch.object(fcntl, "flock", refuses_exclusive):
+            self.assertFalse(store._claim(exclusive=True))
+        self.assertTrue(
+            any(op & fcntl.LOCK_SH for op in operations),
+            "the shared hold must be re-asserted after a refused upgrade")
+
+
 if __name__ == "__main__":
     unittest.main()

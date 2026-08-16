@@ -7,6 +7,7 @@ tricky parts — wrapping, diff classification, truncation, cursor placement —
 can be tested without a tty.
 """
 
+import sqlite3
 import threading
 import time
 import unittest
@@ -1754,6 +1755,64 @@ class CompactionHintIsTransient(unittest.TestCase):
         tui.status_hint = "interrupting…"
         tui._on_event("tool", {"name": "read", "args": {}})
         self.assertEqual(tui.status_hint, "interrupting…")
+
+
+class _WedgedStore:
+    """A store the platform has locked this process out of."""
+
+    def search(self, *_args, **_kwargs):
+        raise sqlite3.OperationalError("locking protocol")
+
+    def list_sessions(self, *_args, **_kwargs):
+        raise sqlite3.OperationalError("locking protocol")
+
+
+class _EmptyStore:
+    def search(self, *_args, **_kwargs):
+        return []
+
+    def list_sessions(self, *_args, **_kwargs):
+        return []
+
+
+class SessionPickerFailureTests(unittest.TestCase):
+    """A database this process cannot reach must not take the conversation
+    with it.
+
+    On Haiku a second haikode cannot open the session store at all. The
+    picker read raised straight through `_loop`, which catches only
+    KeyboardInterrupt, so typing /sessions ended the very session it was
+    asked to list — while the key binding for the same action survived,
+    because `_run_binding` catches. The empty picker was the other half:
+    "No saved sessions" reads as "your history is gone" when the truth is
+    "this process cannot reach it".
+    """
+
+    def test_the_command_route_does_not_end_the_session(self):
+        ui = make_tui()
+        ui._session_store = lambda: _WedgedStore()
+        ui._dispatch_command("/sessions")
+        self.assertIsNotNone(ui.dialog)
+
+    def test_the_picker_reports_the_reason_instead_of_emptiness(self):
+        ui = make_tui()
+        ui._session_store = lambda: _WedgedStore()
+        ui._dispatch_command("/sessions")
+        self.assertIn("locking protocol", ui.dialog.empty)
+        self.assertNotIn("No saved sessions", ui.dialog.empty)
+
+    def test_a_genuinely_empty_store_still_reads_as_empty(self):
+        ui = make_tui()
+        ui._session_store = lambda: _EmptyStore()
+        ui._dispatch_command("/sessions")
+        self.assertEqual(ui.dialog.empty, "No saved sessions")
+
+    def test_a_search_keystroke_does_not_raise_either(self):
+        ui = make_tui()
+        ui._session_store = lambda: _WedgedStore()
+        ui._dispatch_command("/sessions")
+        ui._search_sessions("anything")
+        self.assertIn("locking protocol", ui.dialog.empty)
 
 
 if __name__ == "__main__":

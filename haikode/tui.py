@@ -2371,6 +2371,8 @@ class TUI:
         self.frame = 0
         self.status_hint = ""
         self.interrupted = False
+        # Why the session picker is empty, when it is empty for a reason.
+        self._store_error = ""
         # opencode picks a suggestion at random and re-rolls it after each
         # submit, so the home screen is not the same screen every time.
         self._placeholder = random.randrange(len(PLACEHOLDERS))
@@ -3553,7 +3555,16 @@ class TUI:
         if text.startswith("/"):
             self.history.append(text)
             self.history_index = len(self.history)
-            self._dispatch_command(text)
+            # The same command reached by its key binding is caught in
+            # _run_binding; typed, it had no net at all and `_loop` catches
+            # only KeyboardInterrupt. One failing command must cost the user
+            # that command, not the conversation on screen.
+            try:
+                self._dispatch_command(text)
+            except Exception as exc:
+                self.transcript.add(Entry("error", text="%s: %s"
+                                          % (type(exc).__name__, exc)))
+                self._dirty = True
             return
         if self.running:
             self._enqueue(text)
@@ -4639,12 +4650,29 @@ class TUI:
         return str(getattr(self.turn.session, "id", "") or "")
 
     def _session_rows(self, query: str = ""):
+        """Rows for the picker, and never an exception.
+
+        Every read here reaches SessionStore.connect(), which on Haiku can
+        fail outright while a second haikode holds the database. That error
+        used to travel up through `_dispatch_command` into `_loop`, which
+        catches only KeyboardInterrupt — so typing /sessions ended the very
+        conversation the user was trying to list beside. The reason is kept
+        for the picker to show, because an empty list and an unreachable
+        store are not the same news.
+        """
+        self._store_error = ""
         store = self._session_store()
-        if store is None:            # no sqlite3: an empty picker, not a crash
+        if store is None:
+            self._store_error = (self.turn.persistence_error
+                                 or "sessions unavailable")
             return []
-        if query.strip():
-            return store.search(query, limit=30)
-        return store.list_sessions(limit=50)
+        try:
+            if query.strip():
+                return store.search(query, limit=30)
+            return store.list_sessions(limit=50)
+        except Exception as exc:
+            self._store_error = "cannot reach your sessions (%s)" % exc
+            return []
 
     def _open_sessions(self):
         rows = self._session_rows()
@@ -4656,7 +4684,7 @@ class TUI:
             actions=actions, placeholder="Search sessions",
             filtered=False,        # the query goes to SessionStore.search()
             current=self._current_session_id(),
-            empty="No saved sessions",
+            empty=self._store_error or "No saved sessions",
             payload={"submit": self._resume_session,
                      "query": self._search_sessions}))
 
@@ -4664,8 +4692,12 @@ class TUI:
         dialog = self.dialog
         if dialog is None or dialog.name != "sessions":
             return
-        dialog.set_items(session_items(self._session_rows(query),
-                                       self._current_session_id()))
+        items = session_items(self._session_rows(query),
+                              self._current_session_id())
+        # The store can fail between opening the picker and this keystroke,
+        # so the placeholder is recomputed rather than left as it was.
+        dialog.empty = self._store_error or "No sessions match"
+        dialog.set_items(items)
 
     def _resume_session(self, item):
         self._close_dialog()

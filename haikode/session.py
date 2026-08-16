@@ -831,8 +831,15 @@ class SessionStore:
         hold the guard *shared*, recovery alone needs it *exclusive*, so no
         recovery can run while anyone at all is alive — and no store is ever
         the unlucky one that "merely failed to claim". Conversion on the
-        already-held handle is atomic, which is how a recovery's exclusive
-        hold downgrades to the shared lifetime hold afterwards.
+        already-held handle is how a recovery's exclusive hold downgrades to
+        the shared lifetime hold afterwards.
+
+        That conversion is NOT atomic, whatever this docstring used to say:
+        flock drops the held lock before taking the new one, so a refused
+        upgrade can leave the handle holding nothing at all. Re-assert the
+        shared hold before reporting failure, or the caller carries on
+        believing it is guarded while running unguarded — the exact state
+        that lost committed turns in the field.
         """
         try:
             import fcntl
@@ -844,6 +851,14 @@ class SessionStore:
                 fcntl.flock(self._guard.fileno(), mode | fcntl.LOCK_NB)
                 return True
             except OSError:
+                if exclusive:
+                    try:
+                        fcntl.flock(self._guard.fileno(),
+                                    fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    except OSError:
+                        # Nothing left to salvage: report the failure and let
+                        # the caller's own release path hand the handle back.
+                        pass
                 return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
