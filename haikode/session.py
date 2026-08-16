@@ -51,6 +51,7 @@ from .context import (DEFAULT_TAIL_TURNS, MAX_KEEP_TOKENS, SUMMARY_MAX_TOKENS,
                       CompactionResult, global_config_dir, message_tokens,
                       DEFAULT_RESERVE, needs_compaction, plan_compaction,
                       summarize_with_reason)
+from .haiku import is_haiku
 from .palette import fuzzy_score
 from .schema import Msg, ToolCall
 from .tool.base import Tool, ToolResult
@@ -68,6 +69,17 @@ BACKUP_MIN_INTERVAL = 300.0
 # and says so. A quarter second is already at the edge of felt delay, and the
 # alternative measured 27.5s beside a writing neighbour on Haiku.
 BROWSE_LOCK_TIMEOUT = 0.25
+# How long a writer waits for another writer's lock. Haiku gets far more,
+# because leaving WAL makes writers serialise where they used to pass each
+# other: three processes committing continuously measured a 2.05s worst case
+# and four outright "database is locked" failures at five seconds. Waiting is
+# the right answer there -- a turn that took a second longer to save is not a
+# turn that was lost.
+DEFAULT_WRITE_LOCK_TIMEOUT = 5.0
+HAIKU_WRITE_LOCK_TIMEOUT = 30.0
+# Kept beside the store immediately before it leaves WAL, and never rotated:
+# it is the one copy that predates a durable format change.
+PRE_ROLLBACK_SUFFIX = ".pre-rollback"
 # What /compact keeps verbatim when the user names no number.
 DEFAULT_COMPACT_KEEP = 10
 MAX_TITLE_CHARS = 60
@@ -657,8 +669,99 @@ class SessionStore:
             # Downgrade a recovery's exclusive hold back to the shared
             # lifetime hold; a no-op when no recovery ran.
             self._claim()
+            try:
+                self._leave_wal(conn)
+            except BaseException:
+                # Only a guard this process could not get back reaches here,
+                # and a store that cannot be guarded must not be used.
+                self.close()
+                raise
             self._rotate_backup(conn)
             return conn
+
+    # --- leaving WAL on Haiku --------------------------------------------
+
+    @staticmethod
+    def _mode(conn: sqlite3.Connection) -> str:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        return str(row[0]).lower() if row else ""
+
+    @staticmethod
+    def _set_mode(conn: sqlite3.Connection, mode: str) -> str:
+        """Set the journal mode and return what SQLite says it now is."""
+        row = conn.execute("PRAGMA journal_mode=%s" % mode).fetchone()
+        return str(row[0]).lower() if row else ""
+
+    @staticmethod
+    def _counts(conn: sqlite3.Connection) -> Tuple[int, int]:
+        return (conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+
+    def _leave_wal(self, conn: sqlite3.Connection) -> None:
+        """Take an existing store out of WAL on Haiku, once, while alone.
+
+        Haiku cannot coordinate WAL's shared-memory index between processes,
+        so a second haikode is locked out of the user's own sessions. The
+        decision, its measurements and its cost are recorded in
+        docs/project/decisions/20260816-0312-rollback-journal-on-haiku.md.
+
+        This runs on the connection already held, while the guard is held
+        exclusively -- never by releasing the guard and taking it again,
+        because that window is exactly what a neighbour's recovery used to
+        run through. It is optional work: every failure leaves a usable
+        store, still in WAL, for a later start to try again.
+        """
+        if not is_haiku() or self._mode(conn) != "wal":
+            return
+        before = self._counts(conn)
+        if not self._claim(exclusive=True):
+            # Somebody is alive. Their WAL, their turn to convert it.
+            self._claim_shared()
+            return
+        try:
+            if self._mode(conn) != "wal":
+                return                  # converted under us; nothing to do
+            self._snapshot_before_leaving_wal(conn)
+            # SQLite reports a refusal by returning the unchanged mode rather
+            # than by raising, and a neighbour still attached is precisely
+            # that case. Believing the pragma instead of reading it would
+            # record a conversion that never happened.
+            if self._set_mode(conn, "DELETE") == "wal":
+                return
+            if not self._verified_after_leaving_wal(conn, before):
+                self._set_mode(conn, "WAL")
+        except sqlite3.DatabaseError:
+            # Either mode is a working store; the next start tries again.
+            pass
+        finally:
+            # Every exit, taken or refused. flock conversion drops the held
+            # lock before taking the new one, so without this the loser of a
+            # simultaneous upgrade carries on holding an unlocked guard --
+            # the unguarded live store this whole model exists to prevent.
+            # _claim_shared refuses to continue when it cannot be regained.
+            self._claim_shared()
+
+    def _verified_after_leaving_wal(self, conn: sqlite3.Connection,
+                                    before: Tuple[int, int]) -> bool:
+        return (conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+                and self._counts(conn) == before)
+
+    def _snapshot_before_leaving_wal(self, conn: sqlite3.Connection) -> None:
+        """One copy that predates the format change, kept and never rotated.
+
+        The rotating backups are a safety net for ordinary damage. This is
+        for the single irreversible-looking moment, so it must not be a
+        generation that a later rotation can push off the end.
+        """
+        staging = Path("%s%s.tmp" % (self.path, PRE_ROLLBACK_SUFFIX))
+        if staging.exists():
+            staging.unlink()
+        target = sqlite3.connect(str(staging))
+        try:
+            conn.backup(target)
+        finally:
+            target.close()
+        staging.replace(Path("%s%s" % (self.path, PRE_ROLLBACK_SUFFIX)))
 
     # Between-try pauses for a transient open failure. A tuple so tests can
     # shrink the wait, not a magic number buried in the loop. The ladder got
@@ -769,17 +872,30 @@ class SessionStore:
             return
 
     def _open(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        haiku = is_haiku()
+        conn = sqlite3.connect(
+            str(self.path), check_same_thread=False,
+            timeout=(HAIKU_WRITE_LOCK_TIMEOUT if haiku
+                     else DEFAULT_WRITE_LOCK_TIMEOUT))
         conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.DatabaseError as exc:
-            # Some network/older filesystems reject WAL; the rollback
-            # journal is slower but correct. But "file is not a database"
-            # is no WAL refusal: swallowing it here masked a corrupted
-            # store on a field machine until every later write failed.
-            if "not a database" in str(exc).lower():
-                raise
+        if haiku:
+            # Never put this store into WAL on Haiku: its shared-memory index
+            # does not coordinate between processes, and a second haikode is
+            # then locked out of the user's own sessions. Reading the mode
+            # instead of setting it keeps the door-check below -- a file that
+            # is not a database still fails here rather than at the first
+            # write.
+            self._mode(conn)
+        else:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.DatabaseError as exc:
+                # Some network/older filesystems reject WAL; the rollback
+                # journal is slower but correct. But "file is not a database"
+                # is no WAL refusal: swallowing it here masked a corrupted
+                # store on a field machine until every later write failed.
+                if "not a database" in str(exc).lower():
+                    raise
         # Explicit, though it is sqlite's default: every committed turn is
         # fsynced. A session's last turns before a power cut are exactly the
         # ones the user comes back for — one machine lost that tail in the

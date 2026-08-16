@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from haikode.schema import CompletionChunk, Msg, ToolCall
+from haikode import session as session_module
 from haikode.session import (SessionStore, capture_modified,
                              quick_session_count, summarize_messages)
 
@@ -1320,6 +1321,13 @@ class LiveWalGuardTests(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp.cleanup)
         self.path = Path(self._temp.name) / "sessions.db"
+        # This whole class is about WAL machinery, and on Haiku the store no
+        # longer creates a WAL to have machinery for. Pin the platform so it
+        # tests the same thing wherever it runs, instead of quietly passing
+        # on Haiku by never reaching the code it is named after.
+        patcher = patch.object(session_module, "is_haiku", lambda: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def store(self):
         store = SessionStore(self.path)
@@ -1513,6 +1521,10 @@ class GuardIdentityTests(unittest.TestCase):
         os.symlink(str(real), str(link))
         self.path = real / "sessions.db"
         self.aliased = link / "sessions.db"
+        # Recovery only has a WAL to decline on a platform that makes one.
+        patcher = patch.object(session_module, "is_haiku", lambda: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def store(self, path):
         store = SessionStore(path)
@@ -1754,6 +1766,141 @@ class BrowseTests(unittest.TestCase):
         store = self.store()
         self.assertEqual([row["title"] for row in store.browse()],
                          ["older still"])
+
+
+class WalDepartureTests(unittest.TestCase):
+    """Leaving WAL on Haiku, per
+    docs/project/decisions/20260816-0312-rollback-journal-on-haiku.md.
+
+    The conversion is optional work that must never cost anything: it runs
+    only while this process is provably alone, keeps a copy that predates it,
+    believes what the pragma returns rather than what it was asked for, and
+    leaves a working store behind however it fails.
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.path = Path(self._temp.name) / "sessions.db"
+
+    def store(self, haiku=True):
+        patcher = patch.object(session_module, "is_haiku", lambda: haiku)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        store = SessionStore(self.path)
+        self.addCleanup(store.close)
+        return store
+
+    def _seed_in_wal(self, messages=3):
+        """A store as an older haikode left it: in WAL, with content."""
+        with patch.object(session_module, "is_haiku", lambda: False):
+            store = SessionStore(self.path)
+            session = store.new_session(".", "p", "m", title="from before")
+            for i in range(messages):
+                session.append(Msg(role="user", content="turn %d" % i))
+            self.assertEqual("wal", store._mode(store.connect()))
+            store.close()
+
+    def _mode_on_disk(self):
+        conn = sqlite3.connect(str(self.path))
+        try:
+            return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        finally:
+            conn.close()
+
+    def test_a_new_store_is_never_put_into_wal_on_haiku(self):
+        store = self.store()
+        store.new_session(".", "p", "m")
+        self.assertNotEqual("wal", store._mode(store.connect()))
+
+    def test_an_existing_wal_store_converts_when_alone(self):
+        self._seed_in_wal()
+        store = self.store()
+        conn = store.connect()
+        self.assertEqual("delete", store._mode(conn))
+        self.assertEqual([r["title"] for r in store.list_sessions()],
+                         ["from before"])
+        self.assertEqual((1, 3), store._counts(conn))
+        self.assertEqual("ok", conn.execute("PRAGMA quick_check").fetchone()[0])
+
+    def test_a_copy_predating_the_change_is_kept(self):
+        self._seed_in_wal()
+        self.store().connect()
+        kept = Path(str(self.path) + ".pre-rollback")
+        self.assertTrue(kept.exists(), "no copy from before the conversion")
+        conn = sqlite3.connect(str(kept))
+        try:
+            self.assertEqual(
+                1, conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_it_declines_while_a_neighbour_is_alive(self):
+        self._seed_in_wal()
+        neighbour = SessionStore(self.path)
+        self.addCleanup(neighbour.close)
+        self.assertTrue(neighbour._claim())          # a live shared hold
+        store = self.store()
+        store.connect()
+        self.assertEqual("wal", self._mode_on_disk(),
+                         "somebody else's WAL is not ours to convert")
+
+    def test_the_shared_hold_is_regained_after_declining(self):
+        self._seed_in_wal()
+        neighbour = SessionStore(self.path)
+        self.addCleanup(neighbour.close)
+        self.assertTrue(neighbour._claim())
+        store = self.store()
+        store.connect()
+        # The neighbour has to go first, or its own shared hold would block
+        # the stranger and the assertion would pass whatever our store did.
+        neighbour.close()
+        stranger = SessionStore(self.path)
+        self.addCleanup(stranger.close)
+        stranger._open_here = lambda: False
+        self.assertFalse(stranger._claim(exclusive=True),
+                         "the store carried on without its guard")
+
+    def test_a_refused_pragma_is_believed_not_assumed(self):
+        self._seed_in_wal()
+        store = self.store()
+        real = SessionStore._set_mode
+
+        def refuses(conn, mode):
+            return "wal" if mode.upper() == "DELETE" else real(conn, mode)
+
+        with patch.object(SessionStore, "_set_mode", staticmethod(refuses)):
+            conn = store.connect()
+        # It must not have recorded a conversion that did not happen, and the
+        # store must still work.
+        self.assertEqual("wal", self._mode_on_disk())
+        self.assertEqual([r["title"] for r in store.list_sessions()],
+                         ["from before"])
+
+    def test_failed_verification_puts_it_back(self):
+        self._seed_in_wal()
+        store = self.store()
+        with patch.object(SessionStore, "_verified_after_leaving_wal",
+                          lambda *_args: False):
+            conn = store.connect()
+        self.assertEqual("wal", store._mode(conn))
+        self.assertEqual([r["title"] for r in store.list_sessions()],
+                         ["from before"])
+
+    def test_a_failure_mid_conversion_still_leaves_a_usable_store(self):
+        self._seed_in_wal()
+        store = self.store()
+        with patch.object(SessionStore, "_snapshot_before_leaving_wal",
+                          lambda *_a: (_ for _ in ()).throw(
+                              sqlite3.DatabaseError("no room"))):
+            store.connect()
+        self.assertEqual([r["title"] for r in store.list_sessions()],
+                         ["from before"])
+
+    def test_off_haiku_the_store_still_uses_wal(self):
+        store = self.store(haiku=False)
+        store.new_session(".", "p", "m")
+        self.assertEqual("wal", store._mode(store.connect()))
 
 
 if __name__ == "__main__":
