@@ -216,6 +216,24 @@ than by raising.
 - Databases already in WAL convert on first open by a build carrying this
   change, once, while alone. A user who never runs haikode alone keeps WAL and
   today's behaviour — which is why this must not be the only fix shipped.
+- **Haiku does not release byte-range locks when a process dies, and that can
+  block the conversion indefinitely.** Measured on a machine whose haikode had
+  been killed: the SQLite SHARED range of the live `sessions.db` answered
+  `HELD` from every later process, while a byte-identical copy answered
+  `free`; the same was true of `sessions.db-shm` and of `sessions.db.guard`.
+  Reads still work, because shared locks do not exclude each other — the store
+  lists and opens normally. Nothing can ever take the exclusive lock that
+  leaving WAL requires, so the conversion is refused on every start until the
+  machine is rebooted. The design already handles this correctly: the pragma's
+  return value is checked, the store stays in WAL, and it remains fully
+  usable. It does mean a conversion that never happens is an expected
+  outcome on a machine that has had an unclean exit, not a bug to chase.
+- The same leaked lock disables `_clear_stale_wal` outright, because recovery
+  claims the guard exclusively. A store wedged by an unclean exit therefore
+  cannot be recovered by haikode at all until a reboot — the guard model
+  assumes a dead process's locks are released, and on Haiku they are not.
+  Making the guard prove the holder is alive, rather than inferring it from
+  the lock, is follow-up work this decision does not cover.
 - **Downgrade re-enables WAL.** Every released v0.1.x runs an unconditional
   `PRAGMA journal_mode=WAL` on open, so installing an older build, or a
   non-packaged developer copy shadowing the installed one, silently converts
