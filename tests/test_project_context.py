@@ -88,6 +88,25 @@ class ProjectContextTests(unittest.TestCase):
             self.assertTrue(any("exceeds seven days" in item
                                 for item in result.errors))
 
+    def test_an_absent_now_is_no_handoff_not_a_failure(self):
+        """NOW.md is the maintainer's local workbench, not published truth.
+
+        It is untracked, so a fresh clone has no NOW.md at all -- and an
+        outside contributor's preflight must come up green, or CLAUDE.md's
+        "stop before making changes" locks every stranger out of the
+        project. Absence means "no active handoff", nothing more.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            result = project_context.Result()
+            with patch.object(project_context, "PROJECT", project):
+                data = project_context.now_metadata(result, "origin/main")
+            self.assertEqual({}, data)
+            self.assertFalse(result.errors, result.errors)
+            self.assertTrue(any("no active handoff" in item.lower()
+                                for item in result.warnings + result.okays),
+                            (result.warnings, result.okays))
+
     def test_expired_now_is_ignored_without_invalidating_context(self):
         verified = "a" * 40
         data = {

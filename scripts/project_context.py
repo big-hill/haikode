@@ -24,7 +24,6 @@ REQUIRED_DOCS = (
     PROJECT / "CONTEXT.md",
     PROJECT / "CODEMAP.md",
     PROJECT / "WORKFLOW.md",
-    PROJECT / "NOW.md",
     PROJECT / "INDEX.md",
     PROJECT / "decisions" / "README.md",
 )
@@ -33,7 +32,6 @@ REQUIRED_MARKERS = {
         "# Project context", "## Authority model", "## Required startup sequence"),
     PROJECT / "CODEMAP.md": ("# Code map",),
     PROJECT / "WORKFLOW.md": ("# Development and release workflow",),
-    PROJECT / "NOW.md": ("# Current handoff",),
     PROJECT / "INDEX.md": ("# Documentation routes",),
     PROJECT / "decisions" / "README.md": ("# Architectural decision records",),
 }
@@ -278,7 +276,20 @@ def validate_legacy_markers(result: Result) -> None:
 
 
 def now_metadata(result: Result, reference: str) -> Dict[str, str]:
-    data, _ = frontmatter(read(PROJECT / "NOW.md", result))
+    """The local handoff's frontmatter, or {} when there is no handoff.
+
+    NOW.md is the maintainer's untracked workbench note, so a fresh clone
+    legitimately has none -- and an outside contributor's preflight must not
+    fail over a file the repository deliberately does not ship. Absence is
+    simply "no active handoff". A NOW.md that exists is still validated as
+    strictly as ever: a broken one on the maintainer's own machine is a lie
+    waiting to be believed.
+    """
+    path = PROJECT / "NOW.md"
+    if not path.exists():
+        result.ok("NOW.md absent: no active handoff (local, untracked file)")
+        return {}
+    data, _ = frontmatter(read(path, result))
     for key in ("last_reconciled", "verified_sha", "reference_branch",
                 "valid_until"):
         if not data.get(key):
@@ -309,6 +320,8 @@ def validate_now(data: Dict[str, str], reference: str, result: Result,
                  *, fetched: bool) -> None:
     if result.errors:
         return
+    if not data:
+        return                    # no handoff file: nothing to validate
     verified = data["verified_sha"]
     code, reference_sha = git("rev-parse", "--verify", reference + "^{commit}")
     if code != 0 or not SHA.match(reference_sha):

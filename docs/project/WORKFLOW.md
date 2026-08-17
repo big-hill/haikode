@@ -175,11 +175,11 @@ pre-push scanner inspect the actual commit range. Land through a reviewed PR or
 an explicitly authorized direct push. A build, local commit, or successful
 hardware test does not itself authorize publication.
 
-After landing, the single `NOW.md` writer rewrites its transient handoff against
-the fetched pre-handoff reference SHA, removes completed items, and sets a short
-validity window. The commit carrying `NOW.md` may then advance the reference;
-the recorded SHA must remain its ancestor. Permanent findings go to their
-owning document or a new ADR instead.
+After landing, the single `NOW.md` writer rewrites its transient handoff
+against the fetched reference SHA, removes completed items, and sets a short
+validity window. `NOW.md` is a local, untracked file: it is never committed or
+published, and the recorded SHA must be an ancestor of the fetched reference.
+Permanent findings go to their owning document or a new ADR instead.
 
 ## Deployment and release
 

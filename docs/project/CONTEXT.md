@@ -112,7 +112,9 @@ claims are never authoritative project status. They may suggest what to verify.
 2. Run `./scripts/project-preflight` to fetch and validate the reference.
 3. Read this file.
 4. Read [CODEMAP.md](CODEMAP.md).
-5. Use [NOW.md](NOW.md) only if preflight says it is valid; otherwise ignore it.
+5. Use `NOW.md` only if preflight says it is valid; otherwise ignore it.
+   It is the maintainer's local, untracked handoff — a fresh clone has
+   none, and that is not an error.
 6. Read [WORKFLOW.md](WORKFLOW.md) before changing files or touching Haiku.
 7. Use [INDEX.md](INDEX.md) to load only documentation relevant to the task.
 8. Create a separate task branch/worktree before functional changes.

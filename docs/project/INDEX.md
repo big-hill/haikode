@@ -8,7 +8,7 @@ owns the question.
 | Stable project contract and authority | [CONTEXT.md](CONTEXT.md) | current |
 | Code ownership and entry points | [CODEMAP.md](CODEMAP.md) | current |
 | Development, QA, worktrees, deploy, release, rollback | [WORKFLOW.md](WORKFLOW.md) | current |
-| Short-lived active handoff | [NOW.md](NOW.md) | transient; use only after preflight |
+| Short-lived active handoff | `NOW.md` | local and untracked; absent in a fresh clone, use only after preflight |
 | Architectural decisions and ADR format | [decisions/README.md](decisions/README.md) | current |
 | User guide, install, providers, CLI, commands | [README.md](../../README.md) | current |
 | Contribution and security workflow | [CONTRIBUTING.md](../../CONTRIBUTING.md) | current |
