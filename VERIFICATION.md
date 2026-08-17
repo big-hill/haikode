@@ -1,6 +1,6 @@
 # haikode completion and verification matrix
 
-Last updated: 2026-08-15. This file records executable evidence, not
+Last updated: 2026-08-17. This file records executable evidence, not
 intended behavior. Every PASS below names the machine class it was
 demonstrated on; nothing is claimed from reading the source alone.
 
@@ -57,6 +57,31 @@ reviewer.
   wheel-burst and single-arrow tests passed on physical x86_64 and x86_gcc2
   Haiku. The 2459-test baseline also passed on macOS and physical x86_64 with
   exactly the four documented wiring failures and no others.
+- Candidate `d96a902` (session store out of WAL on Haiku, ADR
+  `20260816-0312`, plus picker error surfacing, `browse()` fast reads, and
+  `-shm`-only recovery). The 2486-test baseline passed on macOS with exactly
+  the four documented wiring failures. On physical x86_64 Haiku:
+  store/TUI/turn suites pass on the machine; the user's real 23 MB store
+  (36 sessions, 8894 messages) converted out of WAL on first open in 0.08 s
+  with `integrity_check` ok, counts unchanged, and a kept `.pre-rollback`
+  snapshot; three simultaneous CLI processes then listed sessions with no
+  `locking protocol`; and the operator ran two live TUI instances
+  side-by-side on the physical display with real prompts on 2026-08-17 —
+  the original two-instance failure did not reproduce. Measured basis: one
+  resident writer plus a repeated opener over 12 s completed 5 opens under
+  WAL against ~159 under a rollback journal; three writers plus three
+  readers under DELETE sustained p50 0.013 s commits and p50 0.001 s picker
+  reads. Recovery of the wedged store also demonstrated Haiku keeping a dead
+  process's byte-range locks (`SHARED` range HELD on the live file, free on
+  a byte-identical copy) — recorded in the ADR as an expected
+  conversion-refused case until reboot.
+- MCP interop against a third-party server: haikode's `RemoteMCPClient`
+  connected to Pippo (`codeberg.org/atomozero/Pippo`, native Haiku MCP
+  server, JSON-RPC over `127.0.0.1:2607`) with zero code changes — `/mcp`
+  reports `pippo connected (38 tools)`, four SAFE tools (`system_info`,
+  `list_windows`, `query_fs`, `haiku_docs`) returned real results through
+  `MCPProxyTool`, and the operator completed a live model turn using Pippo
+  tools with the `mcp` permission flow on 2026-08-17.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
@@ -67,10 +92,10 @@ metadata, and observed target behavior override it when they differ.
 | Curses TUI + REPL engine | Driven end-to-end through a real pty on Haiku (`tests/render_tui.py`); slash commands, dialogs, queueing, steering, farewell flow and after-turn wheel scrolling are covered. Exact raw-PTY wheel-burst and single-arrow checks passed on physical x86_64 and x86_gcc2 Haiku. | PASS |
 | Provider protocols | ChatGPT device OAuth + Responses SSE, SuperGrok RFC 8628 + bearer chat, OpenAI-compatible SSE, Gemini dialect, keyless zen. Real device logins completed in the field; live sessions run daily on subscription accounts. | PASS |
 | Secrets | BKeyStore helper (`hai-keystore`), hidden input, mode-0600 fallback, redaction layer with its own canary tests. | PASS |
-| Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. | PASS |
+| Sessions, undo, compaction | SQLite store with file snapshots; automatic compaction keeps the raw transcript and checkpoints its latched provider view across desktop workers; `/compact undo` restores a manual fold. WAL guard incidents and checkpoint reuse have regression tests. On Haiku the store leaves WAL (ADR `20260816-0312`); concurrent multi-process access was verified on the physical machine, including a live two-TUI session by the operator. | PASS |
 | HPKG packaging | Published v0.1.2 packages were built on physical x86_gcc2 and x86_64 from commit `374bada`; architecture, version `0.1.2-119`, contents, BFS resources, checksums and fresh post-upload bytes were verified on both. Candidate `0.1.1-114` previously completed an in-place physical x86_64 upgrade with persistent-state hashes unchanged. | PASS structural and published bytes on both architectures; TO VERIFY v0.1.2 activation |
 | Real Haiku release gate | v0.1.2 passed the 2460-test baseline, all 13 fixture validations, deterministic performance audit, native build and exact raw-PTY wheel/history checks on x86_gcc2 and x86_64. The installed x86_64 updater selects the live release's correct asset and digest. User-driven `/update`, restart and a simple real prompt remain to verify. | PASS automated/structural/download selection; TO VERIFY user-driven activation |
-| MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers. | PASS |
+| MCP + LSP | Configured MCP servers join the tool set behind the `mcp` permission key; `ctx.lsp` provides diagnostics after edit/write. Covered by the suite; exercised with local servers and, on physical Haiku, against the third-party Pippo server (38 tools) end to end including a live model turn. | PASS |
 | Skills | `SKILL.md` discovery (global + project), catalogue in the system prompt, on-demand loading via the `skill` tool, `/skills` report. Worked example ships in `docs/examples/skills/`. | PASS |
 | Subagents, cross-provider | Agent definitions and per-call `model` may pin any configured provider's model; the sub-agent runs on its own client or fails loudly. | PASS |
 | Native desktop app | Builds, installs and runs its worker on Haiku. Multiple simultaneous windows, independent model selection, visible window cascading and continuous reasoning text were exercised on the physical x86_64 machine. Convergence on the full TUI feature set is tracked, not claimed. | PARTIAL |
