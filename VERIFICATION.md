@@ -75,6 +75,21 @@ reviewer.
   process's byte-range locks (`SHARED` range HELD on the live file, free on
   a byte-identical copy) — recorded in the ADR as an expected
   conversion-refused case until reboot.
+- Published `v0.1.3` at `d3d789b` has matching `0.1.3-132` x86_64 and
+  x86_gcc2 packages, both built from that commit. The 2486-test baseline,
+  all 13 fixture validations, deterministic performance audit, native build,
+  package metadata, version and clean contents passed on both physical
+  architectures (one pty flake, `test_keys_are_delivered`, passed 3/3 in
+  isolation and in a clean full rerun on x86_64). GitHub reports SHA-256
+  `1e36987e8c30bd1ec1a51b2d46b1e2e5e44ff99fb349f25ac702dfbe68c28e91`
+  for x86_64 and
+  `94c0a649944895da3fb6a4016ffb9fb8ab1fa32f62a5ad3cb5c76ccba7a6b1fe`
+  for x86_gcc2; fresh post-upload downloads matched the local packages byte
+  for byte. **The operator then completed the full user-driven upgrade on
+  physical x86_64 on 2026-08-18: `/update` inside installed `0.1.2-119`
+  found v0.1.3, verified the digest, installed via pkgman, and after one
+  close/reopen the upgraded haikode ran with sessions preserved and a real
+  prompt.** This closes the activation-flow item left open since v0.1.1.
 - MCP interop against a third-party server: haikode's `RemoteMCPClient`
   connected to Pippo (`codeberg.org/atomozero/Pippo`, native Haiku MCP
   server, JSON-RPC over `127.0.0.1:2607`) with zero code changes — `/mcp`
