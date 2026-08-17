@@ -1940,5 +1940,66 @@ class WalDepartureTests(unittest.TestCase):
         self.assertEqual("wal", store._mode(store.connect()))
 
 
+class PrivateModeTests(unittest.TestCase):
+    """The conversations deserve the same file mode as the keys.
+
+    config.json has been written 0600 since the beginning, while the
+    session database and every file it feeds -- backups, the pre-rollback
+    snapshot, the guard -- landed with the umask default, usually 0644. On
+    single-user Haiku that is academic; on a shared development machine it
+    means the API keys are private while the conversations are not.
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.path = Path(self._temp.name) / "sessions.db"
+
+    def store(self):
+        store = SessionStore(self.path)
+        self.addCleanup(store.close)
+        return store
+
+    def _mode(self, path):
+        return stat.S_IMODE(os.stat(str(path)).st_mode)
+
+    def test_a_new_store_and_its_guard_are_private(self):
+        store = self.store()
+        store.new_session(".", "p", "m", title="secret plans")
+        self.assertEqual(0o600, self._mode(self.path))
+        self.assertEqual(0o600, self._mode(str(self.path) + ".guard"))
+
+    def test_an_existing_world_readable_store_is_tightened_on_open(self):
+        store = SessionStore(self.path)
+        store.new_session(".", "p", "m")
+        store.close()
+        os.chmod(str(self.path), 0o644)          # what the field machines have
+        again = self.store()
+        again.connect()
+        self.assertEqual(0o600, self._mode(self.path))
+
+    def test_backups_are_private_too(self):
+        store = self.store()
+        store.new_session(".", "p", "m", title="worth keeping")
+        store.close()
+        fresh = self.store()
+        fresh.connect()                          # rotation runs at open
+        backup = Path(str(self.path) + ".bak1")
+        self.assertTrue(backup.exists(), "the fixture expected a rotation")
+        self.assertEqual(0o600, self._mode(backup))
+
+    def test_the_pre_rollback_snapshot_is_private(self):
+        with patch.object(session_module, "is_haiku", lambda: False):
+            old = SessionStore(self.path)
+            old.new_session(".", "p", "m")
+            old.close()
+        with patch.object(session_module, "is_haiku", lambda: True):
+            store = self.store()
+            store.connect()
+        kept = Path(str(self.path) + ".pre-rollback")
+        self.assertTrue(kept.exists(), "the fixture expected a conversion")
+        self.assertEqual(0o600, self._mode(kept))
+
+
 if __name__ == "__main__":
     unittest.main()

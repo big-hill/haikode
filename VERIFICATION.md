@@ -90,6 +90,12 @@ reviewer.
   found v0.1.3, verified the digest, installed via pkgman, and after one
   close/reopen the upgraded haikode ran with sessions preserved and a real
   prompt.** This closes the activation-flow item left open since v0.1.1.
+- Candidate (post-v0.1.3): the session database and every file it feeds —
+  backups, the pre-rollback snapshot, the guard — are now written 0600, the
+  mode config.json has always had, and an existing store is tightened on
+  first open. Verified on physical x86_64: the 96-test store suite passes on
+  the machine, and one open of the field store flipped it and its rotated
+  backup from 0644 to 0600 in place.
 - MCP interop against a third-party server: haikode's `RemoteMCPClient`
   connected to Pippo (`codeberg.org/atomozero/Pippo`, native Haiku MCP
   server, JSON-RPC over `127.0.0.1:2607`) with zero code changes — `/mcp`

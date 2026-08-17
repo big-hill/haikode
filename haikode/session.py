@@ -766,6 +766,7 @@ class SessionStore:
             conn.backup(target)
         finally:
             target.close()
+        os.chmod(str(staging), 0o600)
         staging.replace(Path("%s%s" % (self.path, PRE_ROLLBACK_SUFFIX)))
 
     # Between-try pauses for a transient open failure. A tuple so tests can
@@ -872,6 +873,7 @@ class SessionStore:
                 conn.backup(target)
             finally:
                 target.close()
+            os.chmod(str(staging), 0o600)
             staging.replace(newest)
         except Exception:
             return
@@ -882,6 +884,17 @@ class SessionStore:
             str(self.path), check_same_thread=False,
             timeout=(HAIKU_WRITE_LOCK_TIMEOUT if haiku
                      else DEFAULT_WRITE_LOCK_TIMEOUT))
+        # The conversations get the same mode the keys have always had:
+        # config.json is written 0600 while this file landed with the umask
+        # default. Done at every open, so a store from an older build is
+        # tightened the first time a new one touches it. SQLite gives the
+        # -wal/-shm/-journal siblings the database's own mode, so this
+        # covers the transient files too.
+        try:
+            os.chmod(str(self.path), 0o600)
+        except OSError:
+            pass                     # a read-only mount still gets to read
+
         conn.row_factory = sqlite3.Row
         if haiku:
             # Never put this store into WAL on Haiku: its shared-memory index
@@ -993,6 +1006,7 @@ class SessionStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             handle = open(str(self.path) + ".guard", "a+")
+            os.chmod(str(self.path) + ".guard", 0o600)
         except OSError:
             return False
         try:
