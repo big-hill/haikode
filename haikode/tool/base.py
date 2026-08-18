@@ -34,6 +34,9 @@ class ToolResult:
     title: str                                  # short label for the UI
     output: str                                 # what the model sees
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Base64 images for the model's eyes, {"media_type", "data"} each.
+    # Populated today by MCP tools whose results carry image parts.
+    images: List[Dict[str, str]] = field(default_factory=list)
 
 
 class _AbortFlag:

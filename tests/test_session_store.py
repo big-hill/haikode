@@ -2001,5 +2001,46 @@ class PrivateModeTests(unittest.TestCase):
         self.assertEqual(0o600, self._mode(kept))
 
 
+class ImageRoundTripTests(unittest.TestCase):
+    """Tool-result images survive persistence and absence alike."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.path = Path(self._temp.name) / "sessions.db"
+
+    def store(self):
+        store = SessionStore(self.path)
+        self.addCleanup(store.close)
+        return store
+
+    def test_images_round_trip(self):
+        store = self.store()
+        session = store.new_session(".", "p", "m")
+        session.append(Msg(role="tool", tool_call_id="c1", content="a shot",
+                           images=[{"media_type": "image/png",
+                                    "data": "aGVsbG8="}]))
+        again = store.load(session.id)
+        self.assertEqual([{"media_type": "image/png", "data": "aGVsbG8="}],
+                         again.messages[-1].images)
+
+    def test_a_hand_edited_blob_reads_as_no_images(self):
+        # NULL cannot occur -- the added column carries NOT NULL DEFAULT --
+        # but a hand-edited database can hold anything at all, and loading
+        # the session must survive it the way reasoning already does.
+        store = self.store()
+        session = store.new_session(".", "p", "m")
+        session.append(Msg(role="user", content="plain"))
+        conn = store.connect()
+        conn.execute("UPDATE messages SET images = ?", ("not json at all",))
+        conn.execute("INSERT INTO messages (session_id, seq, role, content, "
+                     "images) VALUES (?, 2, 'user', 'x', ?)",
+                     (session.id, '[{"data": 7}, "junk", {"media_type": 1}]'))
+        conn.commit()
+        again = store.load(session.id)
+        self.assertEqual([], again.messages[0].images)
+        self.assertEqual([], again.messages[1].images)
+
+
 if __name__ == "__main__":
     unittest.main()

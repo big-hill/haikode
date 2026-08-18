@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from ..net import DEFAULT_TIMEOUT, Aborted, RetryPolicy, stream_sse_events
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import Provider, classify_error, error_chunk, error_from_exception
+from .base import data_url
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -122,13 +123,19 @@ class GeminiProvider(Provider):
                     "name": names.get(m.tool_call_id, m.tool_call_id or "tool"),
                     "response": {"content": m.content or ""}}}
                 # Gemini wants every result for one model turn in a single
-                # user turn, mirroring the Anthropic rule.
+                # user turn, mirroring the Anthropic rule. Images ride as
+                # inline_data parts beside their functionResponse.
+                extra = [{"inline_data": {"mime_type": image.get("media_type")
+                                          or "image/png",
+                                          "data": image.get("data") or ""}}
+                         for image in (m.images or [])]
                 if contents and contents[-1]["role"] == "user" and \
                         contents[-1]["parts"] and \
                         "functionResponse" in contents[-1]["parts"][0]:
                     contents[-1]["parts"].append(part)
+                    contents[-1]["parts"].extend(extra)
                 else:
-                    contents.append({"role": "user", "parts": [part]})
+                    contents.append({"role": "user", "parts": [part] + extra})
                 continue
 
             if m.role == "assistant":

@@ -32,6 +32,12 @@ class Msg:
     # issued it, and replaying one anywhere else sends an opaque blob to a
     # provider that never made it.
     reasoning: Dict[str, Any] = field(default_factory=dict)
+    # Images belonging to this message, wire-format-free: each is
+    # {"media_type": "image/png", "data": "<base64>"}. In practice they
+    # arrive on role="tool" messages (an MCP screenshot); where a provider
+    # allows an image to live differs per dialect, so placement is the
+    # adapter's job, never recorded here.
+    images: List[Dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

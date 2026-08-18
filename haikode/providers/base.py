@@ -497,3 +497,21 @@ class Provider(ABC):
 
     def error(self, exc: BaseException, model: str = "") -> CompletionChunk:
         return error_chunk(error_from_exception(exc, self.name, model))
+
+
+def data_url(image: Dict[str, str]) -> str:
+    """The neutral image part as a data: URL, which two dialects want."""
+    return "data:%s;base64,%s" % (image.get("media_type") or "image/png",
+                                  image.get("data") or "")
+
+
+def image_note(tool_call_id: str) -> str:
+    """Label for an image that must travel as a user part.
+
+    The Chat Completions and Responses APIs accept images only from the
+    user, so a tool's screenshot rides in a follow-up user message. The
+    label ties it to the call it came from -- an unlabelled image reads,
+    to the model, as the user suddenly pasting a picture at it.
+    """
+    return ("[image returned by tool call %s, attached by the harness]"
+            % (tool_call_id or "?"))

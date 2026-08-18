@@ -1923,5 +1923,37 @@ class LSPWiring(unittest.TestCase):
         self.assertFalse(manager.has_server("x.py"))
 
 
+class ImageExtractionTests(unittest.TestCase):
+    """Image parts in a tools/call result reach the ToolResult as images."""
+
+    def _result(self, content):
+        from haikode.mcp import images_from_result
+        return images_from_result({"content": content})
+
+    def test_a_png_part_is_extracted(self):
+        images = self._result([
+            {"type": "text", "text": "a screenshot"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}])
+        self.assertEqual([{"media_type": "image/png", "data": "aGVsbG8="}],
+                         images)
+
+    def test_hostile_and_oversize_parts_are_dropped(self):
+        from haikode import mcp as mcp_module
+        huge = "A" * (mcp_module.MAX_IMAGE_BASE64 + 1)
+        images = self._result([
+            {"type": "image", "mimeType": "image/png", "data": 17},
+            {"type": "image", "mimeType": "text/html", "data": "aGVsbG8="},
+            {"type": "image", "mimeType": "image/png", "data": huge},
+            "not even an object"])
+        self.assertEqual([], images)
+
+    def test_the_count_is_capped(self):
+        from haikode import mcp as mcp_module
+        parts = [{"type": "image", "mimeType": "image/png", "data": "QQ=="}
+                 for _ in range(mcp_module.MAX_IMAGES_PER_RESULT + 3)]
+        self.assertEqual(mcp_module.MAX_IMAGES_PER_RESULT,
+                         len(self._result(parts)))
+
+
 if __name__ == "__main__":
     unittest.main()

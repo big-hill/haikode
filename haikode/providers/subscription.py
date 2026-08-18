@@ -11,6 +11,7 @@ from ..oauth import (CHATGPT_API_BASE, OAuthStore, _is_expired,
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import (Provider, classify_error, error_chunk, error_from_exception,
                    reasoning_from_delta)
+from .base import data_url, image_note
 from .openai_compat import OpenAICompatProvider
 
 # The backend answers `server_error` intermittently on requests that succeed
@@ -146,6 +147,17 @@ class ChatGPTSubscriptionProvider(Provider):
                     "call_id": message.tool_call_id,
                     "output": message.content or "",
                 })
+                if message.images:
+                    # The Responses API takes images only as user input;
+                    # ride them in a labelled follow-up message so the
+                    # model knows they came from its own tool call.
+                    content = [{"type": "input_text",
+                                "text": image_note(message.tool_call_id)}]
+                    content += [{"type": "input_image",
+                                 "image_url": data_url(image)}
+                                for image in message.images]
+                    items.append({"type": "message", "role": "user",
+                                  "content": content})
             elif message.role == "assistant":
                 if message.content:
                     items.append({

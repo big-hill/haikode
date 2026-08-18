@@ -1089,5 +1089,90 @@ class TestGeminiSchemaProjection(unittest.TestCase):
         self.assertEqual(declaration["name"], "now")
 
 
+class ImageEncodingTests(unittest.TestCase):
+    """A tool result's images reach every dialect in its own wire shape.
+
+    Providers disagree on where an image may live: Anthropic accepts blocks
+    inside tool_result, the Chat Completions and Responses APIs only accept
+    images from the user, and Gemini wants inline_data parts. The neutral
+    Msg stays wire-free and each encoder places the image itself, which is
+    invariant 4 doing its job.
+    """
+
+    IMAGE = {"media_type": "image/png", "data": "aGVsbG8="}
+
+    def _history(self):
+        return [
+            Msg(role="assistant", tool_calls=[
+                ToolCall(id="c1", name="screenshot", arguments={})]),
+            Msg(role="tool", tool_call_id="c1", content="a screenshot",
+                images=[dict(self.IMAGE)]),
+        ]
+
+    def test_openai_compat_appends_a_labelled_user_image(self):
+        from haikode.providers.openai_compat import OpenAICompatProvider
+        out = OpenAICompatProvider._encode(self._history())
+        self.assertEqual("tool", out[1]["role"])
+        self.assertEqual("a screenshot", out[1]["content"])
+        follow = out[2]
+        self.assertEqual("user", follow["role"])
+        kinds = [part.get("type") for part in follow["content"]]
+        self.assertIn("image_url", kinds)
+        url = [part for part in follow["content"]
+               if part.get("type") == "image_url"][0]["image_url"]["url"]
+        self.assertTrue(url.startswith("data:image/png;base64,aGVsbG8="))
+        text = [part for part in follow["content"]
+                if part.get("type") == "text"][0]["text"]
+        self.assertIn("c1", text)
+
+    def test_anthropic_puts_the_image_inside_the_tool_result(self):
+        from haikode.providers.anthropic import AnthropicProvider
+        system, out = AnthropicProvider._encode(self._history(), "claude-x")
+        block = out[-1]["content"][0]
+        self.assertEqual("tool_result", block["type"])
+        kinds = [part["type"] for part in block["content"]]
+        self.assertEqual(["text", "image"], kinds)
+        image = block["content"][1]
+        self.assertEqual("base64", image["source"]["type"])
+        self.assertEqual("image/png", image["source"]["media_type"])
+
+    def test_gemini_appends_inline_data(self):
+        from haikode.providers.gemini import GeminiProvider
+        system, contents = GeminiProvider._encode(self._history())
+        parts = contents[-1]["parts"]
+        self.assertIn("functionResponse", parts[0])
+        inline = [part for part in parts if "inline_data" in part]
+        self.assertEqual(1, len(inline))
+        self.assertEqual("image/png", inline[0]["inline_data"]["mime_type"])
+
+    def test_responses_api_appends_a_labelled_input_image(self):
+        from haikode.providers.subscription import ChatGPTSubscriptionProvider
+        _, items = ChatGPTSubscriptionProvider._request_messages(self._history())
+        self.assertEqual("function_call_output", items[1]["type"])
+        follow = items[2]
+        self.assertEqual("message", follow["type"])
+        self.assertEqual("user", follow["role"])
+        kinds = [part.get("type") for part in follow["content"]]
+        self.assertIn("input_image", kinds)
+        image = [part for part in follow["content"]
+                 if part.get("type") == "input_image"][0]
+        self.assertTrue(image["image_url"].startswith("data:image/png;base64,"))
+
+    def test_no_images_means_no_extra_messages_anywhere(self):
+        from haikode.providers.anthropic import AnthropicProvider
+        from haikode.providers.gemini import GeminiProvider
+        from haikode.providers.openai_compat import OpenAICompatProvider
+        from haikode.providers.subscription import ChatGPTSubscriptionProvider
+        history = self._history()
+        history[1].images = []
+        self.assertEqual(3, len(OpenAICompatProvider._encode(history)) + 1)
+        _, out = AnthropicProvider._encode(history, "m")
+        self.assertEqual(2, len(out))
+        _, contents = GeminiProvider._encode(history)
+        self.assertEqual(2, len(contents))
+        _, items = ChatGPTSubscriptionProvider._request_messages(history)
+        self.assertEqual(2, len(items))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1188,7 +1188,8 @@ class Agent:
             output = redact(result.output, heuristic=False)
             message = Msg(role="tool", tool_call_id=call.id, content=output,
                           display={"tool": call.name, "title": result.title,
-                                   **result.metadata})
+                                   **result.metadata},
+                          images=list(getattr(result, "images", None) or []))
             if on_event:
                 on_event("tool_result",
                          {"name": call.name, "title": result.title,

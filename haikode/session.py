@@ -113,6 +113,7 @@ _SCHEMA = (
         content TEXT NOT NULL DEFAULT '',
         tool_calls TEXT NOT NULL DEFAULT '[]',
         reasoning TEXT NOT NULL DEFAULT '{}',
+        images TEXT NOT NULL DEFAULT '[]',
         tool_call_id TEXT NOT NULL DEFAULT '',
         display TEXT NOT NULL DEFAULT '{}',
         created REAL,
@@ -184,6 +185,7 @@ _ADDED_COLUMNS = (
     ("messages", "created", "REAL"),
     ("messages", "tokens", "INTEGER"),
     ("messages", "reasoning", "TEXT NOT NULL DEFAULT '{}'"),
+    ("messages", "images", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
 # Tables that must be rebuilt rather than altered, because the missing piece is
@@ -376,6 +378,29 @@ def _deserialize_calls(raw: Optional[str]) -> List[ToolCall]:
             name=str(item.get("name", "")),
             arguments=arguments if isinstance(arguments, dict) else {}))
     return calls
+
+
+def _deserialize_images(raw) -> list:
+    """The stored image list, or [] -- never an exception.
+
+    Same contract as reasoning: a NULL from an older row or a hand-edited
+    blob must not stop a session from loading. Images are a nicety the
+    replay can live without; the messages around them are not.
+    """
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    images = []
+    for item in data if isinstance(data, list) else []:
+        if (isinstance(item, dict)
+                and isinstance(item.get("data"), str)
+                and isinstance(item.get("media_type"), str)):
+            images.append({"media_type": item["media_type"],
+                           "data": item["data"]})
+    return images
 
 
 def _deserialize_reasoning(raw) -> dict:
@@ -1366,13 +1391,14 @@ class Session:
         """Re-read messages from the database into `self.messages`."""
         rows = self.store._query(
             "SELECT seq, role, content, tool_calls, tool_call_id, display, "
-            "reasoning FROM messages WHERE session_id = ? ORDER BY seq",
+            "reasoning, images FROM messages WHERE session_id = ? ORDER BY seq",
             (self.id,))
         self.messages = [Msg(role=row["role"], content=row["content"] or "",
                              tool_calls=_deserialize_calls(row["tool_calls"]),
                              tool_call_id=row["tool_call_id"] or "",
                              display=_deserialize_display(row["display"]),
-                             reasoning=_deserialize_reasoning(row["reasoning"]))
+                             reasoning=_deserialize_reasoning(row["reasoning"]),
+                             images=_deserialize_images(row["images"]))
                          for row in rows]
         self.seqs = [int(row["seq"]) for row in rows]
         self._seq = rows[-1]["seq"] if rows else 0
@@ -1408,13 +1434,15 @@ class Session:
                 conn.execute(
                     "INSERT INTO messages "
                     "(session_id, seq, role, content, tool_calls, "
-                    "tool_call_id, display, reasoning, created, tokens) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tool_call_id, display, reasoning, images, created, tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (self.id, at, message.role, message.content or "",
                      _serialize_calls(message.tool_calls),
                      message.tool_call_id or "",
                      json.dumps(message.display or {}, default=str),
                      json.dumps(getattr(message, "reasoning", None) or {},
+                                default=str),
+                     json.dumps(getattr(message, "images", None) or [],
                                 default=str), now,
                      None if tokens is None else int(tokens)))
                 conn.execute("UPDATE sessions SET updated = ? WHERE id = ?",
@@ -1861,7 +1889,7 @@ class Session:
             params = (self.id, summary_seq, *protected)
             conn = self.store.connect()
             stored = conn.execute(
-                "SELECT seq, role, content, tool_calls, tool_call_id, display, "
+                "SELECT seq, role, content, tool_calls, tool_call_id, display, images, "
                 "reasoning, created, tokens "
                 "FROM messages WHERE session_id = ? AND seq <= ?"
                 + holes + " ORDER BY seq", params).fetchall()
@@ -1957,12 +1985,12 @@ class Session:
                 conn.execute(
                     "INSERT OR REPLACE INTO messages "
                     "(session_id, seq, role, content, tool_calls, tool_call_id, "
-                    "display, reasoning, created, tokens) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "display, reasoning, images, created, tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (self.id, int(item.get("seq", 0)), str(item.get("role", "user")),
                      item.get("content") or "", item.get("tool_calls") or "[]",
                      item.get("tool_call_id") or "", item.get("display") or "{}",
-                     item.get("reasoning") or "{}",
+                     item.get("reasoning") or "{}", item.get("images") or "[]",
                      item.get("created"), item.get("tokens")))
             conn.execute("DELETE FROM compactions WHERE id = ?", (int(row["id"]),))
             conn.execute("DELETE FROM context_checkpoints WHERE session_id = ?",

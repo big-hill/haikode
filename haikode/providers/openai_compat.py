@@ -6,6 +6,7 @@ from ..net import (DEFAULT_TIMEOUT, Aborted, NetError, RetryPolicy,
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import (Provider, ThinkTagSplitter, classify_error, error_chunk,
                    error_from_exception, reasoning_from_delta)
+from .base import data_url, image_note
 
 
 # Requests to make without stream_options before testing the back-off again.
@@ -81,6 +82,16 @@ class OpenAICompatProvider(Provider):
             if m.role == "tool":
                 out.append({"role": "tool", "tool_call_id": m.tool_call_id,
                             "content": m.content})
+                if m.images:
+                    # This API accepts images only from the user; ride them
+                    # in a follow-up user message, labelled so the model
+                    # knows the tool sent them (see base.image_note).
+                    parts = [{"type": "text",
+                              "text": image_note(m.tool_call_id)}]
+                    parts += [{"type": "image_url",
+                               "image_url": {"url": data_url(image)}}
+                              for image in m.images]
+                    out.append({"role": "user", "content": parts})
                 continue
             entry = {"role": m.role, "content": m.content or ""}
             if m.tool_calls:

@@ -301,7 +301,14 @@ unconnected LSP — are fixed and verified above.
 
 2. **Shell mode and attachments.** opencode's prompt accepts a `!` prefix for
    a shell command and image/file attachments; haikode's prompt has neither
-   (no front-end handles a leading `!`, nothing builds an image content part).
+   (no front-end handles a leading `!`). Image content parts DO now flow from
+   tool results: an MCP tool answering with image parts (a Pippo screenshot)
+   reaches every dialect in its wire shape — inside `tool_result` for
+   Anthropic, as inline_data for Gemini, and as a labelled follow-up user
+   message for the Chat Completions and Responses APIs, which accept images
+   only from the user. Prompt-side attachments remain the open half, and a
+   vision-incapable model that is handed an image will refuse it with the
+   provider's own error.
 
 3. **Themes.** `theme` is accepted in config and never read; there is no theme
    dialog and only 3 semantic colours. Pinned as a deliberate audit failure so

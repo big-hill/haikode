@@ -203,6 +203,45 @@ def describe_part(part: Dict[str, Any]) -> str:
     return "[unsupported content part: %s]" % kind
 
 
+# A screenshot of a 1600x900 Haiku desktop lands around a megabyte of
+# base64; six is headroom, not an invitation. Anything larger stays a
+# described placeholder, exactly as before images existed.
+MAX_IMAGE_BASE64 = 6 * 1024 * 1024
+MAX_IMAGES_PER_RESULT = 4
+
+
+def images_from_result(result: Any) -> List[Dict[str, str]]:
+    """Image parts of a tools/call result, in the neutral Msg shape.
+
+    Every field is attacker-controlled: non-string data, absurd sizes and
+    non-image mime types are dropped, not raised. Dropped parts still show
+    up in the text as describe_part placeholders, so nothing disappears
+    silently -- the model is told an image existed even when it is not
+    given the bytes.
+    """
+    if not isinstance(result, dict):
+        return []
+    content = result.get("content")
+    if not isinstance(content, list):
+        return []
+    images: List[Dict[str, str]] = []
+    for item in content:
+        if len(images) >= MAX_IMAGES_PER_RESULT:
+            break
+        if not isinstance(item, dict) or item.get("type") != "image":
+            continue
+        data = item.get("data")
+        mime = _text_of(item.get("mimeType")).lower()
+        if not isinstance(data, str) or not data:
+            continue
+        if not mime.startswith("image/"):
+            continue
+        if len(data) > MAX_IMAGE_BASE64:
+            continue
+        images.append({"media_type": mime, "data": data})
+    return images
+
+
 def content_to_text(content: Any) -> str:
     """
     MCP content array -> plain text. Text parts are concatenated; embedded
@@ -791,7 +830,8 @@ class MCPProxyTool(Tool):
             title="%s: %s" % (self.server, self.remote_name),
             output=output or "(no output)",
             metadata={"server": self.server, "tool": self.remote_name,
-                      "duration": round(time.monotonic() - started, 3)})
+                      "duration": round(time.monotonic() - started, 3)},
+            images=images_from_result(result))
 
 
 # --- manager -----------------------------------------------------------

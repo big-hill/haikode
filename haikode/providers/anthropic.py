@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from ..net import DEFAULT_TIMEOUT, Aborted, RetryPolicy, stream_sse_events
 from ..schema import CompletionChunk, Msg, ToolSpec
 from .base import Provider, classify_error, error_chunk, error_from_exception
+from .base import data_url
 
 # Anthropic rejects a request whose max_tokens exceeds the model's output
 # ceiling with a 400 — which reads as "bad request" and tells the user
@@ -261,8 +262,18 @@ class AnthropicProvider(Provider):
                 continue
 
             if m.role == "tool":
+                content = m.content
+                if m.images:
+                    # Anthropic accepts images natively inside tool_result.
+                    content = [{"type": "text", "text": m.content or ""}]
+                    content += [{"type": "image",
+                                 "source": {"type": "base64",
+                                            "media_type": image.get("media_type")
+                                            or "image/png",
+                                            "data": image.get("data") or ""}}
+                                for image in m.images]
                 block = {"type": "tool_result", "tool_use_id": m.tool_call_id,
-                         "content": m.content}
+                         "content": content}
                 # Consecutive tool results belong in one user turn.
                 if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list) \
                         and out[-1]["content"] and out[-1]["content"][0].get("type") == "tool_result":
