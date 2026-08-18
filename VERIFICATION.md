@@ -103,6 +103,16 @@ reviewer.
   `list_windows`, `query_fs`, `haiku_docs`) returned real results through
   `MCPProxyTool`, and the operator completed a live model turn using Pippo
   tools with the `mcp` permission flow on 2026-08-17.
+- Candidate (post-v0.1.3): tool-result images reach the model's eyes. On
+  physical x86_64 with the operator's live store and two TUI instances
+  already running, a one-shot `mcp_pippo_screenshot` turn on a vision model
+  returned a description naming the actual window titles, the Deskbar clock
+  and the desktop icons on screen — the image travelled MCP -> neutral Msg
+  -> Responses API as a labelled user part. Pippo wraps its screenshot as
+  JSON inside a text part rather than the spec's image part; the shim that
+  unwraps it also keeps 600 kB of base64 out of the prose. 315 tests across
+  the store, provider and MCP suites pass on the machine; the additive
+  `images` column migrated the live store in place.
 
 Recorded release evidence is a snapshot. Git, current test output, package
 metadata, and observed target behavior override it when they differ.
