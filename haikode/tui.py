@@ -4718,6 +4718,11 @@ class TUI:
             self.turn.adopt(session)
             result = "Resumed %s (%d messages)" % (str(item.value)[:8],
                                                    len(session.messages))
+            from .turn import resume_note
+            note = resume_note(session, self._provider_name(),
+                               self._current_model_id())
+            if note:
+                result += "\n" + note
         self.transcript.clear()
         self._replay(getattr(self.agent, "messages", None) or [])
         self.transcript.add(Entry("info", text=str(result)))

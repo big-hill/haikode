@@ -127,6 +127,27 @@ def prepare_init(cwd: str) -> Tuple[str, str]:
     return notice, prompt
 
 
+def resume_note(session, provider_name: str, model: str) -> str:
+    """One line when a session continues on a route that did not write it.
+
+    Stored reasoning blocks are signed by, and replay only on, the dialect
+    and model that made them (schema.Msg.reasoning). Carrying a session to
+    another provider is fully supported and loses nothing on disk -- the
+    blocks stay in the store and replay again back home -- but the new model
+    runs without them, and that must be visible rather than silent.
+    """
+    was_provider = str(getattr(session, "provider", "") or "")
+    was_model = str(getattr(session, "model", "") or "")
+    if not was_provider and not was_model:
+        return ""                      # a row too old to know its route
+    if (was_provider, was_model) == (provider_name or "", model or ""):
+        return ""
+    return ("written with %s/%s, continuing on %s/%s - stored reasoning "
+            "replays only on the model that made it"
+            % (was_provider or "?", was_model or "?",
+               provider_name or "?", model or "?"))
+
+
 class TurnController:
     """Owns the session and the turn lifecycle for every front end.
 

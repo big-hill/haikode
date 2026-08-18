@@ -30,6 +30,7 @@ from .config import Config
 from .permission import Permissions
 from .runtime import build_agent, provider_status
 from .turn import TurnController, TurnResult
+from .turn import resume_note as turn_resume_note
 
 # --- exit codes ----------------------------------------------------------
 #
@@ -1145,10 +1146,13 @@ class REPL:
         # Replayed wholesale so tool calls stay paired with their results:
         # a provider rejects an assistant turn whose calls were never answered.
         self.agent.messages = list(session.messages)
+        note = turn_resume_note(session, self.provider_name,
+                                getattr(self.agent, "model", "") or "")
         # The id in full: it is what `--session` and `haikode session …` take,
         # and the eight-character form is the same for every session opened
         # this decade (ids are time-prefixed), so it cannot be pasted back.
-        return f"Resumed {session.id} ({len(session.messages)} messages)"
+        resumed = f"Resumed {session.id} ({len(session.messages)} messages)"
+        return resumed + "\n" + note if note else resumed
 
     def resume_latest(self) -> str:
         """Adopt the most recent session for this directory (--continue)."""

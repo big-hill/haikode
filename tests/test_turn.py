@@ -397,6 +397,61 @@ class BrokenStore:
         raise RuntimeError("no sqlite3 here")
 
 
+class ResumeRouteNoteTests(TurnTestCase):
+    """Resuming on a different provider/model says so.
+
+    The stored reasoning blocks replay only on the dialect and model that
+    signed them, so a session carried from gpt to grok silently loses their
+    benefit. That is the correct behaviour -- foreign signatures are
+    unusable -- but it must not be invisible: the one line here is the
+    contract made legible at the moment it applies.
+    """
+
+    def _session(self, provider="chatgpt", model="gpt-5.6-sol"):
+        controller = self.controller()
+        store = controller.store()
+        return store.new_session(self.dir, provider, model, title="carried")
+
+    def test_same_route_gets_no_note(self):
+        session = self._session(provider="p", model="m")
+        self.assertEqual("", turn_mod.resume_note(session, "p", "m"))
+
+    def test_a_different_provider_is_said_out_loud(self):
+        session = self._session()
+        note = turn_mod.resume_note(session, "supergrok", "grok-4.6")
+        self.assertIn("chatgpt/gpt-5.6-sol", note)
+        self.assertIn("supergrok/grok-4.6", note)
+        self.assertIn("reasoning", note)
+
+    def test_a_model_change_within_a_provider_counts_too(self):
+        session = self._session()
+        note = turn_mod.resume_note(session, "chatgpt", "gpt-5.6-luna")
+        self.assertIn("gpt-5.6-luna", note)
+
+    def test_a_rowless_route_stays_silent(self):
+        session = self._session(provider="", model="")
+        self.assertEqual("", turn_mod.resume_note(session, "p", "m"))
+
+    def test_the_repl_resume_carries_the_note(self):
+        repl = self.make_repl()
+        store = repl.turn.store()
+        session = store.new_session(self.dir, "another-provider",
+                                    "another-model", title="from elsewhere")
+        text = repl.adopt_session(session)
+        self.assertIn("Resumed", text)
+        self.assertIn("another-provider/another-model", text)
+
+    def test_the_repl_resume_stays_quiet_on_the_same_route(self):
+        repl = self.make_repl()
+        store = repl.turn.store()
+        session = store.new_session(self.dir, repl.provider_name,
+                                    getattr(repl.agent, "model", "") or "",
+                                    title="same route")
+        text = repl.adopt_session(session)
+        self.assertIn("Resumed", text)
+        self.assertNotIn("reasoning", text)
+
+
 class PersistenceFailureIsVisible(TurnTestCase):
     """Swallowing this is how both front ends offered an undo that could not
     work; the user only found out when nothing was reverted."""
