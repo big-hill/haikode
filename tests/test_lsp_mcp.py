@@ -1947,6 +1947,25 @@ class ImageExtractionTests(unittest.TestCase):
             "not even an object"])
         self.assertEqual([], images)
 
+    def test_a_pippo_style_embedded_image_is_unwrapped(self):
+        from haikode.mcp import images_from_result, normalize_image_parts
+        from haikode.mcp import content_to_text
+        result = normalize_image_parts({"content": [{
+            "type": "text",
+            "text": '{"type":"image","media_type":"image/jpeg","data":"aGVsbG8="}'}]})
+        self.assertEqual([{"media_type": "image/jpeg", "data": "aGVsbG8="}],
+                         images_from_result(result))
+        text = content_to_text(result["content"])
+        self.assertNotIn("aGVsbG8=", text, "base64 must not reach the prose")
+        self.assertIn("omitted", text)
+
+    def test_ordinary_json_text_is_left_alone(self):
+        from haikode.mcp import normalize_image_parts
+        part = {"type": "text",
+                "text": '{"type":"file","name":"image/png notes","data":"x"}'}
+        result = normalize_image_parts({"content": [part]})
+        self.assertEqual(part, result["content"][0])
+
     def test_the_count_is_capped(self):
         from haikode import mcp as mcp_module
         parts = [{"type": "image", "mimeType": "image/png", "data": "QQ=="}

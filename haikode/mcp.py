@@ -210,6 +210,58 @@ MAX_IMAGE_BASE64 = 6 * 1024 * 1024
 MAX_IMAGES_PER_RESULT = 4
 
 
+def _embedded_image(part: Any) -> Optional[Dict[str, str]]:
+    """An image a server wrapped as JSON inside a text part, or None.
+
+    Pippo answers screenshot calls with {"type":"text","text":"{\"type\":
+    \"image\",\"media_type\":...,\"data\":...}"} rather than the spec's
+    image content part. Without this shim the model is not only blind to the
+    screenshot -- it is handed half a megabyte of base64 as prose. The match
+    is deliberately narrow: the whole text must parse as one JSON object of
+    exactly an image's shape.
+    """
+    if not isinstance(part, dict) or part.get("type") != "text":
+        return None
+    text = part.get("text")
+    if (not isinstance(text, str) or len(text) > MAX_IMAGE_BASE64 + 256
+            or not text.lstrip().startswith("{")):
+        return None
+    try:
+        inner = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(inner, dict) or inner.get("type") != "image":
+        return None
+    mime = inner.get("media_type") or inner.get("mimeType")
+    data = inner.get("data")
+    if (not isinstance(mime, str) or not mime.lower().startswith("image/")
+            or not isinstance(data, str) or not data):
+        return None
+    return {"media_type": mime.lower(), "data": data}
+
+
+def normalize_image_parts(result: Any) -> Any:
+    """Rewrite embedded-JSON image text parts as spec image parts.
+
+    Everything downstream then has one shape to deal with: extraction takes
+    the bytes, and content_to_text's describe_part turns the part into a
+    short placeholder instead of pages of base64.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return result
+    content = []
+    for part in result["content"]:
+        embedded = _embedded_image(part)
+        if embedded is not None:
+            content.append({"type": "image", "mimeType": embedded["media_type"],
+                            "data": embedded["data"]})
+        else:
+            content.append(part)
+    normalized = dict(result)
+    normalized["content"] = content
+    return normalized
+
+
 def images_from_result(result: Any) -> List[Dict[str, str]]:
     """Image parts of a tools/call result, in the neutral Msg shape.
 
@@ -820,6 +872,7 @@ class MCPProxyTool(Tool):
         if not isinstance(result, dict):
             result = {}
 
+        result = normalize_image_parts(result)
         output = result_to_text(result)
         if result.get("isError"):
             raise RuntimeError(output or "MCP tool %s returned an error"
