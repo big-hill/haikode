@@ -103,6 +103,28 @@ reviewer.
   `list_windows`, `query_fs`, `haiku_docs`) returned real results through
   `MCPProxyTool`, and the operator completed a live model turn using Pippo
   tools with the `mcp` permission flow on 2026-08-17.
+- Published `v0.1.4` at `9a46b58` has matching `0.1.4-142` x86_64 and
+  x86_gcc2 packages, both built from that commit. The 2521-test baseline,
+  all 13 fixture validations, deterministic performance audit, native build,
+  package metadata, version and clean contents passed on both physical
+  architectures. GitHub reports SHA-256
+  `09616413baa1f84850415c341164859b47bbdfb47689824d1507a66c7bb299e7`
+  for x86_64 and
+  `0094d4f2135d21e146f0a54513a2435ab7fcb776d8fb648bbb40be32b03e6373`
+  for x86_gcc2; fresh post-upload downloads matched the local packages byte
+  for byte. Unlike earlier releases the x86_64 package was installed with
+  `pkgman` and used by the operator *before* the tag: 58 sessions and 11119
+  messages survived the upgrade with the store still in `delete` mode, and
+  `/effort` and `/mcp` answered from the installed build.
+- Reasoning-effort levels for the OpenAI-compatible transport were measured
+  against the live endpoints on 2026-08-18 and corrected on 2026-08-22:
+  grok-4.6/4.5 accept `minimal/low/medium/high/xhigh`, grok-4.3 also `none`,
+  grok-4.20 rejects the parameter, and Ollama accepts
+  `none/low/medium/high/max`. `xhigh` was missing from the first table
+  because the probe that built it never asked for that value -- the
+  maintainer caught it against xAI's documentation before release. A guard
+  test now requires every level named in the module to appear in some
+  endpoint's tuple.
 - Candidate (post-v0.1.3): tool-result images reach the model's eyes. On
   physical x86_64 with the operator's live store and two TUI instances
   already running, a one-shot `mcp_pippo_screenshot` turn on a vision model
