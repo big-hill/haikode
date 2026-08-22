@@ -268,7 +268,24 @@ def build_provider(config: Any, name: Optional[str] = None) -> Provider:
         return GeminiProvider(**kwargs)
     return OpenAICompatProvider(
         base_url=prov.get("base_url", ""), api_key=key, name=selected,
-        stall_timeout=_stall(prov))
+        stall_timeout=_stall(prov),
+        reasoning_efforts=_declared_efforts(prov))
+
+
+def _declared_efforts(prov: dict):
+    """A profile's own `reasoning_efforts` list, or None for the tables.
+
+    An endpoint haikode has never measured -- a local server, a provider
+    added after this build -- can declare what it accepts instead of
+    waiting for the table to learn it. Anything that is not a list of
+    non-empty strings is ignored rather than half-applied.
+    """
+    declared = prov.get("reasoning_efforts")
+    if not isinstance(declared, (list, tuple)):
+        return None
+    values = [str(item).strip().lower() for item in declared
+              if isinstance(item, str) and str(item).strip()]
+    return values or None
 
 
 def _stall(prov: dict) -> float:

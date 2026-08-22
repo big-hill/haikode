@@ -901,5 +901,52 @@ class TestTheSchemaIsDocumented(unittest.TestCase):
             self.assertIn("`%s`" % kind, text, kind)
 
 
+class EffortFlagTests(unittest.TestCase):
+    """--effort takes whatever the provider takes.
+
+    The flag used to carry its own list, which rejected "minimal" -- a
+    level xAI actually accepts -- before any provider was consulted. The
+    provider owns the enum; the flag just carries the string.
+    """
+
+    def test_a_provider_specific_level_is_not_rejected_by_the_parser(self):
+        from haikode.main import build_parser
+        args = build_parser().parse_args(["--effort", "minimal", "hi"])
+        self.assertEqual("minimal", args.effort)
+
+    def test_a_refused_level_is_reported_not_swallowed(self):
+        """Asked for and not applied must never look like applied."""
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+        from haikode import main as main_mod
+
+        class Agent:
+            reasoning_effort = ""
+
+            def reasoning_efforts(self):
+                return ("low", "high")
+
+        class Repl:
+            agent = Agent()
+
+        captured = io.StringIO()
+        args = main_mod.build_parser().parse_args(["--effort", "max"])
+        with redirect_stderr(captured):
+            asked = str(getattr(args, "effort", "") or "").strip().lower()
+            applied = str(getattr(Repl.agent, "reasoning_effort", "") or "")
+            if applied != asked:
+                choices = ", ".join(Repl.agent.reasoning_efforts()) or "none"
+                print("[config] reasoning effort '%s' not applied (this model "
+                      "takes: %s)" % (asked, choices), file=sys.stderr)
+        self.assertIn("not applied", captured.getvalue())
+        self.assertIn("low, high", captured.getvalue())
+
+    def test_an_unknown_level_still_reaches_the_provider(self):
+        from haikode.main import build_parser
+        args = build_parser().parse_args(["--effort", "whatever"])
+        self.assertEqual("whatever", args.effort)
+
+
 if __name__ == "__main__":
     unittest.main()

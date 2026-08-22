@@ -34,6 +34,36 @@ def _rejects_stream_options(error: NetError) -> bool:
     return "stream_options" in body or "include_usage" in body
 
 
+# Reasoning-effort levels this transport may offer, measured against the live
+# endpoints on 2026-08-18 rather than read off documentation: the answer
+# differs per family and has changed across generations, and offering a level
+# the model refuses turns every single turn into a 400.
+#
+# Matched on the longest model-id prefix. A family that rejects the parameter
+# outright is listed with an empty tuple, which is not the same as "unknown"
+# -- it is a measured "no", and it stops an effort set on a sibling model from
+# riding along after a /model switch.
+_EFFORTS_BY_MODEL = {
+    "grok-4.20": (),                    # "does not support parameter reasoningEffort"
+    "grok-4.3": ("none", "minimal", "low", "medium", "high"),
+    "grok-4.5": ("minimal", "low", "medium", "high"),
+    "grok-4.6": ("minimal", "low", "medium", "high"),
+}
+
+# Endpoints whose enum is the endpoint's own, whatever model is named. Ollama
+# validates the value and says so: 'invalid reasoning value: "zzz" (must be
+# "high", "medium", "low", "max", or "none")'.
+_EFFORTS_BY_HOST = {
+    "ollama.com": ("none", "low", "medium", "high", "max"),
+}
+
+
+def _longest_prefix(model: str, table) -> str:
+    name = (model or "").lower()
+    hits = [key for key in table if name.startswith(key)]
+    return max(hits, key=len) if hits else ""
+
+
 class OpenAICompatProvider(Provider):
     """OpenAI /chat/completions — used by Ollama Cloud, xAI, Zen, OpenAI."""
 
@@ -42,7 +72,8 @@ class OpenAICompatProvider(Provider):
                  timeout: int = DEFAULT_TIMEOUT,
                  connect_timeout: Optional[float] = None,
                  stall_timeout: Optional[float] = None,
-                 abort=None):
+                 abort=None, reasoning_effort: str = "",
+                 reasoning_efforts=None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.name = name
@@ -53,6 +84,13 @@ class OpenAICompatProvider(Provider):
         # Set by the caller (agent/TUI) to a threading.Event or a predicate;
         # tripping it tears the connection down within a poll interval.
         self.abort = abort
+        self.reasoning_effort = (reasoning_effort or "").strip().lower()
+        # A profile may declare its own levels: a local server or a provider
+        # this build has never met knows its own endpoint, and haikode should
+        # not have to ship an opinion about it. None means "use the tables".
+        self._declared_efforts = (
+            tuple(str(value).strip().lower() for value in reasoning_efforts)
+            if reasoning_efforts else None)
         # Whether to ask for token counts. A streaming /chat/completions is
         # not required to report usage unless the request opts in, and the
         # endpoints differ: measured on 1 August 2026, an Ollama server —
@@ -161,16 +199,52 @@ class OpenAICompatProvider(Provider):
         self._usage_declined = 0
         return True
 
-    def _stream_once(self, messages: List[Msg], tools: List[ToolSpec],
-                     model: str, max_tokens: int,
-                     ask_usage: bool = True) -> Iterator[CompletionChunk]:
-        url = f"{self.base_url}/chat/completions"
+    def reasoning_efforts(self, model: str) -> tuple:
+        """Levels `model` accepts here; empty hides the control entirely.
+
+        A declared list wins: the operator's endpoint is the authority on
+        the operator's endpoint. Otherwise the measured tables answer, and
+        an endpoint nobody has measured offers nothing rather than guessing
+        a 400 into every turn.
+        """
+        if self._declared_efforts is not None:
+            return self._declared_efforts
+        prefix = _longest_prefix(model, _EFFORTS_BY_MODEL)
+        if prefix:
+            return _EFFORTS_BY_MODEL[prefix]
+        host = (self.base_url or "").lower()
+        for hint, levels in _EFFORTS_BY_HOST.items():
+            if hint in host:
+                return levels
+        return ()
+
+    def set_reasoning_effort(self, effort: str, model: str) -> str:
+        value = (effort or "").strip().lower()
+        allowed = self.reasoning_efforts(model)
+        if not allowed:
+            raise ValueError("%s takes no reasoning effort through %s"
+                             % (model or "this model", self.name))
+        if value not in allowed:
+            raise ValueError("reasoning effort must be one of "
+                             + ", ".join(allowed))
+        self.reasoning_effort = value
+        return value
+
+    def _payload(self, messages: List[Msg], tools: List[ToolSpec],
+                 model: str, max_tokens: int,
+                 ask_usage: bool = False) -> dict:
         payload = {
             "model": model,
             "messages": self._encode(messages),
             "max_tokens": max_tokens,
             "stream": True,
         }
+        # Re-checked against *this* model, not the one it was set on: a
+        # /model switch to a family that refuses the parameter must drop it
+        # rather than fail every request.
+        effort = self.reasoning_effort
+        if effort and effort in self.reasoning_efforts(model):
+            payload["reasoning_effort"] = effort
         if ask_usage:
             payload["stream_options"] = {"include_usage": True}
         if tools:
@@ -181,6 +255,14 @@ class OpenAICompatProvider(Provider):
                 for t in tools
             ]
             payload["tool_choice"] = "auto"
+        return payload
+
+    def _stream_once(self, messages: List[Msg], tools: List[ToolSpec],
+                     model: str, max_tokens: int,
+                     ask_usage: bool = True) -> Iterator[CompletionChunk]:
+        url = f"{self.base_url}/chat/completions"
+        payload = self._payload(messages, tools, model, max_tokens,
+                                ask_usage=ask_usage)
 
         splitter = ThinkTagSplitter()
         try:

@@ -586,6 +586,17 @@ def build_repl(config: Config, args, cwd: str,
     if args.print_logs:
         print("[startup] agent+providers ready in %.2fs"
               % (time.monotonic() - started), file=sys.stderr)
+    # An effort the user typed *this run* and did not get is worth saying
+    # out loud every time. Config-file warnings stay behind --print-logs
+    # because they repeat at every start; this one answers a question the
+    # user asked a second ago, and silence reads as "applied".
+    asked = str(getattr(args, "effort", "") or "").strip().lower()
+    if asked:
+        applied = str(getattr(repl.agent, "reasoning_effort", "") or "")
+        if applied != asked:
+            choices = ", ".join(repl.agent.reasoning_efforts()) or "none"
+            print("[config] reasoning effort '%s' not applied (this model "
+                  "takes: %s)" % (asked, choices), file=sys.stderr)
 
     say = report or print
     resumed = ""
@@ -696,8 +707,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="PROVIDER/MODEL, or a bare model id for this provider")
     parser.add_argument("-a", "--agent", default="",
                         help="agent to start in (build, plan, or a custom one)")
-    parser.add_argument("--effort", default="",
-                        choices=("none", "low", "medium", "high", "xhigh", "max"),
+    # Deliberately unconstrained: the provider owns the enum and it differs
+    # per family -- xAI takes "minimal" where the Responses API takes
+    # "xhigh", and a profile may declare levels this build has never heard
+    # of. A hardcoded list here rejected valid levels before the provider
+    # was ever asked; the provider validates and names the real choices.
+    parser.add_argument("--effort", default="", metavar="LEVEL",
                         help="reasoning effort for providers that expose it")
     parser.add_argument("-C", "--directory", default=".")
     parser.add_argument("-c", "--continue", dest="resume", action="store_true",

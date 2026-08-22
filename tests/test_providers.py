@@ -1174,5 +1174,84 @@ class ImageEncodingTests(unittest.TestCase):
         self.assertEqual(2, len(items))
 
 
+class CompatEffortTests(unittest.TestCase):
+    """Reasoning effort on the OpenAI-compatible transport.
+
+    Every level here was measured against the live endpoint, because the
+    answer differs per family and has changed across generations: on
+    2026-08-18 grok-4.6 and grok-4.5 took minimal/low/medium/high, grok-4.3
+    also took none, and the grok-4.20 builds rejected the parameter
+    outright. Offering a level the model refuses turns every turn into a
+    400, so an unmeasured endpoint is given no levels at all until its
+    profile says otherwise.
+    """
+
+    def provider(self, **kwargs):
+        from haikode.providers.openai_compat import OpenAICompatProvider
+        kwargs.setdefault("base_url", "https://api.x.ai/v1")
+        kwargs.setdefault("name", "supergrok")
+        return OpenAICompatProvider(**kwargs)
+
+    def test_grok_families_get_their_measured_levels(self):
+        p = self.provider()
+        self.assertEqual(("minimal", "low", "medium", "high"),
+                         p.reasoning_efforts("grok-4.6"))
+        self.assertEqual(("minimal", "low", "medium", "high"),
+                         p.reasoning_efforts("grok-4.5"))
+        self.assertEqual(("none", "minimal", "low", "medium", "high"),
+                         p.reasoning_efforts("grok-4.3"))
+
+    def test_a_model_that_refuses_the_parameter_offers_nothing(self):
+        p = self.provider()
+        self.assertEqual((), p.reasoning_efforts("grok-4.20-0309-reasoning"))
+        with self.assertRaises(ValueError):
+            p.set_reasoning_effort("low", "grok-4.20-0309-reasoning")
+
+    def test_ollama_endpoints_get_ollamas_enum(self):
+        p = self.provider(base_url="https://ollama.com/v1", name="ollama")
+        self.assertEqual(("none", "low", "medium", "high", "max"),
+                         p.reasoning_efforts("glm-5.2"))
+
+    def test_an_unmeasured_endpoint_stays_silent(self):
+        p = self.provider(base_url="http://192.168.1.50:11434/v1", name="tower")
+        self.assertEqual((), p.reasoning_efforts("qwen3"))
+
+    def test_a_profile_may_declare_its_own_levels(self):
+        p = self.provider(base_url="http://192.168.1.50:11434/v1", name="tower",
+                          reasoning_efforts=["low", "high"])
+        self.assertEqual(("low", "high"), p.reasoning_efforts("anything"))
+        self.assertEqual("high", p.set_reasoning_effort("high", "anything"))
+        with self.assertRaises(ValueError):
+            p.set_reasoning_effort("medium", "anything")
+
+    def test_a_declared_list_overrides_the_table(self):
+        # The maintainer's endpoint is the authority on its own endpoint.
+        p = self.provider(reasoning_efforts=["low"])
+        self.assertEqual(("low",), p.reasoning_efforts("grok-4.6"))
+
+    def test_a_profile_list_reaches_the_client_through_runtime(self):
+        from haikode.runtime import _declared_efforts
+        self.assertIsNone(_declared_efforts({}))
+        self.assertIsNone(_declared_efforts({"reasoning_efforts": "high"}))
+        self.assertIsNone(_declared_efforts({"reasoning_efforts": [1, ""]}))
+        self.assertEqual(["low", "high"],
+                         _declared_efforts({"reasoning_efforts": ["Low", " high "]}))
+
+    def test_the_payload_carries_the_effort_only_when_set(self):
+        p = self.provider()
+        self.assertNotIn("reasoning_effort", p._payload([], [], "grok-4.6", 16))
+        p.set_reasoning_effort("high", "grok-4.6")
+        self.assertEqual("high",
+                         p._payload([], [], "grok-4.6", 16)["reasoning_effort"])
+
+    def test_an_effort_is_not_sent_to_a_model_that_refuses_it(self):
+        # Set on one model, then the caller switches to one that rejects the
+        # parameter: the payload must drop it rather than 400 every turn.
+        p = self.provider()
+        p.set_reasoning_effort("high", "grok-4.6")
+        payload = p._payload([], [], "grok-4.20-0309-reasoning", 16)
+        self.assertNotIn("reasoning_effort", payload)
+
+
 if __name__ == "__main__":
     unittest.main()
