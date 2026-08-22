@@ -39,15 +39,22 @@ def _rejects_stream_options(error: NetError) -> bool:
 # differs per family and has changed across generations, and offering a level
 # the model refuses turns every single turn into a 400.
 #
+# "xhigh" was missing from the first version of this table because the probe
+# that built it never tried the value -- xAI documents it, and all three grok
+# families accept it. A table built by asking the endpoint is only as good as
+# the questions asked, so the probe now sweeps every level any provider in
+# this file uses. "max" is rejected here ("Invalid reasoning effort") though
+# Ollama takes it, which is exactly why the tables are per-endpoint.
+#
 # Matched on the longest model-id prefix. A family that rejects the parameter
 # outright is listed with an empty tuple, which is not the same as "unknown"
 # -- it is a measured "no", and it stops an effort set on a sibling model from
 # riding along after a /model switch.
 _EFFORTS_BY_MODEL = {
     "grok-4.20": (),                    # "does not support parameter reasoningEffort"
-    "grok-4.3": ("none", "minimal", "low", "medium", "high"),
-    "grok-4.5": ("minimal", "low", "medium", "high"),
-    "grok-4.6": ("minimal", "low", "medium", "high"),
+    "grok-4.3": ("none", "minimal", "low", "medium", "high", "xhigh"),
+    "grok-4.5": ("minimal", "low", "medium", "high", "xhigh"),
+    "grok-4.6": ("minimal", "low", "medium", "high", "xhigh"),
 }
 
 # Endpoints whose enum is the endpoint's own, whatever model is named. Ollama

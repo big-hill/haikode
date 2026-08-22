@@ -1194,12 +1194,29 @@ class CompatEffortTests(unittest.TestCase):
 
     def test_grok_families_get_their_measured_levels(self):
         p = self.provider()
-        self.assertEqual(("minimal", "low", "medium", "high"),
+        self.assertEqual(("minimal", "low", "medium", "high", "xhigh"),
                          p.reasoning_efforts("grok-4.6"))
-        self.assertEqual(("minimal", "low", "medium", "high"),
+        self.assertEqual(("minimal", "low", "medium", "high", "xhigh"),
                          p.reasoning_efforts("grok-4.5"))
-        self.assertEqual(("none", "minimal", "low", "medium", "high"),
+        self.assertEqual(("none", "minimal", "low", "medium", "high", "xhigh"),
                          p.reasoning_efforts("grok-4.3"))
+
+    def test_every_level_this_file_knows_of_is_covered_somewhere(self):
+        """The first table missed xhigh because the probe never asked for it.
+
+        Any level named anywhere in this module must appear in some
+        endpoint's tuple or be a deliberate, measured exclusion -- so a
+        level added for one provider cannot be silently absent for another.
+        """
+        from haikode.providers import openai_compat as compat
+        known = set()
+        for levels in compat._EFFORTS_BY_MODEL.values():
+            known.update(levels)
+        for levels in compat._EFFORTS_BY_HOST.values():
+            known.update(levels)
+        self.assertEqual(
+            {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+            known)
 
     def test_a_model_that_refuses_the_parameter_offers_nothing(self):
         p = self.provider()
@@ -1240,8 +1257,8 @@ class CompatEffortTests(unittest.TestCase):
     def test_the_payload_carries_the_effort_only_when_set(self):
         p = self.provider()
         self.assertNotIn("reasoning_effort", p._payload([], [], "grok-4.6", 16))
-        p.set_reasoning_effort("high", "grok-4.6")
-        self.assertEqual("high",
+        p.set_reasoning_effort("xhigh", "grok-4.6")
+        self.assertEqual("xhigh",
                          p._payload([], [], "grok-4.6", 16)["reasoning_effort"])
 
     def test_an_effort_is_not_sent_to_a_model_that_refuses_it(self):

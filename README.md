@@ -221,8 +221,8 @@ uses an Anthropic API key; it is not a subscription or browser-login flow.
 `/effort` also works on the OpenAI-compatible transport, which covers the
 `supergrok`, `xai`, `ollama` and `zen` profiles. The levels are the
 endpoint's own and were measured against it: grok-4.5 and grok-4.6 take
-`minimal/low/medium/high`, grok-4.3 also takes `none`, the grok-4.20 builds
-reject the parameter entirely, and Ollama's endpoint takes
+`minimal/low/medium/high/xhigh`, grok-4.3 also takes `none`, the grok-4.20
+builds reject the parameter entirely, and Ollama's endpoint takes
 `none/low/medium/high/max` for every model it serves. An endpoint nobody has
 measured offers no levels; give it its own list to enable the control:
 
