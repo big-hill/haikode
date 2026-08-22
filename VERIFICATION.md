@@ -137,7 +137,7 @@ metadata, and observed target behavior override it when they differ.
 python3 -m unittest discover -s tests -b
 ```
 
-The current 2026-08-17 Mac run executed **2486 tests**. It fails **exactly four** on
+The current 2026-08-18 Mac run executed **2521 tests**. It fails **exactly four** on
 purpose — the wiring-audit backlog documented in the README — and skips four.
 A fifth failure is a real regression. `scripts/ci_baseline.py` verifies the
 failure identities, not only the count.
