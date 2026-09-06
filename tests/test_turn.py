@@ -432,14 +432,15 @@ class ResumeRouteNoteTests(TurnTestCase):
         session = self._session(provider="", model="")
         self.assertEqual("", turn_mod.resume_note(session, "p", "m"))
 
-    def test_the_repl_resume_carries_the_note(self):
+    def test_the_repl_resume_refuses_a_missing_saved_provider(self):
         repl = self.make_repl()
         store = repl.turn.store()
         session = store.new_session(self.dir, "another-provider",
                                     "another-model", title="from elsewhere")
         text = repl.adopt_session(session)
-        self.assertIn("Resumed", text)
-        self.assertIn("another-provider/another-model", text)
+        self.assertIn("[error]", text)
+        self.assertIn("another-provider", text)
+        self.assertIsNone(repl.session)
 
     def test_the_repl_resume_stays_quiet_on_the_same_route(self):
         repl = self.make_repl()

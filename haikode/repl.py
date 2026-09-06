@@ -102,6 +102,8 @@ def copy_session(store, session, cwd: str = "", provider: str = "",
     """
     forked = store.new_session(cwd or session.cwd, provider or session.provider,
                                model or session.model, session.title or "")
+    forked.set_route(forked.provider, forked.model,
+                     getattr(session, "agent_name", "") or "")
     for message in session.messages:
         forked.append(message)
     return forked
@@ -1142,7 +1144,47 @@ class REPL:
 
     def adopt_session(self, session) -> str:
         """Continue an existing session in this REPL."""
+        overrides = getattr(self, "resume_overrides", {})
+        provider = overrides.get("provider") or session.provider or self.provider_name
+        model = overrides.get("model") or (
+            "" if overrides.get("provider") else session.model or self.model_override)
+        agent_name = (overrides.get("agent") or getattr(session, "agent_name", "")
+                      or self.agent_name)
+        if provider not in (self.config.data.get("providers") or {}):
+            return "[error] saved provider '%s' is no longer configured" % provider
+        # Session grants belong to the conversation being left. Build in
+        # isolation so a failed resume cannot change its permission policy.
+        permissions = Permissions(config=self.config, asker=self.permissions.asker,
+                                  auto_approve=self.permissions.auto_approve,
+                                  yolo=self.permissions.yolo)
+        candidate = None
+        try:
+            candidate = build_agent(
+                self.config, provider, self.cwd, permissions=permissions,
+                agent_name=agent_name, model=model,
+                reasoning_effort=self.reasoning_effort_override)
+            if agent_name and candidate.agent_name != agent_name:
+                raise ValueError("saved agent '%s' is no longer available" % agent_name)
+            # A changed agent definition must not replace the saved model.
+            if model:
+                candidate.set_model(model)
+            candidate.messages = list(session.messages)
+        except Exception as exc:
+            self._close_agent_resources(candidate)
+            return "[error] cannot resume session: %s" % exc
+        previous = self.agent
+        self.agent = candidate
+        self.permissions = permissions
+        self.provider_name = provider
+        self.model_override = model
+        self.model = candidate.model
+        self.agent_name = candidate.agent_name
+        self.project = candidate.project
+        self.resume_overrides = {}
+        self._sync_turn()
         self.turn.adopt(session)
+        self.turn.last_checkpoint = None
+        self._close_agent_resources(previous)
         # Replayed wholesale so tool calls stay paired with their results:
         # a provider rejects an assistant turn whose calls were never answered.
         self.agent.messages = list(session.messages)
@@ -1153,6 +1195,21 @@ class REPL:
         # this decade (ids are time-prefixed), so it cannot be pasted back.
         resumed = f"Resumed {session.id} ({len(session.messages)} messages)"
         return resumed + "\n" + note if note else resumed
+
+    @staticmethod
+    def _close_agent_resources(agent):
+        """A replaced conversation must not retain its MCP/LSP children."""
+        import atexit
+        ctx = getattr(agent, "ctx", None)
+        for name in ("mcp", "lsp"):
+            manager = getattr(ctx, name, None)
+            shutdown = getattr(manager, "shutdown_all", None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                    atexit.unregister(shutdown)
+                except Exception:
+                    pass
 
     def resume_latest(self) -> str:
         """Adopt the most recent session for this directory (--continue)."""
@@ -1172,9 +1229,22 @@ class REPL:
 
     def _cmd_fork(self, arg):
         if arg.strip():
-            resumed = self.resume_session(arg.strip())
-            if resumed.startswith("[error]") or resumed.startswith("No session"):
-                return resumed
+            store = self._store()
+            if store is None:
+                return "[error] sessions unavailable"
+            try:
+                source, error = find_session(store, arg.strip())
+                if source is None:
+                    return "[error] %s" % error
+                forked = copy_session(store, source, cwd=self.cwd)
+                resumed = self.adopt_session(forked)
+                if not resumed.startswith("Resumed "):
+                    store.delete(forked.id)
+                    return resumed
+            except Exception as exc:
+                return "[error] %s" % exc
+            return (f"Forked {source.id} → {forked.id} "
+                    f"({len(forked.messages)} messages)")
         return self.fork_session()
 
     def fork_session(self) -> str:
@@ -1193,6 +1263,7 @@ class REPL:
             forked = copy_session(store, session, cwd=self.cwd,
                                   provider=self.provider_name,
                                   model=self.turn.model)
+            forked.set_route(self.provider_name, self.agent.model, self.agent.agent_name)
         except Exception as e:
             return f"[error] {e}"
         self.turn.adopt(forked)
