@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +74,13 @@ class DesktopRuntimeTests(unittest.TestCase):
             self.assertIn('kPythonRuntimeScript', source)
             self.assertNotIn('/boot/home/haikode', source)
 
+    def test_sessions_do_not_require_provider_config(self):
+        from haikode import configtool
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, HAIKODE_CONFIG_DIR=directory), \
+                    patch.object(configtool, 'Config', side_effect=AssertionError('config read')):
+                self.assertEqual(configtool.main(['sessions']), 0)
+
     @unittest.skipUnless(sys.platform.startswith('haiku'), 'requires native libbe')
     def test_compiled_config_bridge_output_stdin_and_failure(self):
         # Execute the real native bridge without a GUI or user database.
@@ -104,6 +112,13 @@ class DesktopRuntimeTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, status, result.stderr)
                 self.assertEqual(result.stdout.strip(), output)
+            env.update(HAI_PYTHONPATH=str(ROOT),
+                       HAIKODE_CONFIG_DIR=str(root / 'isolated-store'),
+                       HAI_DISABLE_KEYSTORE='1')
+            result = subprocess.run([str(executable), 'sessions'], env=env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout, '')
 
     def test_session_failure_is_not_mislabelled_or_selectable(self):
         source = (ROOT / 'desktop/src/ui/HaiWindow.cpp').read_text()
