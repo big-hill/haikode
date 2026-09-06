@@ -39,6 +39,10 @@ Avoid parallel edits without explicit ownership across these groups:
 - Prompt files and prompt assembly: wording changes can alter tool behavior and
   enforcement expectations.
 
+Saved provider/model/agent routing belongs to `session.py`; `TurnController`
+records the route used by each turn, and REPL session adoption restores it for
+CLI/TUI resume without changing global defaults.
+
 Database schema changes are additive migrations in `session.py` and require
 round-trip, concurrency, failure, and downgrade/rollback analysis. Never edit a
 live SQLite database to infer the migration contract.

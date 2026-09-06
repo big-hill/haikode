@@ -301,6 +301,7 @@ haikode run [options] PROMPT…      the same thing, spelled out
   -a, --agent  NAME        start in this agent (build, plan, or a custom one)
   -C, --directory DIR      working directory
   -c, --continue           resume the most recent session for this directory
+  -r, --resume             open the searchable saved-session picker
   -s, --session ID         resume a session by id (a unique prefix will do)
       --fork               continue in a copy, leaving the original untouched
                            (needs --continue or --session)
@@ -434,6 +435,21 @@ Session ids are time-prefixed, so a unique **prefix** is accepted anywhere an
 id is — but the eight characters the TUI shows are the same for every session
 opened this decade, so take the full id from `haikode session list`. An
 ambiguous prefix is refused rather than guessed at.
+
+Start with `haikode --resume` (or `-r`) to choose a saved session in the TUI.
+Use the arrow keys and Enter, or type to search; Esc closes the picker.
+With `--no-tui`, or when curses is unavailable, a numbered list is shown
+instead. The picker requires an interactive terminal; scripts use `--session ID`.
+
+Resuming restores the session's last recorded provider, model and agent type
+without changing global defaults. Existing sessions from older versions have
+no saved agent type, so they keep the startup agent until their next turn is
+saved. Explicit startup `--provider`, `--model` and `--agent` options override
+the saved selection once. A provider-only override uses that provider's default
+model. An unavailable saved provider or agent is reported without replacing
+the current conversation. Resuming keeps the current working directory and
+its project permissions; it does not switch directories or inherit another
+conversation's temporary permission grants.
 
 ---
 

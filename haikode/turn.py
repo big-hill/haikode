@@ -40,7 +40,7 @@ TURN = "turn"      # expands into a prompt: goes through run_turn()
 # seconds per provider.
 ASYNC_COMMANDS = frozenset({
     "model", "models", "provider", "providers", "keys", "logout", "status",
-    "update",
+    "update", "resume", "fork",
 })
 # /login prompts for a secret. In a curses front end stdin belongs to the
 # screen, so the prompt would be invisible and the app would look hung.
@@ -519,6 +519,9 @@ class TurnController:
 
         trouble = ""
         try:
+            session.set_route(self.provider_name,
+                              str(getattr(agent, "model", "") or self.model),
+                              str(getattr(agent, "agent_name", "") or ""))
             result.checkpoint = session.checkpoint()
             self.last_checkpoint = result.checkpoint
             session.auto_title(title_hint)

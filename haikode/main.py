@@ -251,6 +251,8 @@ def import_session(store, data: dict, cwd: str = "", title: str = ""):
                                 str(data.get("provider") or ""),
                                 str(data.get("model") or ""),
                                 title or str(data.get("title") or ""))
+    session.set_route(session.provider, session.model,
+                      str(data.get("agent_name") or ""))
     for message in messages:
         session.append(message)
     return session
@@ -569,6 +571,31 @@ def build_repl(config: Config, args, cwd: str,
     from .repl import JSONREPL, REPL
 
     provider, model = split_model(args.model)
+    startup_provider = args.provider or provider
+    startup_model = model
+    startup_agent = args.agent
+    # Resolve the saved route before touching credentials for a default
+    # provider that may no longer be usable. The REPL owns its store later.
+    if args.session or args.resume:
+        store, _ = _open_store()
+        if store is not None:
+            try:
+                saved = None
+                if args.session:
+                    saved, _ = find_session(store, args.session)
+                else:
+                    rows = store.list_sessions(limit=1, cwd=cwd)
+                    if rows:
+                        saved = store.load(rows[0]["id"])
+                if saved is not None:
+                    startup_provider = startup_provider or saved.provider
+                    if not (args.provider or provider):
+                        startup_model = startup_model or saved.model
+                    startup_agent = startup_agent or getattr(saved, "agent_name", "")
+            except Exception as exc:
+                raise ValueError("cannot read saved session: %s" % exc) from exc
+            finally:
+                store.close()
     factory = JSONREPL if getattr(args, "json", False) else REPL
     # Phase timing, printed with --print-logs. A user with several windows
     # reported occasionally slow starts; every phase measured fast in
@@ -578,9 +605,9 @@ def build_repl(config: Config, args, cwd: str,
     # culprits are the episodic kind: a queued keystore approval, a WiFi
     # blip mid-lookup.
     started = time.monotonic()
-    repl = factory(config, provider=args.provider or provider, cwd=cwd,
+    repl = factory(config, provider=startup_provider, cwd=cwd,
                    auto_approve=args.yes, yolo=getattr(args, "yolo", False),
-                   agent_name=args.agent, model=model,
+                   agent_name=startup_agent, model=startup_model,
                    print_logs=args.print_logs,
                    reasoning_effort=getattr(args, "effort", ""))
     if args.print_logs:
@@ -599,6 +626,11 @@ def build_repl(config: Config, args, cwd: str,
                   "takes: %s)" % (asked, choices), file=sys.stderr)
 
     say = report or print
+    repl.resume_overrides = {
+        "provider": args.provider or provider,
+        "model": model,
+        "agent": args.agent,
+    } if (args.session or args.resume or getattr(args, "resume_picker", False)) else {}
     resumed = ""
     if args.session:
         resumed = repl.resume_session(args.session)
@@ -616,7 +648,7 @@ def build_repl(config: Config, args, cwd: str,
 
 
 REPROVISION_FALLBACK = frozenset(
-    {"/provider", "/model", "/login", "/logout", "/reload"})
+    {"/provider", "/model", "/login", "/logout", "/reload", "/resume", "/fork"})
 
 
 class CommandBridge:
@@ -646,7 +678,8 @@ class CommandBridge:
         result = self.repl.handle_command(line)
         name = line.strip().split(" ", 1)[0]
         if result is not None and name in self.reprovision:
-            self.reprovisioned = True
+            if name not in ("/resume", "/fork") or str(result).startswith(("Resumed ", "Forked ")):
+                self.reprovisioned = True
         return result
 
 
@@ -690,7 +723,8 @@ def _start_tui(repl, config: Config, cwd: str) -> bool:
         run_tui(agent_factory=agent_factory, config=config, cwd=cwd,
                 on_command=on_command, completer=completer,
                 header=f"haikode — {repl.provider_name}",
-                agent=repl.agent, turn=repl.turn)
+                agent=repl.agent, turn=repl.turn,
+                resume_picker=getattr(repl, "resume_picker", False))
         return True
     except RuntimeError as e:
         print(f"[tui unavailable: {e}]", file=sys.stderr)
@@ -717,6 +751,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-C", "--directory", default=".")
     parser.add_argument("-c", "--continue", dest="resume", action="store_true",
                         help="resume the most recent session for this directory")
+    parser.add_argument("-r", "--resume", dest="resume_picker", action="store_true",
+                        help="open an interactive saved-session picker")
     parser.add_argument("-s", "--session", default="",
                         help="resume a session by id (a unique prefix will do)")
     parser.add_argument("--fork", action="store_true",
@@ -857,6 +893,13 @@ def main():
         parser.print_help()
         print(HELP_EPILOGUE)
         return
+    if args.resume_picker:
+        if (not sys.stdin.isatty() or not sys.stdout.isatty()
+                or args.json or args.prompt):
+            parser.error("--resume needs an interactive terminal without a prompt or --json; "
+                         "use --session ID for scripts")
+        if args.session or args.resume or args.fork or args.title:
+            parser.error("--resume cannot be combined with --session, --continue, --fork or --title")
     if args.fork and not (args.session or args.resume):
         print("--fork needs --continue or --session: there is nothing to fork "
               "from otherwise.", file=sys.stderr)
@@ -878,7 +921,8 @@ def main():
     # An explicit --session that resolved to nothing is a broken invocation,
     # not an empty conversation: say so on stderr and fail, rather than
     # silently starting a new conversation the caller never asked for.
-    failed = bool(args.session) and repl.session is None
+    failed = (bool(args.session) and repl.session is None) or (
+        (args.resume or args.fork) and any(n.startswith("[error]") for n in notices))
     for notice in notices:
         if args.json:
             repl.emit("notice", text=notice)
@@ -887,6 +931,8 @@ def main():
     if failed:
         sys.exit(EXIT_ERROR if any(n.startswith("[error]") for n in notices)
                  else EXIT_USAGE)
+
+    repl.resume_picker = args.resume_picker
 
     if prompt:
         # One-shot runs go through the same turn as the interactive ones, so a
@@ -899,8 +945,44 @@ def main():
         if _start_tui(repl, config, cwd):
             return
 
+    if args.resume_picker and not pick_session_plain(repl):
+        repl.turn.close()
+        return
+
     repl.run()
     sys.exit(repl.exit_code())
+
+
+def pick_session_plain(repl) -> bool:
+    """Numbered picker for terminals where curses is unavailable or disabled."""
+    store = repl.turn.store()
+    if store is None:
+        print(repl.turn.persistence_error or "sessions unavailable", file=sys.stderr)
+        return False
+    try:
+        rows = store.list_sessions(limit=50)
+    except Exception as exc:
+        print("Cannot list sessions: %s" % exc, file=sys.stderr)
+        return False
+    if not rows:
+        print("No saved sessions.")
+        return False
+    for index, row in enumerate(rows, 1):
+        print("%d. %s" % (index, _session_row(row)))
+    while True:
+        try:
+            answer = input("Session number (Enter to cancel): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if not answer:
+            return False
+        if not answer.isdecimal() or not 1 <= int(answer) <= len(rows):
+            print("Choose a number from 1 to %d." % len(rows))
+            continue
+        result = repl.resume_session(rows[int(answer) - 1]["id"])
+        print(result)
+        if result.startswith("Resumed "):
+            return True
 
 
 if __name__ == "__main__":

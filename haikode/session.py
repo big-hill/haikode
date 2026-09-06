@@ -100,6 +100,7 @@ _SCHEMA = (
         cwd TEXT NOT NULL DEFAULT '',
         provider TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
+        agent_name TEXT NOT NULL DEFAULT '',
         created REAL NOT NULL DEFAULT 0,
         updated REAL NOT NULL DEFAULT 0,
         archived INTEGER NOT NULL DEFAULT 0
@@ -181,6 +182,7 @@ _INDEXES = (
 # only form of ALTER TABLE sqlite accepts, and it is also the only form that
 # cannot lose a row.
 _ADDED_COLUMNS = (
+    ("sessions", "agent_name", "TEXT NOT NULL DEFAULT ''"),
     ("sessions", "archived", "INTEGER NOT NULL DEFAULT 0"),
     ("messages", "created", "REAL"),
     ("messages", "tokens", "INTEGER"),
@@ -1151,7 +1153,7 @@ class SessionStore:
 
     def load(self, session_id: str) -> Optional["Session"]:
         rows = self._query(
-            "SELECT id, title, cwd, provider, model, created, updated, archived "
+            "SELECT id, title, cwd, provider, model, agent_name, created, updated, archived "
             "FROM sessions WHERE id = ?", (session_id,))
         if not rows:
             return None
@@ -1160,7 +1162,8 @@ class SessionStore:
                           cwd=row["cwd"] or "", provider=row["provider"] or "",
                           model=row["model"] or "", created=row["created"] or 0.0,
                           updated=row["updated"] or 0.0,
-                          archived=bool(row["archived"]))
+                          archived=bool(row["archived"]),
+                          agent_name=row["agent_name"] or "")
         session.reload()
         return session
 
@@ -1366,13 +1369,14 @@ class Session:
     def __init__(self, store: SessionStore, session_id: str, title: str = "",
                  cwd: str = "", provider: str = "", model: str = "",
                  created: float = 0.0, updated: float = 0.0,
-                 archived: bool = False):
+                 archived: bool = False, agent_name: str = ""):
         self.store = store
         self.id = session_id
         self.title = title
         self.cwd = cwd
         self.provider = provider
         self.model = model
+        self.agent_name = agent_name
         self.created = created
         self.updated = updated
         self.archived = archived
@@ -1384,6 +1388,15 @@ class Session:
         self._seq = 0
         # The revert point new snapshots belong to; None until a run starts.
         self._checkpoint: Optional[int] = None
+
+    def set_route(self, provider: str, model: str, agent_name: str = "") -> None:
+        """Remember the last turn's route without rewriting the transcript."""
+        if (provider, model, agent_name) == (self.provider, self.model, self.agent_name):
+            return
+        self.store._write(
+            "UPDATE sessions SET provider = ?, model = ?, agent_name = ? WHERE id = ?",
+            (provider, model, agent_name, self.id))
+        self.provider, self.model, self.agent_name = provider, model, agent_name
 
     # --- loading ---------------------------------------------------------
 
@@ -2092,6 +2105,7 @@ class Session:
             "updated": self.updated,
             "archived": self.archived,
             "messages": messages,
+            "agent_name": self.agent_name,
             "stats": self.stats(),
         }
 

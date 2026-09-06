@@ -74,7 +74,7 @@ CONTEXT_TTL = 4.0
 # reference, not ours, so without re-pulling the factory the screen would keep
 # naming the provider, model and auth of the session the user just left.
 REPROVISION_COMMANDS = frozenset(
-    {"/provider", "/model", "/login", "/logout", "/reload"})
+    {"/provider", "/model", "/login", "/logout", "/reload", "/resume", "/fork"})
 
 # SGR colour escapes as emitted by the REPL's _c(); curses draws them
 # literally, so transcript text must be plain.
@@ -2314,13 +2314,14 @@ class TUI:
                  on_command: Optional[Callable[[str], Optional[str]]] = None,
                  completer: Optional[Callable[[str], List[str]]] = None,
                  header: str = "", agent: Any = None,
-                 turn: Optional[TurnController] = None):
+                 turn: Optional[TurnController] = None, resume_picker: bool = False):
         self.agent_factory = agent_factory
         self.config = config
         self.cwd = os.path.abspath(os.path.expanduser(cwd or "."))
         self.on_command = on_command
         self.completer = completer
         self.header = header
+        self.resume_picker = resume_picker
         # Standalone (tests, an embedder) still persists: it just owns the
         # controller instead of sharing main.py's.
         self.turn = turn if turn is not None else TurnController(cwd=self.cwd)
@@ -2530,6 +2531,8 @@ class TUI:
         self._wire_permissions()
         self._announce_warnings()
         self._announce_persistence()
+        if self.resume_picker:
+            self._open_sessions()
         # No banner entry: an empty transcript is what selects the home screen,
         # and the home screen says everything the banner used to (and more).
 
@@ -3890,6 +3893,9 @@ class TUI:
     def _finish_command(self, line: str, result):
         """Show a command's answer and re-read the agent if it reprovisioned."""
         name = line.split()[0].lower()
+        if name in ("/resume", "/fork"):
+            self._finish_resume(result)
+            return
         if result is None:
             self.transcript.add(Entry("info", text="unknown command: %s" % name))
         else:
@@ -3950,7 +3956,7 @@ class TUI:
         self._run_async(name,
                         lambda: self._call_command(line),
                         lambda result: self._finish_command(line, result),
-                        cancellable=name != "update")
+                        cancellable=name not in ("update", "resume", "fork"))
 
     def _run_async(self, label: str, work, done=None, on_error=None,
                    cancellable: bool = True):
@@ -4705,7 +4711,8 @@ class TUI:
         self._close_dialog()
         result = None
         if self.on_command is not None:
-            result = self.on_command("/resume %s" % item.value)
+            self._run_command_async("/resume %s" % item.value)
+            return
         if result is None:
             store = self._session_store()
             session = store.load(item.value) if store is not None else None
@@ -4728,6 +4735,24 @@ class TUI:
         self.transcript.add(Entry("info", text=str(result)))
         self._context = None
         self.follow = True
+
+    def _finish_resume(self, result):
+        """Adopt both the route and transcript, only after resume succeeded."""
+        if not str(result).startswith(("Resumed ", "Forked ")):
+            self.transcript.add(Entry("error", text=str(result)))
+            return
+        self.agent = self.agent_factory()
+        self.agent_name = getattr(self.agent, "agent_name", "")
+        self._wire_permissions()
+        self._report_warnings()
+        self._setup_cache = None
+        self._seen_tokens = {"input": 0, "output": 0}
+        self.transcript.clear()
+        self._replay(getattr(self.agent, "messages", None) or [])
+        self.transcript.add(Entry("info", text=str(result)))
+        self._context = None
+        self.follow = True
+        self._dirty = True
 
     def _replay(self, messages):
         """Rebuild the transcript from a restored history.
@@ -4938,10 +4963,10 @@ class TUI:
             return
         switch = getattr(self.agent, "switch_agent", None)
         message = ""
-        if callable(switch):
-            message = str(switch(name) or "")
-        elif self.on_command is not None:
+        if self.on_command is not None:
             message = str(self.on_command("/agent %s" % name) or "")
+        elif callable(switch):
+            message = str(switch(name) or "")
         if not message:
             message = "agent → %s" % name
         self.agent_name = name
@@ -6177,7 +6202,7 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
             on_command: Optional[Callable[[str], Optional[str]]] = None,
             completer: Optional[Callable[[str], List[str]]] = None,
             header: str = "", agent: Any = None,
-            turn: Optional[TurnController] = None) -> None:
+            turn: Optional[TurnController] = None, resume_picker: bool = False) -> None:
     """Run the full-screen UI.
 
     `agent` is the agent to start with (main.py may already have resumed a
@@ -6187,7 +6212,8 @@ def run_tui(agent_factory: Callable[[], Any], config: Any, cwd: str = ".",
     main.py can catch it and fall back to the readline REPL.
     """
     tui = TUI(agent_factory, config, cwd, on_command=on_command,
-              completer=completer, header=header, agent=agent, turn=turn)
+              completer=completer, header=header, agent=agent, turn=turn,
+              resume_picker=resume_picker)
     tui.turn.compose_farewell = True
     _wrap_curses(tui.run)
     # After endwin(), so the poem lands in the terminal scrollback where the

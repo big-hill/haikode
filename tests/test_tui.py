@@ -498,14 +498,14 @@ class ModuleContractTests(unittest.TestCase):
         params = list(inspect.signature(tui.run_tui).parameters)
         self.assertEqual(params, ["agent_factory", "config", "cwd",
                                   "on_command", "completer", "header",
-                                  "agent", "turn"])
+                                  "agent", "turn", "resume_picker"])
 
     def test_tui_constructor_signature(self):
         import inspect
         params = list(inspect.signature(tui.TUI.__init__).parameters)
         self.assertEqual(params, ["self", "agent_factory", "config", "cwd",
                                   "on_command", "completer", "header",
-                                  "agent", "turn"])
+                                  "agent", "turn", "resume_picker"])
 
     def test_a_supplied_agent_is_adopted_rather_than_rebuilt(self):
         """--continue resumes into an agent; the factory would hand back an

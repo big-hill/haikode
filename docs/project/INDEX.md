@@ -18,6 +18,7 @@ owns the question.
 | 32-bit Haiku acceptance runbook | [docs/x86-32bit.md](../x86-32bit.md) | current runbook |
 | Native desktop implementation notes | [desktop/NATIVE_UI_NOTES.md](../../desktop/NATIVE_UI_NOTES.md) | current notes; code wins |
 | Persistent connection proposal | [persistent-connections.md](../specs/persistent-connections.md) | proposed, not implemented |
+| Resume picker review and acceptance | [resume-picker-review.md](../specs/resume-picker-review.md) | local implementation; physical-Haiku acceptance pending |
 | Crash triage proposal | [crash-triage.md](../specs/crash-triage.md) | proposed, not implemented |
 | Persistent connection reviews | [review 1](../specs/persistent-connections-review.md), [review 2](../specs/persistent-connections-review-2.md) | investigation |
 | Latched compaction design evidence | [brief](../specs/latched-compaction-brief.md), [review](../specs/latched-compaction-review.md) | historical investigation; implemented decision has an ADR |

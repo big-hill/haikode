@@ -317,6 +317,9 @@ class StubSession:
     def checkpoint(self):
         return 0
 
+    def set_route(self, provider, model, agent_name=""):
+        self.provider, self.model, self.agent_name = provider, model, agent_name
+
     def append(self, message):
         self.messages.append(message)
 
