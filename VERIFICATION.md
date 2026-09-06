@@ -11,6 +11,14 @@ reviewer.
 
 ## Release boundary
 
+- v0.1.5 candidate: resume-picker implementation `2413d30` passed the full
+  baseline on physical x86_64 Haiku with Python 3.10 and only the four known
+  wiring failures. All fixture validations and the deterministic performance
+  audit passed there. A physical-Haiku PTY probe showed `--resume` opening the
+  session list and Enter restoring the saved transcript, model and plan agent;
+  both probe processes were reaped. This used an isolated checkout, temporary
+  session stores and a scripted provider. HPKG validation, x86_gcc2 acceptance
+  and the operator's installed-package `/update` test remain pending.
 - Published `v0.1.0` at `0016d1c` completed the dual-architecture release gate:
   x86_64 and x86_gcc2 packages, native suites, fixture validation, package
   inspection, and an independent x86_64 HaikuDepot install.

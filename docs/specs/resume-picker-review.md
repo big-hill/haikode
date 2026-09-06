@@ -1,6 +1,7 @@
 # Resume picker review and acceptance boundary
 
-Status: implemented locally; physical-Haiku acceptance pending.
+Status: implemented; physical-Haiku x86_64 automated checks passed; package
+upgrade and x86_gcc2 acceptance pending.
 
 ## Scope
 
@@ -54,6 +55,13 @@ access. This record is not release or deployment approval.
 - Local PTY captures using `tests/render_tui.py` and a scripted provider showed
   the startup Sessions dialog and, after Enter, the saved transcript with
   `restored-model` and `plan` in the status line. No live model call was made.
-- Physical Haiku checks are still required for the terminal picker, existing
-  session database upgrade, concurrent sessions and real-provider continuation.
+- On physical x86_64 Haiku, Python 3.10 passed the full baseline with exactly
+  the documented wiring failures, all fixture validations, and the deterministic
+  performance audit. Tests ran from an isolated checkout without replacing the
+  installed package or accessing the user's live session database.
+- Physical x86_64 PTY captures also passed: the startup list appeared, Enter
+  restored the transcript and saved model/plan agent, and both child processes
+  were confirmed reaped. The provider was scripted; no live request was made.
+- Physical Haiku checks are still required for the installed-package upgrade,
+  existing user session database and real-provider continuation, plus x86_gcc2.
   Local tests do not establish that acceptance boundary.
