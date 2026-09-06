@@ -1111,6 +1111,14 @@ real session persistence — and streams versioned NDJSON back; and it shells ou
 to `python3 -m haikode.configtool` for every config and key operation. No
 localhost server is involved anywhere.
 
+Both native launch paths share a runtime resolver: it checks Python 3.10+
+and module availability, preferring the packaged Python 3.10 and discovering
+other versioned interpreters on PATH when needed. An unversioned `python3`
+command is not required. Developer source trees must be selected explicitly
+with `HAI_PYTHONPATH`; a stale checkout is never selected implicitly.
+Session-list failures show their error instead of claiming the store is busy;
+use Reload after correcting the cause.
+
 Settings in the app cover provider, model, API key, Ollama LAN/Tailscale URL and
 the ChatGPT/SuperGrok subscription logins.
 

@@ -11,6 +11,31 @@ reviewer.
 
 ## Release boundary
 
+- v0.1.6 native runtime fix, source `73bffd4ccc56e85f0a4e90e45e6b7034e38a7c17`:
+  the reported desktop "store busy" failure was reproduced on physical
+  x86_64 as `python3: command not found`. The installed v0.1.5 native binary
+  contained that hardcoded command, while only `python3.10` was available.
+  The fix shares one probed launcher for config/history and conversation
+  workers, removes implicit developer-tree shadowing, reports actual list
+  errors without endless retries, and makes error placeholders non-selectable.
+  Session listing no longer reads provider configuration.
+  The final local baseline ran 2551 tests with only the four known failures
+  and five platform skips. Physical x86_64 ran all 2551 with no skips/errors
+  and only those four failures; all 13 fixtures and the performance audit
+  passed. The native ConfigBridge probe compiled and executed output, stdin,
+  failure-status and real isolated session-list paths without a GUI or access
+  to the user's session store. The `0.1.6-152` x86_64 package passed source-byte,
+  metadata, native-version, ELF, resource, link and clean-content checks.
+  SHA-256: `d145806857836f4a19dcb5803c9792a5b495330fea77834362e98bcfba4854c2`.
+  Physical x86_gcc2 passed the same 2551-test baseline (four expected failures,
+  two platform skips, no errors), all 13 fixtures, deterministic performance
+  audit, native bridge probe and package checks. Its matching `0.1.6-152`
+  artifact has SHA-256
+  `3dc2033827aec1c64a7aca9d2472d77bbadea3c76279264d866a03f259918ca0`.
+  Both native binaries contain the shared runtime resolver and no longer
+  contain the diagnosed hardcoded configtool launch command. No installed
+  package, live user database or desktop window was changed during QA.
+  Operator desktop/upgrade acceptance remains **TO VERIFY**.
 - v0.1.5 candidate: resume-picker implementation `2413d30` passed the full
   baseline on physical x86_64 Haiku with Python 3.10 and only the four known
   wiring failures. All fixture validations and the deterministic performance
