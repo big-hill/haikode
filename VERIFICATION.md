@@ -1,6 +1,6 @@
 # haikode completion and verification matrix
 
-Last updated: 2026-08-17. This file records executable evidence, not
+Last updated: 2026-09-06. This file records executable evidence, not
 intended behavior. Every PASS below names the machine class it was
 demonstrated on; nothing is claimed from reading the source alone.
 
@@ -24,8 +24,23 @@ reviewer.
   0.1.5, signature, icon attributes, launch links, documentation and clean
   contents passed inspection. The copied artifact matched SHA-256
   `aa0da51baf489859bf156a1d756a41c36fc8e2c6eaa7bad2af9d19eb65373cd2`.
-  x86_gcc2 acceptance/build and the operator's installed-package `/update`
-  test remain pending. No v0.1.5 release has been published yet.
+  On 2026-09-06, the same versioned commit passed the 2541-test baseline on
+  physical x86_gcc2 (four expected wiring failures, two skips, no errors), all
+  13 fixtures, the deterministic performance audit and both reaped PTY probes.
+  Its native build and the same extracted-package checks passed for
+  `haikode-0.1.5-146-x86_gcc2.hpkg`, SHA-256
+  `ecfc63c203861b903d30abb183df5c6f699c166bcc6e0ec29539150880c1e17b`.
+  Published [v0.1.5](https://github.com/big-hill/haikode/releases/tag/v0.1.5)
+  from `0e6eda0ed568ae17d3a695af0c7a6912ecb848a5` with both packages and
+  SHA256SUMS. Fresh GitHub downloads matched both native artifacts and GitHub
+  asset digests; the latest-release endpoint selected v0.1.5. The installed
+  x86_gcc2 v0.1.4 updater imported from `/boot/system` selected the matching
+  v0.1.5 asset, downloaded and verified its digest and HPKG identity, then
+  removed its temporary download without installing. Publication was
+  explicitly requested to enable the operator's update test. Installed-package
+  `/update`, close/reopen, persistent-state preservation and a real prompt
+  remain **TO VERIFY**; no package installation or native GUI launch was
+  performed in this acceptance run.
 - Published `v0.1.0` at `0016d1c` completed the dual-architecture release gate:
   x86_64 and x86_gcc2 packages, native suites, fixture validation, package
   inspection, and an independent x86_64 HaikuDepot install.
