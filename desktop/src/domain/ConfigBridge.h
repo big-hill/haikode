@@ -5,10 +5,8 @@
 
 // Thin bridge to the Python configtool shared with the haikode CLI.
 // We never parse or write the JSON config ourselves (spec: no C++ JSON
-// parser); all reads/writes go through:
-//     PYTHONPATH=/boot/home/haikode python3 -m haikode.configtool <args>
-// (Same install root as the /boot/home/config/non-packaged/bin/haikode
-// launcher.)
+// parser); all reads/writes go through haikode.configtool using the shared
+// PythonRuntime launcher. Developer trees require explicit HAI_PYTHONPATH.
 //
 // Contract (implemented in parallel on the Python side):
 //     list-providers                       -> "<name>\t<dialect>\t<base_url>\t<model>\t<key:yes|no|n/a>" per line

@@ -1,4 +1,5 @@
 #include "ConfigBridge.h"
+#include "PythonRuntime.h"
 
 #include <Autolock.h>
 #include <Locker.h>
@@ -15,11 +16,14 @@
 // the window looper free, which is the part that matters.
 static BLocker sConfigToolLock("configtool bridge");
 
-// Same install root and PYTHONPATH as the CLI launcher
-// /boot/home/config/non-packaged/bin/haikode:
-//     PYTHONPATH=/boot/home/haikode python3 -m haikode "$@"
-static const char* kConfigToolPrefix =
-	"PYTHONPATH=/boot/home/haikode python3 -m haikode.configtool ";
+static BString
+config_tool_prefix()
+{
+	BString command("/bin/sh -c ");
+	command << ConfigBridge::ShellQuote(kPythonRuntimeScript)
+		<< " haikode-runtime haikode.configtool ";
+	return command;
+}
 
 
 /*static*/ BString
@@ -29,7 +33,7 @@ ConfigBridge::RunConfigTool(const BString& args, int* exitCode)
 	if (exitCode != NULL)
 		*exitCode = -1;
 
-	BString command(kConfigToolPrefix);
+	BString command(config_tool_prefix());
 	command << args << " 2>&1";
 
 	FILE* pipe = popen(command.String(), "r");
@@ -68,7 +72,7 @@ ConfigBridge::RunConfigToolWithInput(const BString& args,
 		return BString("error: could not create configtool output file");
 	close(outputFD);
 
-	BString command(kConfigToolPrefix);
+	BString command(config_tool_prefix());
 	command << args << " > " << ShellQuote(outputPath) << " 2>&1";
 	FILE* pipe = popen(command.String(), "w");
 	if (pipe == NULL) {

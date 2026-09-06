@@ -73,7 +73,6 @@ enum : uint32 {
 	MSG_EFFORTS_LISTED   = 'ELst',
 	MSG_EFFORT_CURRENT   = 'ECur',
 	MSG_EFFORT_PICKED    = 'EPck',
-	MSG_SESSIONS_RETRY   = 'SRty',
 	MSG_UPDATE_CHECKED   = 'UChk',
 	MSG_CHECK_UPDATES    = 'UGo ',
 	MSG_SHOW_SETTINGS   = 'STNG',
@@ -1195,22 +1194,24 @@ HaiWindow::MessageReceived(BMessage* message)
 			break;
 		}
 
-		case MSG_SESSIONS_RETRY:
-			spawn_history_task(BMessenger(this), "sessions",
-				MSG_SESSIONS_LOADED);
-			break;
-
 		case MSG_SESSIONS_LOADED:
 		{
 			if (message->GetInt32("exit", -1) != 0) {
-				// Contention with a live TUI is transient; say so and try
-				// once more instead of presenting an empty list as truth.
+				// A launch/import failure is not evidence of store contention.
+				// Show the actual error and let Reload retry explicitly.
 				while (fSessionList->CountItems() > 0)
 					delete fSessionList->RemoveItem((int32)0);
 				fSessionList->AddItem(new BStringItem(
-					"(store busy - retrying" B_UTF8_ELLIPSIS ")"));
-				BMessageRunner::StartSending(BMessenger(this),
-					new BMessage(MSG_SESSIONS_RETRY), 4000000, 1);
+					"(Session list unavailable - use Reload)"));
+				BString detail = message->GetString("output", "");
+				detail.Trim();
+				int32 lastLine = detail.FindLast('\n');
+				if (lastLine >= 0)
+					detail.Remove(0, lastLine + 1);
+				detail.Truncate(512);
+				BString error("Session list failed: ");
+				error << (detail.IsEmpty() ? "could not run configtool" : detail.String());
+				fStatusBar->SetText(error.String());
 				break;
 			}
 			while (fSessionList->CountItems() > 0)
@@ -1235,7 +1236,7 @@ HaiWindow::MessageReceived(BMessage* message)
 		{
 			int32 index = fSessionList->CurrentSelection();
 			SessionItem* item = index >= 0
-				? static_cast<SessionItem*>(fSessionList->ItemAt(index)) : NULL;
+				? dynamic_cast<SessionItem*>(fSessionList->ItemAt(index)) : NULL;
 			if (item == NULL)
 				break;
 			BMessage select(kMsgSelectSession);

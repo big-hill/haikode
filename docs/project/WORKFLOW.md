@@ -195,6 +195,9 @@ release, verify at least:
 - native builds and package metadata on each supported architecture;
 - package contents, signature, application flags, icon attributes, links,
   documentation, and absence of AppleDouble/bytecode debris;
+- execute the headless native ConfigBridge regression on each architecture
+  (`tests/test_desktop_runtime.py`), including versioned-only Python and real
+  isolated session listing; package inspection alone does not test launching;
 - a visible application icon in HaikuDepot and Deskbar, plus a current
   screenshot in public release/listing material when the desktop UI is shown;
 - checksums copied without transformation;

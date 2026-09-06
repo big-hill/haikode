@@ -43,6 +43,11 @@ Saved provider/model/agent routing belongs to `session.py`; `TurnController`
 records the route used by each turn, and REPL session adoption restores it for
 CLI/TUI resume without changing global defaults.
 
+Native config/history and conversation processes share
+`desktop/src/domain/PythonRuntime.h`. It probes Python 3.10+ and module
+availability, discovers versioned interpreters on PATH, and requires explicit
+`HAI_PYTHONPATH` for developer trees. Do not add independent launch commands.
+
 Database schema changes are additive migrations in `session.py` and require
 round-trip, concurrency, failure, and downgrade/rollback analysis. Never edit a
 live SQLite database to infer the migration contract.

@@ -331,6 +331,18 @@ def main(argv=None):
         print(__doc__, file=sys.stderr)
         return 2
     cmd, args = argv[0], argv[1:]
+    if cmd == "sessions" and not args:
+        # Listing local history needs neither provider config nor credentials.
+        from .session import SessionStore
+        store = SessionStore()
+        try:
+            for record in store.list_sessions():
+                title = (record["title"] or record["id"]).replace(
+                    "\t", " ").replace("\n", " ")
+                print(f"{record['id']}\t{title}")
+        finally:
+            store.close()
+        return 0
     config = Config()
 
     if cmd == "list-providers":
@@ -489,14 +501,6 @@ def main(argv=None):
         url = str(result.get("url", "")).replace("\t", " ").replace("\n", " ")
         instructions = str(result.get("instructions", "")).replace("\t", " ").replace("\n", " ")
         print(f"{url}\t{result.get('method', '')}\t{instructions}")
-        return 0
-
-    if cmd == "sessions" and not args:
-        from .session import SessionStore
-        for record in SessionStore().list_sessions():
-            title = (record["title"] or record["id"]).replace(
-                "\t", " ").replace("\n", " ")
-            print(f"{record['id']}\t{title}")
         return 0
 
     if cmd == "session-text" and len(args) == 1:
