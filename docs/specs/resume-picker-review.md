@@ -1,7 +1,7 @@
 # Resume picker review and acceptance boundary
 
 Status: implemented; physical-Haiku x86_64 automated checks passed; package
-upgrade and x86_gcc2 acceptance pending.
+build/inspection passed on x86_64; upgrade and x86_gcc2 acceptance pending.
 
 ## Scope
 
@@ -62,6 +62,8 @@ access. This record is not release or deployment approval.
 - Physical x86_64 PTY captures also passed: the startup list appeared, Enter
   restored the transcript and saved model/plan agent, and both child processes
   were confirmed reaped. The provider was scripted; no live request was made.
+- The v0.1.5 x86_64 HPKG was built and inspected without installation; its
+  source commit and SHA-256 are recorded in `VERIFICATION.md`.
 - Physical Haiku checks are still required for the installed-package upgrade,
   existing user session database and real-provider continuation, plus x86_gcc2.
   Local tests do not establish that acceptance boundary.
